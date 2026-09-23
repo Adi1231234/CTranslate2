@@ -62,6 +62,17 @@ for sid, tid, _ in inside:
     v, t = calls.get(tid, []), sample_time[sid]
     i = bisect.bisect_right(v, (t, float("inf"), "")) - 1
     api_of[v[i][2] if i >= 0 and v[i][1] >= t else "(no CUDA call: host code)"] += 1
+leafmod = collections.defaultdict(collections.Counter)
+for sid, mod, depth in db.execute("SELECT c.id, c.module, c.stackDepth FROM SAMPLING_CALLCHAINS c JOIN sel USING (id) "
+                                  "WHERE c.stackDepth = 0"):
+    leafmod[sid] = S.get(mod, "?").split("\\")[-1]
+per_thread = collections.defaultdict(collections.Counter)
+for sid, tid, _ in inside:
+    per_thread[tid][leafmod.get(sid, "?")] += 1
+print("threads: samples overall / during GPU idle / CUDA API calls made / top leaf modules during idle")
+for tid in sorted(total, key=lambda t: -total[t])[:12]:
+    print(f"  {tid & 0xFFFFFF:6d}: {total[tid]:6d} / {by_thread[tid]:6d} / {len(calls.get(tid, [])):7d} / "
+          + ", ".join(f"{m} {n}" for m, n in per_thread[tid].most_common(3)))
 print("CUDA API call the sampled thread was inside (samples during GPU idle):")
 for k, n in api_of.most_common(10):
     print(f"  {n:7d}  {100 * n / max(1, len(inside)):5.1f}%  {k}")
