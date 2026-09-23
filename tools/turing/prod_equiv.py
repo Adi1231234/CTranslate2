@@ -1,0 +1,38 @@
+"""Production-path canary: run the production transcription engine (engine.transcribe_unit, the same
+batching, encoder/decoder pipelining, segment splitting and temperature-ladder fallback as the real
+run) on every sample clip, and print a hash of every output row. A build may replace the stock wheel
+only if this hash equals the stock wheel's.
+usage: prod_equiv.py <sample_dir> <engine_dir> <mode, e.g. pipe8> [ctranslate2 package parent dir]"""
+import os, sys, json, time, hashlib
+from concurrent.futures import Future, ThreadPoolExecutor
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common
+SAMPLE, ENGINE, MODE = sys.argv[1:4]
+common.init(sys.argv[4] if len(sys.argv) > 4 else None)
+sys.path.insert(0, ENGINE)
+import numpy as np
+import ctranslate2
+from faster_whisper import WhisperModel
+from engine import transcribe_unit
+
+meta, seen = [], set()
+for m in json.load(open(os.path.join(SAMPLE, "meta.json"), encoding="utf-8")):
+    if m["key"] not in seen:
+        seen.add(m["key"]); meta.append(m)
+clips = [(m["key"], np.load(os.path.join(SAMPLE, m["key"] + ".npy"))) for m in meta]
+workers = 1 + int(MODE.startswith("pipe")) + 1                  # as transcribe_run.py
+model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
+                     num_workers=workers)
+pool = ThreadPoolExecutor(max_workers=1)
+t = time.time()
+rows = [r.result() if isinstance(r, Future) else r for r in transcribe_unit(model, clips, MODE, pool)]
+T = time.time() - t
+audio = sum(len(w) for _, w in clips) / 16000
+print(json.dumps({"ctranslate2": ctranslate2.__file__, "mode": MODE, "clips": len(rows),
+                  "fallback": sum(r.get("path") == "fallback" for r in rows),
+                  "seconds": round(T, 1), "realtime": round(audio / T, 1),
+                  "rows_sha": hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()[:16]}),
+      flush=True)
+pool.shutdown()
+del model                                       # release the model's worker threads while Python is alive
+import gc; gc.collect()
