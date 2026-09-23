@@ -4,10 +4,15 @@ second worker while batch 0 decodes. Per phase: wall, GPU-busy (union of kernel 
 kernels, and how long kernels of different streams actually ran at the same time. -> prof_ct2.log"""
 import os, sys, time, ctypes, zipfile, urllib.request, collections, threading
 from ctypes import CFUNCTYPE, POINTER, byref, c_size_t, c_uint8, c_uint32, c_uint64, c_void_p
-ROOT = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, ROOT)
-import cudaenv  # noqa: F401
-os.environ["HF_HOME"] = os.path.join(ROOT, "hf")
+# usage: profile_kernels.py <sample_dir> <out_log> [ctranslate2 package parent dir]
+SAMPLE, OUT = sys.argv[1], sys.argv[2]
+if len(sys.argv) > 3:
+    sys.path.insert(0, sys.argv[3])
+import glob, sysconfig
+for d in glob.glob(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "*", "bin")):
+    os.add_dll_directory(d)
+    os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
+ROOT = os.path.dirname(OUT)
 
 WHL = ("https://files.pythonhosted.org/packages/1c/81/7796f096afaf726796b1b648f3bc80cafc61fe7f77f44a483c89e6c5ef34/"
        "nvidia_cuda_cupti_cu12-12.6.80-py3-none-win_amd64.whl")
@@ -59,7 +64,11 @@ import numpy as np
 from faster_whisper import WhisperModel
 from faster_whisper.audio import pad_or_trim
 from faster_whisper.tokenizer import Tokenizer
-from bench_matrix import meta, SAMPLE
+import json
+meta, seen = [], set()
+for x in json.load(open(os.path.join(SAMPLE, "meta.json"), encoding="utf-8")):
+    if x["key"] not in seen:
+        seen.add(x["key"]); meta.append(x)
 m = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default", num_workers=2)
 tk = Tokenizer(m.hf_tokenizer, True, task="transcribe", language="he")
 prompt = m.get_prompt(tk, [], without_timestamps=False)

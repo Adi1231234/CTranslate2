@@ -40,3 +40,5 @@ for e in encs:
 D = time.time() - t
 print(json.dumps({"ctranslate2": ctranslate2.__file__, "legacy_softmax": os.environ.get("CT2_CUDA_LEGACY_SOFTMAX", "0"),
                   "E": round(E, 2), "D": round(D, 2), "tokens_sha": digest.hexdigest()[:16]}), flush=True)
+del model, encs                                 # release the model's worker threads while Python is alive
+import gc; gc.collect()
