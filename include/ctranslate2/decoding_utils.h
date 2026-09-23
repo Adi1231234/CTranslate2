@@ -46,17 +46,19 @@ namespace ctranslate2 {
         _logits_data[flat_index] = _disable_value;
 
       } else {
-        // On GPU we prepare a list of unique index to disable.
-        const auto it = std::lower_bound(_flat_indices.begin(), _flat_indices.end(), flat_index);
-        if (it == _flat_indices.end() || *it != flat_index)
-          _flat_indices.insert(it, flat_index);
+        // On GPU we list the indices to disable (a repeated index is harmless: same value).
+        _flat_indices.push_back(flat_index);
       }
     }
 
     // Disable a token for all batches.
     void add(dim_t token_id) {
-      for (dim_t batch_id = 0; batch_id < _batch_size; ++batch_id)
-        add(batch_id, token_id);
+      if (_logits_data) {
+        for (dim_t batch_id = 0; batch_id < _batch_size; ++batch_id)
+          add(batch_id, token_id);
+      } else {
+        _all_rows_ids.push_back(token_id);   // one entry instead of one per row
+      }
     }
 
     // Disable tokens [begin, end) of a batch: the same logits as add() for each token, without
@@ -84,6 +86,7 @@ namespace ctranslate2 {
     const dim_t _vocabulary_size;
     std::vector<int32_t> _flat_indices;
     std::vector<int32_t> _flat_ranges;  // [begin, end) pairs of flat indices
+    std::vector<int32_t> _all_rows_ids;  // token ids disabled in every row
   };
 
   // Base class for processing the output logits.

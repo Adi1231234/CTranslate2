@@ -229,6 +229,7 @@ set(SOURCES
 )
 set(CUDA_SOURCES
   src/cuda/allocator.cc
+  src/cuda/disable_tokens.cu
   src/cuda/primitives.cu
   src/cuda/random.cu
   src/cuda/timestamp_rules.cu

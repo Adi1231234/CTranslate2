@@ -1,9 +1,13 @@
 #include "ctranslate2/decoding_utils.h"
 
 #include <set>
+#include <stdexcept>
 
 #include "ctranslate2/ops/ops.h"
 #include "dispatch.h"
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/disable_tokens.h"
+#endif
 
 namespace ctranslate2 {
 
@@ -17,13 +21,43 @@ namespace ctranslate2 {
   }
 
   void DisableTokens::apply() {
-    const dim_t num_indices = _flat_indices.size();
-    const dim_t num_ranges = _flat_ranges.size() / 2;
+    // Every disabled position gets the same value, so filling ranges, all-row ids and single indices
+    // in any order, overlapping or repeated, leaves the same logits.
     const Device device = _logits.device();
     const DataType dtype = _logits.dtype();
-
-    // Every disabled position gets the same value, so filling ranges and single indices in any
-    // order, overlapping or not, leaves the same logits.
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+    if (device == Device::CUDA
+        && (!_flat_indices.empty() || !_flat_ranges.empty() || !_all_rows_ids.empty())) {
+      const auto rows = static_cast<int32_t>(_batch_size);
+      const auto vocabulary = static_cast<int32_t>(_vocabulary_size);
+      switch (dtype) {
+      case DataType::FLOAT32:
+        cuda::disable_tokens(_logits.data<float>(), static_cast<float>(_disable_value),
+                             _flat_ranges, _flat_indices, _all_rows_ids, rows, vocabulary);
+        break;
+      case DataType::FLOAT16:
+        cuda::disable_tokens(_logits.data<float16_t>(), static_cast<float16_t>(_disable_value),
+                             _flat_ranges, _flat_indices, _all_rows_ids, rows, vocabulary);
+        break;
+      case DataType::BFLOAT16:
+        cuda::disable_tokens(_logits.data<bfloat16_t>(), static_cast<bfloat16_t>(_disable_value),
+                             _flat_ranges, _flat_indices, _all_rows_ids, rows, vocabulary);
+        break;
+      default:
+        throw std::invalid_argument("DisableTokens: unsupported logits type");
+      }
+      _flat_indices.clear();
+      _flat_ranges.clear();
+      _all_rows_ids.clear();
+      return;
+    }
+#endif
+    for (const auto token_id : _all_rows_ids)        // devices without the kernel: expand per row
+      for (dim_t batch_id = 0; batch_id < _batch_size; ++batch_id)
+        _flat_indices.push_back(batch_id * _vocabulary_size + token_id);
+    _all_rows_ids.clear();
+    const dim_t num_indices = _flat_indices.size();
+    const dim_t num_ranges = _flat_ranges.size() / 2;
     if (num_indices > 0) {
       const StorageView flat_indices({num_indices}, _flat_indices, device);
       DEVICE_AND_TYPE_DISPATCH(device, dtype,
