@@ -6,21 +6,8 @@
 # whose destructor joins threads during thread exit, under the loader lock, and deadlocks teardown.
 param([string]$Root = 'D:\ct2build', [string]$Arch = '7.5', [string]$Python = 'D:\wsbench-tmp\venv\Scripts\python.exe',
       [string]$Out = 'D:\ct2build\pyct2-next')
-# Not 'Stop': Windows PowerShell 5.1 turns any stderr line of a native tool (a cmake warning) into a
-# terminating error. Native steps are checked through their exit codes instead.
-function Check($what) {
-  if ($LASTEXITCODE -ne 0) { Write-Output "FAILED: $what (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
-}
 $Src = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$Cuda = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
-$T = "$Root\tools"
-$env:PATH = "$T\git\cmd;$T\cmake-3.31.12-windows-x86_64\bin;$T\ninja;$Cuda\bin;$env:PATH"
-# Newest Visual Studio: the official wheels use VS 2022, and MSVC 19.27 miscompiles pybind11 2.11.
-$vcvars = (Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat' |
-           Sort-Object { [int][regex]::Match($_.FullName, 'Visual Studio\\(\d{4})').Groups[1].Value } -Descending |
-           Select-Object -First 1).FullName
-cmd /c "`"$vcvars`" >nul && set" | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "Env:$($Matches[1])" $Matches[2] } }
-Write-Output "MSVC $env:VCToolsVersion from $vcvars"
+. "$PSScriptRoot\devenv.ps1"
 $Build = "$Root\build-sm$($Arch.Replace('.', ''))-msvc$env:VCToolsVersion-omp"; $Inst = "$Root\install"
 if (-not (Test-Path "$Build\build.ninja")) {
   $fwd = { param($p) $p.Replace('\', '/') }         # CMake reads backslashes in paths as escapes
