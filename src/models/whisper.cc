@@ -9,6 +9,9 @@
 
 #ifdef CT2_WITH_CUDA
 #  include "cuda/utils.h"
+#  ifndef CT2_USE_HIP
+#    include "cuda/timestamp_rules.h"
+#  endif
 #endif
 
 namespace ctranslate2 {
@@ -822,17 +825,45 @@ namespace ctranslate2 {
           StorageView log_probs(logits.dtype(), logits.device());
           ops::LogSoftMax()(logits, log_probs);
 
-          for (const dim_t batch_id : check_timestamps_prob_for_batch) {
-            bool sample_timestamp = false;
-
-            DEVICE_AND_FLOAT_DISPATCH(
-              "ApplyTimestampRules", log_probs.device(), log_probs.dtype(),
-              (sample_timestamp = should_sample_timestamp<D, T>(log_probs, batch_id)));
-
-            if (sample_timestamp)
-              disable_tokens.add_range(batch_id, 0, _timestamp_begin_id);
+          const std::vector<bool> sample_timestamp = should_sample_timestamps(
+            log_probs, check_timestamps_prob_for_batch);
+          for (size_t i = 0; i < sample_timestamp.size(); ++i) {
+            if (sample_timestamp[i])
+              disable_tokens.add_range(check_timestamps_prob_for_batch[i], 0, _timestamp_begin_id);
           }
         }
+      }
+
+      // should_sample_timestamp for each row; on the GPU with one host synchronization for all rows.
+      std::vector<bool> should_sample_timestamps(const StorageView& log_probs,
+                                                 const std::vector<dim_t>& batch_ids) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+        if (log_probs.device() == Device::CUDA && !cuda::use_stock_kernels()) {
+          const dim_t vocabulary_size = log_probs.dim(-1);
+          switch (log_probs.dtype()) {
+          case DataType::FLOAT32:
+            return cuda::sample_timestamps(log_probs.data<float>(), vocabulary_size, batch_ids,
+                                           _timestamp_begin_id, _timestamp_end_id);
+          case DataType::FLOAT16:
+            return cuda::sample_timestamps(log_probs.data<float16_t>(), vocabulary_size, batch_ids,
+                                           _timestamp_begin_id, _timestamp_end_id);
+          case DataType::BFLOAT16:
+            return cuda::sample_timestamps(log_probs.data<bfloat16_t>(), vocabulary_size, batch_ids,
+                                           _timestamp_begin_id, _timestamp_end_id);
+          default:
+            break;
+          }
+        }
+#endif
+        std::vector<bool> sample(batch_ids.size());
+        for (size_t i = 0; i < batch_ids.size(); ++i) {
+          bool sample_timestamp = false;
+          DEVICE_AND_FLOAT_DISPATCH(
+            "ApplyTimestampRules", log_probs.device(), log_probs.dtype(),
+            (sample_timestamp = should_sample_timestamp<D, T>(log_probs, batch_ids[i])));
+          sample[i] = sample_timestamp;
+        }
+        return sample;
       }
 
       template <Device D, typename T>

@@ -9,7 +9,9 @@ param([string]$Name, [string]$Root = 'D:\ct2build', [string]$Venv = 'D:\wsbench-
 $Out = "$Root\probes"
 $Src = (Resolve-Path "$PSScriptRoot\..\..\..").Path                 # probes include library headers
 $Exe = if ($Include) { "$Out\${Name}_alt.exe" } else { "$Out\$Name.exe" }
-$Inc = @(if ($Include) { '-I', $Include }) + @('-I', "$Src\src", '-I', "$Src\include")
+$Cccl = "$Src\third_party\thrust"                                   # the library's thrust/cub, as CMake orders them
+$Inc = @(if ($Include) { '-I', $Include }) + @('-I', "$Cccl\cub", '-I', "$Cccl\thrust", '-I', "$Cccl\libcudacxx\include",
+                                                '-I', "$Src\src", '-I', "$Src\include")
 New-Item -ItemType Directory -Force $Out | Out-Null
 nvcc -O3 -std=c++17 -arch=sm_75 --expt-relaxed-constexpr -diag-suppress 2219 @Inc `
   -o $Exe "$PSScriptRoot\$Name.cu" -lcublas 2>&1 | Out-String -Stream

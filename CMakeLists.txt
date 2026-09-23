@@ -231,6 +231,7 @@ set(CUDA_SOURCES
   src/cuda/allocator.cc
   src/cuda/primitives.cu
   src/cuda/random.cu
+  src/cuda/timestamp_rules.cu
   src/cuda/utils.cc
   src/ops/alibi_add_gpu.cu
   src/ops/bias_add_gpu.cu
