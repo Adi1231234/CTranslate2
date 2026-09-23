@@ -1,7 +1,10 @@
 #include "ctranslate2/ops/softmax.h"
 
+#include <type_traits>
+
 #include "cuda/helpers.h"
 #include "cuda/utils.h"
+#include "env.h"
 
 namespace ctranslate2 {
   namespace ops {
@@ -233,11 +236,109 @@ namespace at {
         input, size, Epilogue<scalar_t, accscalar_t, outscalar_t>(max_k, sumAll), output);
     }
 
+    // Bit-exact replacement of cunn_SoftMaxForward for short rows: one warp per row.
+    //
+    // cunn_SoftMaxForward runs B = get_block_size(cols) threads per row (1024 for the 1500-wide
+    // Whisper attention rows, so only one row fits on an SM at a time). Its arithmetic is fixed:
+    // thread v folds elements v, v+B, v+2B.. in increasing order (ilp_reduce), block_reduce then
+    // folds threads 32L..32L+31 in order for each L < B/32, and finally folds those B/32 values
+    // in order. Here lane L computes exactly those folds for its 32 virtual threads, in the same
+    // order, from a copy of the row in shared memory, and the B/32 lane results are folded in
+    // order through shuffles. Same float operations in the same order on the same values, so the
+    // output is identical. exp(x - max) is computed once and reused by the epilogue: it is the
+    // same expression on the same operands as the legacy epilogue's.
+    constexpr unsigned warp_softmax_rows_per_block = 4;
+    constexpr unsigned warp_softmax_max_cols = 2048;
+
+    __host__ __device__ __forceinline__ unsigned warp_softmax_slot(unsigned j) {
+      return j + j / 32;  // one pad float per 32: lanes reading j = 32L + i hit distinct banks
+    }
+
+    template <typename scalar_t, bool LogSoftmax>
+    __global__ void
+    warp_softmax_forward(scalar_t* output,
+                         const scalar_t* input,
+                         const unsigned rows,
+                         const unsigned classes,
+                         const unsigned legacy_block,
+                         const int32_t* lengths)
+    {
+      extern __shared__ float row_smem[];
+      const unsigned warp = threadIdx.x / C10_WARP_SIZE;
+      const unsigned lane = threadIdx.x % C10_WARP_SIZE;
+      const unsigned row = blockIdx.x * warp_softmax_rows_per_block + warp;
+      if (row >= rows)
+        return;
+      float* buf = row_smem + warp * (warp_softmax_slot(classes) + 1);
+      input += size_t(row) * classes;
+      output += size_t(row) * classes;
+
+      unsigned size = classes;
+      if (lengths) {
+        size = lengths[row];
+        for (unsigned i = size + lane; i < classes; i += C10_WARP_SIZE)
+          output[i] = 0.f;
+      }
+      for (unsigned j = lane; j < size; j += C10_WARP_SIZE)
+        buf[warp_softmax_slot(j)] = static_cast<float>(input[j]);
+      __syncwarp();
+
+      const unsigned groups = legacy_block / C10_WARP_SIZE;
+      const bool owner = lane < groups;
+
+      float warp_max = -max_float;
+      if (owner) {
+        for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {
+          float thread_max = -max_float;
+          for (unsigned j = lane * C10_WARP_SIZE + i; j < size; j += legacy_block)
+            thread_max = MaxFloat<float, float>()(thread_max, buf[warp_softmax_slot(j)]);
+          warp_max = Max<float>()(warp_max, thread_max);
+        }
+      }
+      float max_k = -max_float;
+      for (unsigned g = 0; g < groups; ++g)
+        max_k = Max<float>()(max_k, __shfl_sync(0xffffffff, warp_max, g));
+
+      float warp_sum = 0.f;
+      if (owner) {
+        for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {
+          float thread_sum = 0.f;
+          for (unsigned j = lane * C10_WARP_SIZE + i; j < size; j += legacy_block) {
+            const float e = std::exp(buf[warp_softmax_slot(j)] - max_k);
+            if (!LogSoftmax)
+              buf[warp_softmax_slot(j)] = e;  // element j belongs to this lane only
+            thread_sum = thread_sum + e;
+          }
+          warp_sum = Add<float>()(warp_sum, thread_sum);
+        }
+      }
+      float sum = 0.f;
+      for (unsigned g = 0; g < groups; ++g)
+        sum = Add<float>()(sum, __shfl_sync(0xffffffff, warp_sum, g));
+      __syncwarp();
+
+      if (LogSoftmax) {
+        const float logsum = std::log(sum);
+        for (unsigned j = lane; j < size; j += C10_WARP_SIZE)
+          output[j] = static_cast<scalar_t>(buf[warp_softmax_slot(j)] - max_k - logsum);
+      } else {
+        for (unsigned j = lane; j < size; j += C10_WARP_SIZE)
+          output[j] = static_cast<scalar_t>(buf[warp_softmax_slot(j)] / sum);
+      }
+    }
+
   }
 }
 
 namespace ctranslate2 {
   namespace ops {
+
+    // CT2_CUDA_LEGACY_SOFTMAX=1 forces cunn_SoftMaxForward everywhere (A/B checks of the
+    // bit-exact warp kernel, which must produce identical outputs).
+    static bool use_legacy_softmax() {
+      static const bool legacy = read_bool_from_env("CT2_CUDA_LEGACY_SOFTMAX");
+      return legacy;
+    }
 
     template <typename T, template <typename, typename, typename> class Epilogue>
     static void softmax_kernel_impl(cudaStream_t stream,
@@ -246,8 +347,18 @@ namespace ctranslate2 {
                                     const dim_t cols,
                                     const int32_t* lengths,
                                     T* y) {
-      const dim3 grid(rows);
       const dim3 block(cuda::get_block_size(cols));
+      if (cols <= at::native::warp_softmax_max_cols && !use_legacy_softmax()) {
+        constexpr bool is_log = std::is_same<Epilogue<T, float, T>,
+                                          at::native::LogSoftMaxForwardEpilogue<T, float, T>>::value;
+        const unsigned per_block = at::native::warp_softmax_rows_per_block;
+        const dim3 grid((rows + per_block - 1) / per_block);
+        const size_t smem = per_block * (at::native::warp_softmax_slot(cols) + 1) * sizeof (float);
+        at::native::warp_softmax_forward<T, is_log>
+          <<<grid, per_block * C10_WARP_SIZE, smem, stream>>>(y, x, rows, cols, block.x, lengths);
+        return;
+      }
+      const dim3 grid(rows);
       at::native::cunn_SoftMaxForward<T, float, T, cuda::index_t, int32_t, Epilogue>
         <<<grid, block, block.x * sizeof (float), stream>>>(y,
                                                             x,
