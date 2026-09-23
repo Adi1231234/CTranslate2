@@ -8,7 +8,9 @@ def init(pkg_parent=None):
     os.add_dll_directory, so both are needed."""
     if pkg_parent:
         sys.path.insert(0, pkg_parent)
-    for d in glob.glob(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "*", "bin")):
+    # The venv's site-packages, also when a profiler runs the base interpreter with it on PYTHONPATH.
+    roots = {sysconfig.get_paths()["purelib"]} | {p for p in sys.path if p.endswith("site-packages")}
+    for d in sorted({d for r in roots for d in glob.glob(os.path.join(r, "nvidia", "*", "bin"))}):
         os.add_dll_directory(d)
         os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 
