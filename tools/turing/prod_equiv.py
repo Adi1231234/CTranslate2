@@ -2,7 +2,9 @@
 batching, encoder/decoder pipelining, segment splitting and temperature-ladder fallback as the real
 run) on every sample clip, and print a hash of every output row. A build may replace the stock wheel
 only if this hash equals the stock wheel's.
-usage: prod_equiv.py <sample_dir> <engine_dir> <mode, e.g. pipe8> [ctranslate2 package parent dir]"""
+usage: prod_equiv.py <sample_dir> <engine_dir> <mode, e.g. pipe8> [ctranslate2 package parent dir]
+PROFILE_RANGE=1: run once to warm up, then mark the measured run with cuProfilerStart/Stop, so
+`nsys profile --capture-range=cudaProfilerApi` records only the steady state."""
 import os, sys, json, time, hashlib
 from concurrent.futures import Future, ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,9 +26,18 @@ workers = 1 + int(MODE.startswith("pipe")) + 1                  # as transcribe_
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers)
 pool = ThreadPoolExecutor(max_workers=1)
+run = lambda: [r.result() if isinstance(r, Future) else r for r in transcribe_unit(model, clips, MODE, pool)]
+profile = os.environ.get("PROFILE_RANGE") == "1"   # nsys --capture-range=cudaProfilerApi: warm run only
+if profile:
+    import ctypes
+    cuda = ctypes.WinDLL("nvcuda.dll") if os.name == "nt" else ctypes.CDLL("libcuda.so.1")
+    run()
+    cuda.cuProfilerStart()
 t = time.time()
-rows = [r.result() if isinstance(r, Future) else r for r in transcribe_unit(model, clips, MODE, pool)]
+rows = run()
 T = time.time() - t
+if profile:
+    cuda.cuProfilerStop()
 audio = sum(len(w) for _, w in clips) / 16000
 print(json.dumps({"ctranslate2": ctranslate2.__file__, "mode": MODE, "clips": len(rows),
                   "fallback": sum(r.get("path") == "fallback" for r in rows),
