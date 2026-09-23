@@ -13,8 +13,8 @@ def init(pkg_parent=None):
         os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 
 
-def load(sample, batches=4, num_workers=1):
-    """Model, `batches` feature batches of 8 real clips (sorted by length, fixed selection), and a
+def load(sample, batches=4, num_workers=1, first=60):
+    """Model, `batches` feature batches of 8 real clips (sorted by length, from index `first`), and a
     beam-5 generate with the production decode parameters."""
     import numpy as np
     from faster_whisper import WhisperModel
@@ -30,7 +30,7 @@ def load(sample, batches=4, num_workers=1):
     prompt = model.get_prompt(tk, [], without_timestamps=False)
     ws = sorted([np.load(os.path.join(sample, x["key"] + ".npy")) for x in meta[:150]], key=len)
     feats = [np.stack([pad_or_trim(model.feature_extractor(w)[..., :-1]) for w in ws[i:i + 8]])
-             for i in range(60, 60 + 8 * batches, 8)]
+             for i in range(first, first + 8 * batches, 8)]
     gen = lambda e: model.model.generate(e, [prompt] * e.shape[0], beam_size=5, patience=1,
                                          length_penalty=1, max_length=448, suppress_blank=True,
                                          suppress_tokens=[-1], return_scores=True,
