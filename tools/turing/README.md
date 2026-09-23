@@ -21,3 +21,9 @@ whose destructor joins threads during thread exit, under the loader lock, so mod
 
 Build: `tools/turing/build_windows.ps1` (CUDA 12.8, VS C++ tools, CMake, Ninja).
 Measure: `python tools/turing/bench_whisper.py <sample_dir> <build_root>\pyct2`.
+
+Results on the RTX 2080 (bench_whisper.py, 4 x 8 clips, large-v3, beam 5):
+- stock 4.8.2: E 5.03-5.13 s, D 5.67-5.93 s.
+- this branch: E 3.94-4.03 s (-21%), D unchanged; `enc_sha` (every encoder output byte),
+  `full_sha` (tokens, full-precision scores, no-speech probs) and `tokens_sha` identical to stock.
+- production (crowd-transcribe-v5, batch 8 + fallback): 11x -> 13.1x realtime.
