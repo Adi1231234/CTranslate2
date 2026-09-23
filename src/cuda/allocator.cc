@@ -1,5 +1,8 @@
 #include "ctranslate2/allocator.h"
 
+#include <atomic>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 
@@ -17,6 +20,11 @@
 #define cudaMallocAsync hipMallocAsync
 #define cudaDeviceGetAttribute hipDeviceGetAttribute
 #define cudaDevAttrMemoryPoolsSupported hipDeviceAttributeMemoryPoolsSupported
+#define cudaMemPool_t hipMemPool_t
+#define cudaDeviceGetDefaultMemPool hipDeviceGetDefaultMemPool
+#define cudaMemPoolSetAttribute hipMemPoolSetAttribute
+#define cudaMemPoolAttrReleaseThreshold hipMemPoolAttrReleaseThreshold
+#define cudaMemPoolTrimTo hipMemPoolTrimTo
 // Async allocactor has crashing issues on Windows
 // https://github.com/OpenNMT/CTranslate2/issues/1072#issuecomment-3418768140
 #define CT2_USE_ASYNC_ALLOC !_WIN32
@@ -76,8 +84,20 @@ namespace ctranslate2 {
       std::unique_ptr<cub::CachingDeviceAllocator> _allocator;
     };
 
+    // A memory pool with the CUDA default release threshold (0) returns its unused memory to the OS at
+    // every stream, event or device synchronization, and the next allocations map it again, stalling the
+    // GPU several times per decoding step. The pools keep it instead, as PyTorch's cudaMallocAsync backend
+    // does: the driver still releases it for other allocations of the process, and clear_cache() trims it.
+    // https://developer.nvidia.com/blog/using-cuda-stream-ordered-memory-allocator-part-1/
     class CudaAsyncAllocator : public Allocator {
     public:
+      CudaAsyncAllocator()
+        : _num_devices(get_gpu_count())
+        , _pools(std::make_unique<DevicePool[]>(_num_devices))
+        , _release_threshold(release_threshold_from_env())
+      {
+      }
+
       void* allocate(size_t size, int device_index) override {
 #if CT2_USE_ASYNC_ALLOC
         int prev_device_index = -1;
@@ -85,6 +105,10 @@ namespace ctranslate2 {
           CUDA_CHECK(cudaGetDevice(&prev_device_index));
           CUDA_CHECK(cudaSetDevice(device_index));
         }
+        int device = device_index;
+        if (device < 0)
+          CUDA_CHECK(cudaGetDevice(&device));
+        configure_pool(device);
 
         void* ptr = nullptr;
         CUDA_CHECK(cudaMallocAsync(&ptr, size, get_cuda_stream()));
@@ -120,6 +144,46 @@ namespace ctranslate2 {
         throw std::runtime_error("The asynchronous CUDA allocator requires CUDA >= 11.2");
 #endif
       }
+
+      void clear_cache() override {
+#if CT2_USE_ASYNC_ALLOC
+        for (int device = 0; device < _num_devices; ++device) {
+          const DevicePool& pool = _pools[device];
+          if (pool.configured.load(std::memory_order_acquire))
+            CUDA_CHECK(cudaMemPoolTrimTo(pool.handle, 0));
+        }
+#endif
+      }
+
+    private:
+      struct DevicePool {
+        std::once_flag once;
+        std::atomic<bool> configured{false};
+#if CT2_USE_ASYNC_ALLOC
+        cudaMemPool_t handle = nullptr;
+#endif
+      };
+
+      static uint64_t release_threshold_from_env() {
+        const std::string value = read_string_from_env("CT2_CUDA_ASYNC_ALLOCATOR_RELEASE_THRESHOLD");
+        return value.empty() ? std::numeric_limits<uint64_t>::max() : std::stoull(value);
+      }
+
+#if CT2_USE_ASYNC_ALLOC
+      void configure_pool(int device) {
+        DevicePool& pool = _pools[device];
+        std::call_once(pool.once, [this, device, &pool]() {
+          CUDA_CHECK(cudaDeviceGetDefaultMemPool(&pool.handle, device));
+          uint64_t threshold = _release_threshold;
+          CUDA_CHECK(cudaMemPoolSetAttribute(pool.handle, cudaMemPoolAttrReleaseThreshold, &threshold));
+          pool.configured.store(true, std::memory_order_release);
+        });
+      }
+#endif
+
+      const int _num_devices;
+      const std::unique_ptr<DevicePool[]> _pools;
+      const uint64_t _release_threshold;
     };
 
     static bool support_cuda_malloc_async() {

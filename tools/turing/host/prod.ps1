@@ -21,7 +21,7 @@ function Resume-Production {
     '-ExecutionPolicy', 'Bypass', '-File', "$W\supervise.ps1", '-root', $W, '-dir', 'back', '-mode', 'pipe8', '-pythonpath', "$R\pyct2"
   Log 'resumed production'
 }
-# Runs python with $argv; returns its last JSON line (or the tail of stdout), killing it after $limit s.
+# Runs python with $argv, killing it after $limit s; logs and returns its last JSON line (or the tail of stdout).
 function Invoke-Timed($label, $argv, $limit) {
   $p = Start-Process -FilePath $Py -ArgumentList $argv -PassThru -WindowStyle Hidden -RedirectStandardOutput "$R\run.out" -RedirectStandardError "$R\run.err"
   $null = $p.Handle
@@ -31,4 +31,5 @@ function Invoke-Timed($label, $argv, $limit) {
   if (-not $line) { $line = (Get-Content "$R\run.out" -Tail 2 -ErrorAction SilentlyContinue) -join ' | ' }
   $err = if ($done -and $p.ExitCode -ne 0) { ' ERR: ' + ((Get-Content "$R\run.err" -Tail 3 -ErrorAction SilentlyContinue) -join ' | ') } else { '' }
   Log ("{0,-10} {1} exit={2}{3}" -f $label, $line, $(if ($done) { $p.ExitCode } else { 'KILLED' }), $err)
+  $line
 }

@@ -20,6 +20,10 @@ Allocating memory on the GPU with `cudaMalloc` is costly and is best avoided in 
 * `cuda_malloc_async` (default for CUDA >= 11.2)<br/>Uses the [asynchronous allocator with memory pools](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__MEMORY__POOLS.html) introduced in CUDA 11.2.
 * `cub_caching` (default for CUDA < 11.2)<br/>Uses the caching allocator from the [CUB project](https://github.com/NVIDIA/cub).
 
+## `CT2_CUDA_ASYNC_ALLOCATOR_RELEASE_THRESHOLD`
+
+The release threshold, in bytes, of the memory pool used by the `cuda_malloc_async` allocator: the pool returns its unused memory to the OS at a stream, event or device synchronization only while it holds more than this. By default CTranslate2 keeps all of it in the pool (the maximum value), since returning it at every synchronization and mapping it again on the next allocations stalls the GPU. The driver still releases this memory when another allocation of the process needs it, and unloading a model trims the pool. Set `0` to restore the CUDA default when the GPU is shared with other processes.
+
 ## `CT2_CUDA_ALLOW_BF16`
 
 Allow using BF16 computation on GPU even if the device does not have efficient BF16 support.
