@@ -32,13 +32,19 @@ gen = lambda e: model.model.generate(e, [prompt] * e.shape[0], beam_size=5, pati
                                      return_scores=True, return_no_speech_prob=True)
 gen(model.encode(feats[0]))                                      # warmup
 t = time.time(); encs = [model.encode(f) for f in feats]; E = time.time() - t
-digest = hashlib.sha256()
+digest, full = hashlib.sha256(), hashlib.sha256()
 t = time.time()
 for e in encs:
     for r in gen(e):
         digest.update(json.dumps([r.sequences_ids[0], round(r.scores[0], 4)]).encode())
+        full.update(repr((r.sequences_ids, r.scores, r.no_speech_prob)).encode())   # every bit of it
 D = time.time() - t
+enc = hashlib.sha256()                  # bytes of every encoder output: any 1-ulp change shows here
+from faster_whisper.transcribe import get_ctranslate2_storage
+for f in feats:
+    enc.update(np.asarray(model.model.encode(get_ctranslate2_storage(f), to_cpu=True)).tobytes())
 print(json.dumps({"ctranslate2": ctranslate2.__file__, "legacy_softmax": os.environ.get("CT2_CUDA_LEGACY_SOFTMAX", "0"),
-                  "E": round(E, 2), "D": round(D, 2), "tokens_sha": digest.hexdigest()[:16]}), flush=True)
+                  "E": round(E, 2), "D": round(D, 2), "tokens_sha": digest.hexdigest()[:16],
+                  "full_sha": full.hexdigest()[:16], "enc_sha": enc.hexdigest()[:16]}), flush=True)
 del model, encs                                 # release the model's worker threads while Python is alive
 import gc; gc.collect()
