@@ -3,7 +3,7 @@ batching, encoder/decoder pipelining, segment splitting and temperature-ladder f
 run) on every sample clip, and print a hash of every output row. A build may replace the stock wheel
 only if this hash equals the stock wheel's.
 usage: prod_equiv.py <sample_dir> <engine_dir> <mode, e.g. pipe8> [ctranslate2 package parent dir]
-PROFILE_RANGE=1: run once to warm up, then mark the measured run with cuProfilerStart/Stop, so
+N_CLIPS=<n>: only the first n sample clips. PROFILE_RANGE=1: run once to warm up, then mark the measured run with cuProfilerStart/Stop, so
 `nsys profile --capture-range=cudaProfilerApi` records only the steady state."""
 import os, sys, json, time, hashlib
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -21,7 +21,8 @@ meta, seen = [], set()
 for m in json.load(open(os.path.join(SAMPLE, "meta.json"), encoding="utf-8")):
     if m["key"] not in seen:
         seen.add(m["key"]); meta.append(m)
-clips = [(m["key"], np.load(os.path.join(SAMPLE, m["key"] + ".npy"))) for m in meta[:150]]  # as common.load
+n_clips = int(os.environ.get("N_CLIPS", "150"))       # fewer clips keep a sampled profile small
+clips = [(m["key"], np.load(os.path.join(SAMPLE, m["key"] + ".npy"))) for m in meta[:150][:n_clips]]
 workers = 1 + int(MODE.startswith("pipe")) + 1                  # as transcribe_run.py
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers)
