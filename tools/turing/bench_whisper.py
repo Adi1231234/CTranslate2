@@ -6,8 +6,11 @@ for a change to count as output-preserving."""
 import os, sys, json, time, hashlib, glob, sysconfig
 if len(sys.argv) > 2:
     sys.path.insert(0, sys.argv[2])
+# cuBLAS/cudart from the nvidia-* wheels. CTranslate2 loads cuBLAS with a plain LoadLibrary, which
+# searches PATH and ignores os.add_dll_directory, so both are needed.
 for d in glob.glob(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "*", "bin")):
-    os.add_dll_directory(d)                                   # cuBLAS/cudart from the nvidia-* wheels
+    os.add_dll_directory(d)
+    os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 import numpy as np
 import ctranslate2
 from faster_whisper import WhisperModel
