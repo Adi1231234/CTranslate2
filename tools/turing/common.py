@@ -15,6 +15,26 @@ def init(pkg_parent=None):
         os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 
 
+RELEASE_THRESHOLD, RESERVED_HIGH, USED_HIGH = 4, 6, 8     # CUmemPool_attribute
+
+
+def mempool(device=0):
+    """attr(a) reads and attr(a, v) sets an attribute of the device's default CUDA memory pool (the
+    pool CTranslate2's cuda_malloc_async allocator draws from), through the driver API."""
+    import ctypes
+    cu = ctypes.WinDLL("nvcuda.dll") if os.name == "nt" else ctypes.CDLL("libcuda.so.1")
+    dev, pool = ctypes.c_int(), ctypes.c_void_p()
+    assert cu.cuInit(0) == 0 and cu.cuDeviceGet(ctypes.byref(dev), device) == 0
+    assert cu.cuDeviceGetDefaultMemPool(ctypes.byref(pool), dev) == 0
+
+    def attr(a, value=None):
+        v = ctypes.c_uint64(0 if value is None else value)
+        f = cu.cuMemPoolGetAttribute if value is None else cu.cuMemPoolSetAttribute
+        assert f(pool, a, ctypes.byref(v)) == 0
+        return v.value
+    return attr
+
+
 def load(sample, batches=4, num_workers=1, first=60):
     """Model, `batches` feature batches of 8 real clips (sorted by length, from index `first`), and a
     beam-5 generate with the production decode parameters."""
