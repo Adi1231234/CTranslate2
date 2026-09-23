@@ -19,14 +19,23 @@ def show(rs):
 ln = [i for i, r in enumerate(enc) if "LayerNorm" in r[6]]
 print(f"== encoder: {len(enc)} kernels, layer 1 ({ln[2]}..{ln[4]})")
 show(enc[ln[2]:ln[4]])
-# Decoder: the vocabulary log-softmax (the only row wider than 2048) closes every step.
-ends = [i for i, r in enumerate(dec) if "cunn_SoftMaxForward" in r[6]]
-a, b = ends[step - 1] + 1, ends[step] + 1
+# Decoder: every step starts with the token embedding gather, the first kernel after the last
+# vocabulary-wide softmax (the only rows wider than 2048) of the previous step.
+vocab = [i for i, r in enumerate(dec) if "cunn_SoftMaxForward" in r[6]]
+starts = [vocab[i] + 1 for i in range(len(vocab) - 1) if vocab[i + 1] - vocab[i] > 300]
+a, b = starts[step - 1], starts[step]
 print(f"== decode step {step}: kernels {b - a}, {sum(float(r[2]) for r in dec[a:b]) / 1e3:.2f} ms GPU")
 tot, cnt = collections.Counter(), collections.Counter()
 for r in dec[a:b]:
     tot[r[6][:90]] += float(r[2]); cnt[r[6][:90]] += 1
 for n, t in tot.most_common(16):
     print(f"   {t:8.1f}us x{cnt[n]:4d}  {n}")
-print(f"== decode step {step}: first {count} kernels")
-show(dec[a:a + count])
+print(f"== decode step {step}: run-length launch sequence (first {count} runs)")
+runs = []
+for r in dec[a:b]:
+    if runs and runs[-1][0] == (r[6], r[3], r[4]):
+        runs[-1][1] += 1; runs[-1][2] += float(r[2])
+    else:
+        runs.append([(r[6], r[3], r[4]), 1, float(r[2])])
+for (n, g, bl), k, t in runs[:count]:
+    print(f"{k:4d}x {t:8.1f}us  g={g:<12} b={bl:<10} {n[:100]}")
