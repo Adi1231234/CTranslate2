@@ -19,6 +19,9 @@ namespace ctranslate2 {
     static void strided_fill(T* x, T a, dim_t inc_x, dim_t size);
     template <typename T>
     static void indexed_fill(T* x, T a, const int32_t* indices, dim_t num_indices);
+    // x[i] = a for every i in the [ranges[2k], ranges[2k + 1]) ranges, k < num_ranges.
+    template <typename T>
+    static void ranged_fill(T* x, T a, const int32_t* ranges, dim_t num_ranges);
 
     template <typename T>
     static void copy(const T* x, T* y, dim_t size);

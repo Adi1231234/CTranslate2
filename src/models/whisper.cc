@@ -778,12 +778,10 @@ namespace ctranslate2 {
 
           if (step == sample_begin && step == 0) {
             // Suppress non timestamps at the beginning.
-            for (size_t i = 0; i < _timestamp_begin_id; ++i)
-              disable_tokens.add(batch_id, i);
+            disable_tokens.add_range(batch_id, 0, _timestamp_begin_id);
 
             // Apply max_initial_timestamp option.
-            for (size_t i = _max_initial_timestamp_id + 1; i <= _timestamp_end_id; ++i)
-              disable_tokens.add(batch_id, i);
+            disable_tokens.add_range(batch_id, _max_initial_timestamp_id + 1, _timestamp_end_id + 1);
 
           } else if (step > sample_begin) {
             // Timestamps have to appear in pairs, except directly before EOT.
@@ -795,13 +793,10 @@ namespace ctranslate2 {
                                                 : last_token);
 
               if (penultimate_token >= _timestamp_begin_id) {  // has to be non-timestamp
-                for (size_t i = _timestamp_begin_id; i <= _timestamp_end_id; ++i)
-                  disable_tokens.add(batch_id, i);
+                disable_tokens.add_range(batch_id, _timestamp_begin_id, _timestamp_end_id + 1);
               } else {  // cannot be normal text tokens
-                for (size_t i = 0; i < _eot_id; ++i)
-                  disable_tokens.add(batch_id, i);
-                for (size_t i = _timestamp_begin_id; i < last_token; ++i)
-                  disable_tokens.add(batch_id, i);
+                disable_tokens.add_range(batch_id, 0, _eot_id);
+                disable_tokens.add_range(batch_id, _timestamp_begin_id, last_token);
                 check_timestamps_prob_for_batch.push_back(batch_id);
               }
             } else {
@@ -812,8 +807,7 @@ namespace ctranslate2 {
                 const size_t token = sequences.at<int32_t>({batch_id, t});
 
                 if (token >= _timestamp_begin_id) {
-                  for (size_t i = _timestamp_begin_id; i <= token; ++i)
-                    disable_tokens.add(batch_id, i);
+                  disable_tokens.add_range(batch_id, _timestamp_begin_id, token + 1);
                   break;
                 }
               }
@@ -835,10 +829,8 @@ namespace ctranslate2 {
               "ApplyTimestampRules", log_probs.device(), log_probs.dtype(),
               (sample_timestamp = should_sample_timestamp<D, T>(log_probs, batch_id)));
 
-            if (sample_timestamp) {
-              for (size_t i = 0; i < _timestamp_begin_id; ++i)
-                disable_tokens.add(batch_id, i);
-            }
+            if (sample_timestamp)
+              disable_tokens.add_range(batch_id, 0, _timestamp_begin_id);
           }
         }
       }

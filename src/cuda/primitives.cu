@@ -70,6 +70,22 @@ namespace ctranslate2 {
     THRUST_CALL(thrust::fill, it, it + num_indices, cuda::device_type<T>(a));
   }
 
+  template <typename T>
+  __global__ void ranged_fill_kernel(T* x, T a, const int32_t* ranges) {
+    const int32_t end = ranges[2 * blockIdx.x + 1];
+    for (int32_t i = ranges[2 * blockIdx.x] + threadIdx.x; i < end; i += blockDim.x)
+      x[i] = a;
+  }
+
+  template<>
+  template <typename T>
+  void primitives<Device::CUDA>::ranged_fill(T* x, T a, const int32_t* ranges, dim_t num_ranges) {
+    if (num_ranges == 0)
+      return;
+    ranged_fill_kernel<<<num_ranges, 256, 0, cuda::get_cuda_stream()>>>(
+      cuda::device_cast(x), cuda::device_type<T>(a), ranges);
+  }
+
   template<>
   template <typename T>
   void primitives<Device::CUDA>::copy(const T* x, T* y, dim_t size) {
@@ -780,6 +796,8 @@ namespace ctranslate2 {
   primitives<Device::CUDA>::strided_fill(T* x, T a, dim_t inc_x, dim_t size); \
   template void                                                         \
   primitives<Device::CUDA>::indexed_fill(T*, T, const int32_t*, dim_t); \
+  template void                                                         \
+  primitives<Device::CUDA>::ranged_fill(T*, T, const int32_t*, dim_t);  \
   template void                                                         \
   primitives<Device::CUDA>::copy<T>(const T* x, T* y, dim_t size);      \
   template T                                                            \

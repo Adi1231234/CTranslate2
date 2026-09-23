@@ -59,6 +59,21 @@ namespace ctranslate2 {
         add(batch_id, token_id);
     }
 
+    // Disable tokens [begin, end) of a batch: the same logits as add() for each token, without
+    // listing (and uploading) every index of ranges that can span the whole vocabulary.
+    void add_range(dim_t batch_id, dim_t begin, dim_t end) {
+      if (begin >= end)
+        return;
+      const auto flat_begin = batch_id * _vocabulary_size + begin;
+      const auto flat_end = batch_id * _vocabulary_size + end;
+      if (_logits_data) {
+        std::fill(_logits_data + flat_begin, _logits_data + flat_end, _disable_value);
+      } else {
+        _flat_ranges.push_back(flat_begin);
+        _flat_ranges.push_back(flat_end);
+      }
+    }
+
     void apply();
 
   private:
@@ -68,6 +83,7 @@ namespace ctranslate2 {
     const dim_t _batch_size;
     const dim_t _vocabulary_size;
     std::vector<int32_t> _flat_indices;
+    std::vector<int32_t> _flat_ranges;  // [begin, end) pairs of flat indices
   };
 
   // Base class for processing the output logits.

@@ -18,20 +18,30 @@ namespace ctranslate2 {
 
   void DisableTokens::apply() {
     const dim_t num_indices = _flat_indices.size();
-    if (num_indices == 0)
-      return;
-
+    const dim_t num_ranges = _flat_ranges.size() / 2;
     const Device device = _logits.device();
     const DataType dtype = _logits.dtype();
-    const StorageView flat_indices({num_indices}, _flat_indices, device);
 
-    DEVICE_AND_TYPE_DISPATCH(device, dtype,
-                             primitives<D>::indexed_fill(_logits.data<T>(),
-                                                         static_cast<T>(_disable_value),
-                                                         flat_indices.data<int32_t>(),
-                                                         num_indices));
-
-    _flat_indices.clear();
+    // Every disabled position gets the same value, so filling ranges and single indices in any
+    // order, overlapping or not, leaves the same logits.
+    if (num_indices > 0) {
+      const StorageView flat_indices({num_indices}, _flat_indices, device);
+      DEVICE_AND_TYPE_DISPATCH(device, dtype,
+                               primitives<D>::indexed_fill(_logits.data<T>(),
+                                                           static_cast<T>(_disable_value),
+                                                           flat_indices.data<int32_t>(),
+                                                           num_indices));
+      _flat_indices.clear();
+    }
+    if (num_ranges > 0) {
+      const StorageView flat_ranges({num_ranges * 2}, _flat_ranges, device);
+      DEVICE_AND_TYPE_DISPATCH(device, dtype,
+                               primitives<D>::ranged_fill(_logits.data<T>(),
+                                                          static_cast<T>(_disable_value),
+                                                          flat_ranges.data<int32_t>(),
+                                                          num_ranges));
+      _flat_ranges.clear();
+    }
   }
 
 

@@ -50,6 +50,21 @@ frames = collections.defaultdict(list)
 for sid, sym, mod, depth in db.execute("SELECT c.id, c.symbol, c.module, c.stackDepth FROM SAMPLING_CALLCHAINS c "
                                        "JOIN sel USING (id) ORDER BY c.id, c.stackDepth"):
     frames[sid].append((S.get(mod, "?").split("\\")[-1], S.get(sym, "?")))
+calls = collections.defaultdict(list)             # the CUDA API call each sampled thread was inside
+for s, e, tid, nid in db.execute("SELECT start, end, globalTid, nameId FROM CUPTI_ACTIVITY_KIND_RUNTIME "
+                                 "WHERE end >= ? AND start <= ?", (t0, t1)):
+    calls[tid].append((s, e, S.get(nid, "?")))
+for v in calls.values():
+    v.sort()
+sample_time = dict(db.execute("SELECT c.id, c.start FROM COMPOSITE_EVENTS c JOIN sel USING (id)"))
+api_of = collections.Counter()
+for sid, tid, _ in inside:
+    v, t = calls.get(tid, []), sample_time[sid]
+    i = bisect.bisect_right(v, (t, float("inf"), "")) - 1
+    api_of[v[i][2] if i >= 0 and v[i][1] >= t else "(no CUDA call: host code)"] += 1
+print("CUDA API call the sampled thread was inside (samples during GPU idle):")
+for k, n in api_of.most_common(10):
+    print(f"  {n:7d}  {100 * n / max(1, len(inside)):5.1f}%  {k}")
 leaf, ct2, py = collections.Counter(), collections.Counter(), collections.Counter()
 for sid, stack in frames.items():
     leaf[f"{stack[0][0]}!{stack[0][1][:70]}"] += 1

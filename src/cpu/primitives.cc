@@ -64,6 +64,13 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
+  void primitives<Device::CPU>::ranged_fill(T* x, T a, const int32_t* ranges, dim_t num_ranges) {
+    for (dim_t r = 0; r < num_ranges; ++r)
+      std::fill(x + ranges[2 * r], x + ranges[2 * r + 1], a);
+  }
+
+  template<>
+  template <typename T>
   void primitives<Device::CPU>::copy(const T* x, T* y, dim_t size) {
     std::copy(x, x + size, y);
   }
@@ -1166,6 +1173,8 @@ namespace ctranslate2 {
   primitives<Device::CPU>::strided_fill(T* x, T a, dim_t inc_x, dim_t size); \
   template void                                                         \
   primitives<Device::CPU>::indexed_fill(T*, T, const int32_t*, dim_t);  \
+  template void                                                         \
+  primitives<Device::CPU>::ranged_fill(T*, T, const int32_t*, dim_t);   \
   template void                                                         \
   primitives<Device::CPU>::copy(const T* x, T* y, dim_t size);          \
   template T                                                            \
