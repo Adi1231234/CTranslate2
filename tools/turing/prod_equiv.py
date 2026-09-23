@@ -19,7 +19,7 @@ meta, seen = [], set()
 for m in json.load(open(os.path.join(SAMPLE, "meta.json"), encoding="utf-8")):
     if m["key"] not in seen:
         seen.add(m["key"]); meta.append(m)
-clips = [(m["key"], np.load(os.path.join(SAMPLE, m["key"] + ".npy"))) for m in meta]
+clips = [(m["key"], np.load(os.path.join(SAMPLE, m["key"] + ".npy"))) for m in meta[:150]]  # as common.load
 workers = 1 + int(MODE.startswith("pipe")) + 1                  # as transcribe_run.py
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers)
