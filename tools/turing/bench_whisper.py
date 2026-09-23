@@ -3,9 +3,11 @@ usage: bench_whisper.py <sample_dir> [ctranslate2 package parent dir]
 Encodes and beam-5 decodes 4 batches of 8 real clips (fixed selection) and prints encoder time E,
 decoder time D and a hash of every decoded token + score: the hash must equal the stock wheel's
 for a change to count as output-preserving."""
-import os, sys, json, time, hashlib
+import os, sys, json, time, hashlib, glob, sysconfig
 if len(sys.argv) > 2:
     sys.path.insert(0, sys.argv[2])
+for d in glob.glob(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "*", "bin")):
+    os.add_dll_directory(d)                                   # cuBLAS/cudart from the nvidia-* wheels
 import numpy as np
 import ctranslate2
 from faster_whisper import WhisperModel
