@@ -239,17 +239,21 @@ namespace at {
     // Bit-exact replacement of cunn_SoftMaxForward for short rows: one warp per row.
     //
     // cunn_SoftMaxForward runs B = get_block_size(cols) threads per row (1024 for the 1500-wide
-    // Whisper attention rows, so only one row fits on an SM at a time). Its arithmetic is fixed:
-    // thread v folds elements v, v+B, v+2B.. in increasing order (ilp_reduce), block_reduce then
-    // folds threads 32L..32L+31 in order for each L < B/32, and finally folds those B/32 values
-    // in order. For cols <= 2048, B >= cols / 2, so a thread holds at most two elements, v and
-    // v+B. Here lane L keeps the elements of its 32 virtual threads (32L+i and 32L+i+B) in
-    // registers and computes exactly those folds in the same order; the B/32 lane results are
-    // folded in order through shuffles. Same float operations in the same order on the same
-    // values, so the output is identical. exp(x - max) is computed once and reused by the
-    // epilogue: it is the same expression on the same operands as the legacy epilogue's.
-    constexpr unsigned warp_softmax_rows_per_block = 8;
+    // Whisper attention rows, so only one row fits on an SM at a time). Its sum is order-dependent
+    // and fixed: thread v adds exp(x[v] - max), then exp(x[v+B] - max) (for cols <= 2048, B >= cols
+    // / 2, so a thread has at most these two), block_reduce adds threads 32L..32L+31 in order for
+    // each L < B/32, then those B/32 partial sums in order. Here the row is loaded once, coalesced,
+    // into shared memory; lane L adds its 32 virtual threads in exactly that order and the B/32
+    // lane sums are added in order through shuffles. The max is exact whatever the order (no
+    // rounding), so it is reduced straight from the coalesced load. exp(x - max) is computed once,
+    // kept in shared memory and reused by the epilogue: the same expression on the same operands
+    // as the legacy epilogue's. Same float operations on the same values: identical output.
+    constexpr unsigned warp_softmax_rows_per_block = 4;
     constexpr unsigned warp_softmax_max_cols = 2048;
+
+    __host__ __device__ __forceinline__ unsigned warp_softmax_slot(unsigned j) {
+      return j + j / 32;  // one pad float per 32: lane L reading 32L + i hits bank (L + i) % 32
+    }
 
     template <typename scalar_t, bool LogSoftmax>
     __global__ void __launch_bounds__(warp_softmax_rows_per_block * C10_WARP_SIZE)
@@ -260,11 +264,13 @@ namespace at {
                          const unsigned legacy_block,
                          const int32_t* lengths)
     {
+      extern __shared__ float row_smem[];
       const unsigned warp = threadIdx.x / C10_WARP_SIZE;
       const unsigned lane = threadIdx.x % C10_WARP_SIZE;
       const unsigned row = blockIdx.x * warp_softmax_rows_per_block + warp;
       if (row >= rows)
         return;
+      float* buf = row_smem + warp * (warp_softmax_slot(classes) + 1);
       input += size_t(row) * classes;
       output += size_t(row) * classes;
 
@@ -275,66 +281,50 @@ namespace at {
           output[i] = 0.f;
       }
 
+      float lane_max = -max_float;
+      for (unsigned j = lane; j < size; j += C10_WARP_SIZE) {
+        const float v = static_cast<float>(input[j]);
+        buf[warp_softmax_slot(j)] = v;
+        lane_max = MaxFloat<float, float>()(lane_max, v);
+      }
+      #pragma unroll
+      for (unsigned offset = C10_WARP_SIZE / 2; offset > 0; offset /= 2)
+        lane_max = Max<float>()(lane_max, __shfl_xor_sync(0xffffffff, lane_max, offset));
+      const float max_k = lane_max;
+      __syncwarp();
+
       const unsigned groups = legacy_block / C10_WARP_SIZE;
-      const unsigned base = lane * C10_WARP_SIZE;
-      const bool owner = lane < groups;
-      float lo[C10_WARP_SIZE], hi[C10_WARP_SIZE];      // elements v = base + i and v + B
-      #pragma unroll
-      for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {
-        const unsigned j = base + i;
-        lo[i] = owner && j < size ? static_cast<float>(input[j]) : 0.f;
-        hi[i] = owner && j + legacy_block < size ? static_cast<float>(input[j + legacy_block]) : 0.f;
-      }
-
-      float warp_max = -max_float;
-      #pragma unroll
-      for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {
-        const unsigned j = base + i;
-        float thread_max = -max_float;
-        if (j < size)
-          thread_max = MaxFloat<float, float>()(thread_max, lo[i]);
-        if (j + legacy_block < size)
-          thread_max = MaxFloat<float, float>()(thread_max, hi[i]);
-        warp_max = Max<float>()(warp_max, thread_max);
-      }
-      float max_k = -max_float;
-      for (unsigned g = 0; g < groups; ++g)
-        max_k = Max<float>()(max_k, __shfl_sync(0xffffffff, warp_max, g));
-
       float warp_sum = 0.f;
-      #pragma unroll
-      for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {
-        const unsigned j = base + i;
-        float thread_sum = 0.f;
-        if (j < size) {
-          const float e = std::exp(lo[i] - max_k);
-          if (!LogSoftmax)
-            lo[i] = e;
-          thread_sum = thread_sum + e;
+      if (lane < groups) {
+        const unsigned base = lane * C10_WARP_SIZE;
+        #pragma unroll
+        for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {
+          const unsigned j = base + i;
+          float thread_sum = 0.f;
+          if (j < size) {
+            const float e = std::exp(buf[warp_softmax_slot(j)] - max_k);
+            if (!LogSoftmax)
+              buf[warp_softmax_slot(j)] = e;  // element j belongs to this lane only
+            thread_sum = thread_sum + e;
+          }
+          if (j + legacy_block < size) {
+            const float e = std::exp(buf[warp_softmax_slot(j + legacy_block)] - max_k);
+            if (!LogSoftmax)
+              buf[warp_softmax_slot(j + legacy_block)] = e;
+            thread_sum = thread_sum + e;
+          }
+          warp_sum = Add<float>()(warp_sum, thread_sum);
         }
-        if (j + legacy_block < size) {
-          const float e = std::exp(hi[i] - max_k);
-          if (!LogSoftmax)
-            hi[i] = e;
-          thread_sum = thread_sum + e;
-        }
-        warp_sum = Add<float>()(warp_sum, thread_sum);
       }
       float sum = 0.f;
       for (unsigned g = 0; g < groups; ++g)
         sum = Add<float>()(sum, __shfl_sync(0xffffffff, warp_sum, g));
+      __syncwarp();
 
-      if (!owner)
-        return;
       const float logsum = LogSoftmax ? std::log(sum) : 0.f;
-      #pragma unroll
-      for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {
-        const unsigned j = base + i;
-        if (j < size)
-          output[j] = static_cast<scalar_t>(LogSoftmax ? lo[i] - max_k - logsum : lo[i] / sum);
-        if (j + legacy_block < size)
-          output[j + legacy_block] = static_cast<scalar_t>(LogSoftmax ? hi[i] - max_k - logsum
-                                                                      : hi[i] / sum);
+      for (unsigned j = lane; j < size; j += C10_WARP_SIZE) {
+        const float v = buf[warp_softmax_slot(j)];
+        output[j] = static_cast<scalar_t>(LogSoftmax ? v - max_k - logsum : v / sum);
       }
     }
 
@@ -364,8 +354,9 @@ namespace ctranslate2 {
                                           at::native::LogSoftMaxForwardEpilogue<T, float, T>>::value;
         const unsigned per_block = at::native::warp_softmax_rows_per_block;
         const dim3 grid((rows + per_block - 1) / per_block);
+        const size_t smem = per_block * (at::native::warp_softmax_slot(cols) + 1) * sizeof (float);
         at::native::warp_softmax_forward<T, is_log>
-          <<<grid, per_block * C10_WARP_SIZE, 0, stream>>>(y, x, rows, cols, block.x, lengths);
+          <<<grid, per_block * C10_WARP_SIZE, smem, stream>>>(y, x, rows, cols, block.x, lengths);
         return;
       }
       const dim3 grid(rows);
