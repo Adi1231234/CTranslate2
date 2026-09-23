@@ -19,7 +19,7 @@ namespace ctranslate2 {
     constexpr int attention_scores_k64_keys_per_block = 128;
     constexpr int attention_scores_k64_max_queries = 8;
 
-    __global__ void __launch_bounds__(attention_scores_k64_keys_per_block)
+    static __global__ void __launch_bounds__(attention_scores_k64_keys_per_block)
     attention_scores_k64_kernel(const __half* __restrict__ q,
                                 const __half* __restrict__ k,
                                 __half* __restrict__ c,
@@ -67,6 +67,14 @@ namespace ctranslate2 {
         }
         cb[static_cast<size_t>(j) * n] = __float2half_rn(alpha * sum);
       }
+    }
+
+    // The shapes tools/turing/kernels/qk_check.cu verified bit for bit against cuBLAS (for batch 1
+    // cuBLAS picks another kernel, with another order, once m >= 4).
+    inline bool attention_scores_k64_verified_shape(long long batch, long long m, long long n,
+                                                    long long k) {
+      return k == 64 && n == 1500 && m >= 1 && m <= attention_scores_k64_max_queries
+        && batch >= 2 && batch <= 1024;
     }
 
     // Q [batch, m, 64], K [batch, n, 64], C [batch, m, n], all contiguous.

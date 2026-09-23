@@ -267,5 +267,27 @@ namespace ctranslate2 {
       true_fp16_gemm = use;
     }
 
+    bool use_stock_kernels() {
+      static const bool stock = read_bool_from_env("CT2_CUDA_STOCK_KERNELS");
+      return stock;
+    }
+
+    bool cublas_replicas_verified() {
+#ifdef CT2_USE_HIP
+      return false;
+#else
+      constexpr int verified_cublas_version = 120902;
+      static const int cublas_version = [] {
+        int version = 0;
+        CUBLAS_CHECK(cublasGetVersion(get_cublas_handle(), &version));
+        return version;
+      }();
+      const cudaDeviceProp& device_prop = get_device_properties();
+      return !use_stock_kernels()
+        && device_prop.major == 7 && device_prop.minor == 5
+        && cublas_version == verified_cublas_version;
+#endif
+    }
+
   }
 }

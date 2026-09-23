@@ -221,6 +221,12 @@ extern "C" {
     return func(handle, transa, transb, m, n, k, alpha, A, Atype, lda, B, Btype, ldb, beta, C, Ctype, ldc, computeType, algo);
   }
 
+  cublasStatus_t cublasGetVersion_v2(cublasHandle_t handle, int* version) {
+    using Signature = cublasStatus_t(*)(cublasHandle_t, int*);
+    static auto func = ctranslate2::load_symbol<Signature>("cublasGetVersion_v2");
+    return func(handle, version);
+  }
+
   cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
                                             cublasOperation_t transa,
                                             cublasOperation_t transb,

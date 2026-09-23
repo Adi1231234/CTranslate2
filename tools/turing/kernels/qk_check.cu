@@ -1,6 +1,6 @@
 // Bit-for-bit check and timing of src/cuda/attention_scores_k64.cuh against the cuBLAS call that
-// CTranslate2 makes for Whisper cross-attention scores, over every query count 1..8 and a sweep of
-// batch sizes, on random data with a wide dynamic range and on signed zeros.
+// CTranslate2 makes for Whisper cross-attention scores, over every query count 1..8 and every batch
+// size 1..1024, on random data with a wide dynamic range and on signed zeros.
 // usage: qk_check      -> per-(m, batch) mismatch counts (must all be 0) and the timings
 #include "probe_common.h"
 #include "probe_data.cuh"
@@ -32,10 +32,8 @@ int main() {
   set_bits<<<64, 256>>>(p.dK, (size_t)n * k, 0x8000);
   set_bits<<<64, 256>>>(p.dQ, (size_t)max_m * k, 0x3c00);          // 1.0
   printf("signed zeros: %llu mismatches\n", check(1, 5, 0.125f));
-  std::vector<int> batches;
-  for (int b = 1; b <= 256; ++b) batches.push_back(b);
-  for (int b = 320; b <= max_batch; b += 80) batches.push_back(b);
-  batches.push_back(max_batch);
+  std::vector<int> batches;                      // every batch size the route accepts, and 1
+  for (int b = 1; b <= max_batch; ++b) batches.push_back(b);
   unsigned long long total = 0, outputs = 0;
   for (int m = 1; m <= max_m; ++m) {
     unsigned long long m_total = 0;

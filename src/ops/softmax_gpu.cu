@@ -4,7 +4,6 @@
 
 #include "cuda/helpers.h"
 #include "cuda/utils.h"
-#include "env.h"
 
 namespace ctranslate2 {
   namespace ops {
@@ -334,13 +333,6 @@ namespace at {
 namespace ctranslate2 {
   namespace ops {
 
-    // CT2_CUDA_LEGACY_SOFTMAX=1 forces cunn_SoftMaxForward everywhere (A/B checks of the
-    // bit-exact warp kernel, which must produce identical outputs).
-    static bool use_legacy_softmax() {
-      static const bool legacy = read_bool_from_env("CT2_CUDA_LEGACY_SOFTMAX");
-      return legacy;
-    }
-
     template <typename T, template <typename, typename, typename> class Epilogue>
     static void softmax_kernel_impl(cudaStream_t stream,
                                     const T* x,
@@ -349,7 +341,7 @@ namespace ctranslate2 {
                                     const int32_t* lengths,
                                     T* y) {
       const dim3 block(cuda::get_block_size(cols));
-      if (cols <= at::native::warp_softmax_max_cols && !use_legacy_softmax()) {
+      if (cols <= at::native::warp_softmax_max_cols && !cuda::use_stock_kernels()) {
         constexpr bool is_log = std::is_same<Epilogue<T, float, T>,
                                           at::native::LogSoftMaxForwardEpilogue<T, float, T>>::value;
         const unsigned per_block = at::native::warp_softmax_rows_per_block;

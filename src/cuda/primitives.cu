@@ -27,6 +27,7 @@
 #else
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
+#include "cuda/attention_scores_k64.cuh"
 #endif
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
@@ -629,6 +630,23 @@ namespace ctranslate2 {
                                                     float beta,
                                                     float16_t* c, dim_t ldc, dim_t stridec,
                                                     dim_t batch_size) {
+#ifndef CT2_USE_HIP
+    // Whisper cross-attention scores (a few queries per head against 1500 keys of 64 dims): the same
+    // arithmetic as the cuBLAS kernel, bit for bit, several times faster (attention_scores_k64.cuh).
+    if (!transpose_a && transpose_b && !cuda::use_true_fp16_gemm() && beta == 0
+        && lda == k && ldb == k && ldc == n
+        && stridea == m * k && strideb == n * k && stridec == m * n
+        && cuda::attention_scores_k64_verified_shape(batch_size, m, n, k)
+        && reinterpret_cast<uintptr_t>(b) % 16 == 0
+        && cuda::cublas_replicas_verified()) {
+      cuda::attention_scores_k64(reinterpret_cast<const __half*>(a),
+                                 reinterpret_cast<const __half*>(b),
+                                 reinterpret_cast<__half*>(c),
+                                 batch_size, m, n, alpha, cuda::get_cuda_stream());
+      return;
+    }
+#endif
+
     const __half alpha_h = alpha;
     const __half beta_h = beta;
 

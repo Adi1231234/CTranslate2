@@ -24,7 +24,7 @@ D = time.time() - t
 enc = hashlib.sha256()                  # bytes of every encoder output: any 1-ulp change shows here
 for f in feats:
     enc.update(np.asarray(model.model.encode(get_ctranslate2_storage(f), to_cpu=True)).tobytes())
-print(json.dumps({"ctranslate2": ctranslate2.__file__, "legacy_softmax": os.environ.get("CT2_CUDA_LEGACY_SOFTMAX", "0"),
+print(json.dumps({"ctranslate2": ctranslate2.__file__, "stock_kernels": os.environ.get("CT2_CUDA_STOCK_KERNELS", "0"),
                   "E": round(E, 2), "D": round(D, 2), "tokens_sha": digest.hexdigest()[:16],
                   "full_sha": full.hexdigest()[:16], "enc_sha": enc.hexdigest()[:16]}), flush=True)
 del model, encs                                 # release the model's worker threads while Python is alive

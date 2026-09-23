@@ -115,6 +115,13 @@ namespace ctranslate2 {
     bool use_true_fp16_gemm();
     void use_true_fp16_gemm(bool use);
 
+    // CT2_CUDA_STOCK_KERNELS=1 runs the upstream kernels everywhere this fork has a bit-exact
+    // replacement, for A/B runs that must produce identical outputs.
+    bool use_stock_kernels();
+    // Replacements that replay a cuBLAS kernel's arithmetic were verified on sm_75 against one cuBLAS
+    // build (tools/turing/kernels/qk_check.cu); anywhere else the cuBLAS call runs.
+    bool cublas_replicas_verified();
+
     class UseTrueFp16GemmInScope {
     public:
       UseTrueFp16GemmInScope(const bool use)
