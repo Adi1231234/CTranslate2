@@ -3,7 +3,8 @@ batching, encoder/decoder pipelining, segment splitting and temperature-ladder f
 run) on every sample clip, and print a hash of every output row. A build may replace the stock wheel
 only if this hash equals the stock wheel's.
 usage: prod_equiv.py <sample_dir> <engine_dir> <mode, e.g. pipe8> [ctranslate2 package parent dir]
-N_CLIPS=<n>: only the first n sample clips. PROFILE_RANGE=1: run once to warm up, then mark the measured run with cuProfilerStart/Stop, so
+N_CLIPS=<n>: only the first n sample clips. CPU_THREADS=<n>: CTranslate2 intra_threads.
+PROFILE_RANGE=1: run once to warm up, then mark the measured run with cuProfilerStart/Stop, so
 `nsys profile --capture-range=cudaProfilerApi` records only the steady state."""
 import os, sys, json, time, hashlib
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -24,8 +25,9 @@ for m in json.load(open(os.path.join(SAMPLE, "meta.json"), encoding="utf-8")):
 n_clips = int(os.environ.get("N_CLIPS", "150"))       # fewer clips keep a sampled profile small
 clips = [(m["key"], np.load(os.path.join(SAMPLE, m["key"] + ".npy"))) for m in meta[:150][:n_clips]]
 workers = 1 + int(MODE.startswith("pipe")) + 1                  # as transcribe_run.py
+cpu_threads = int(os.environ.get("CPU_THREADS", "0"))    # CTranslate2 intra_threads (OpenMP team size)
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
-                     num_workers=workers)
+                     num_workers=workers, cpu_threads=cpu_threads)
 pool = ThreadPoolExecutor(max_workers=1)
 run = lambda: [r.result() if isinstance(r, Future) else r for r in transcribe_unit(model, clips, MODE, pool)]
 profile = os.environ.get("PROFILE_RANGE") == "1"   # nsys --capture-range=cudaProfilerApi: warm run only
@@ -40,7 +42,7 @@ T = time.time() - t
 if profile:
     cuda.cuProfilerStop()
 audio = sum(len(w) for _, w in clips) / 16000
-print(json.dumps({"ctranslate2": ctranslate2.__file__, "mode": MODE, "clips": len(rows),
+print(json.dumps({"ctranslate2": ctranslate2.__file__, "mode": MODE, "cpu_threads": cpu_threads, "clips": len(rows),
                   "fallback": sum(r.get("path") == "fallback" for r in rows),
                   "seconds": round(T, 1), "realtime": round(audio / T, 1),
                   "rows_sha": hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()[:16]}),
