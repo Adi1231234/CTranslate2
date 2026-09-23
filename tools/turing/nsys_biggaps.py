@@ -8,7 +8,8 @@ db = sqlite3.connect(sys.argv[1])
 MIN_GAP = float(sys.argv[2] if len(sys.argv) > 2 else 5) * 1e6
 S = dict(db.execute("SELECT id, value FROM StringIds"))
 pid = db.execute("SELECT globalPid FROM CUPTI_ACTIVITY_KIND_KERNEL LIMIT 1").fetchone()[0]
-kern = sorted(db.execute("SELECT start, end, shortName, streamId FROM CUPTI_ACTIVITY_KIND_KERNEL"))
+kern = sorted((s, e, S.get(n, "?"), st) for s, e, n, st in
+              db.execute("SELECT start, end, shortName, streamId FROM CUPTI_ACTIVITY_KIND_KERNEL"))
 busy, last = [], []                               # merged busy intervals, index of their last kernel
 for i, (s, e, _, _) in enumerate(kern):
     if busy and s <= busy[-1][1]:
