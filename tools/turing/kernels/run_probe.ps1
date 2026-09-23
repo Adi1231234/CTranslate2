@@ -4,8 +4,10 @@ param([string]$Name, [string]$Root = 'D:\ct2build', [string]$Venv = 'D:\wsbench-
       [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
 . "$PSScriptRoot\..\devenv.ps1"
 $Out = "$Root\probes"
+$Src = (Resolve-Path "$PSScriptRoot\..\..\..").Path                 # probes include library headers
 New-Item -ItemType Directory -Force $Out | Out-Null
-nvcc -O3 -std=c++17 -arch=sm_75 -o "$Out\$Name.exe" "$PSScriptRoot\$Name.cu" -lcublas 2>&1 | Out-String -Stream
+nvcc -O3 -std=c++17 -arch=sm_75 --expt-relaxed-constexpr -I "$Src\src" -I "$Src\include" `
+  -o "$Out\$Name.exe" "$PSScriptRoot\$Name.cu" -lcublas 2>&1 | Out-String -Stream
 Check "nvcc $Name"
 $env:PATH = "$Venv\Lib\site-packages\nvidia\cublas\bin;$env:PATH"
 & "$Out\$Name.exe" @Rest
