@@ -15,7 +15,7 @@ $vcvars = (Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\*\*\VC\Auxil
 cmd /c "`"$vcvars`" >nul && set" | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "Env:$($Matches[1])" $Matches[2] } }
 $Build = "$Root\build-sm$($Arch -replace '\.','')"; $Inst = "$Root\install"
 if (-not (Test-Path "$Build\build.ninja")) {
-  $fwd = { param($p) $p -replace '\', '/' }         # CMake reads backslashes in paths as escapes
+  $fwd = { param($p) $p.Replace('\', '/') }         # CMake reads backslashes in paths as escapes
   cmake -S $Src -B $Build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$(& $fwd $Inst)" `
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_CLI=OFF -DWITH_MKL=OFF -DOPENMP_RUNTIME=NONE `
     -DWITH_CUDA=ON -DWITH_CUDNN=OFF -DCUDA_TOOLKIT_ROOT_DIR="$(& $fwd $Cuda)" -DCUDA_DYNAMIC_LOADING=ON `
