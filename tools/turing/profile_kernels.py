@@ -116,5 +116,7 @@ for tag, a, b in (("encoder_bs8", t0, t1), ("decode_bs8_beam5", t1, t2), ("enc_n
                  + (f" | decode steps {steps}, kernels/step {len(rs) / steps:.0f}" if tag.startswith("decode") else ""))
     for n, t in tot.most_common(14):
         lines.append(f"   {t / 1e6:8.1f} ms {100 * t / max(1, sum(tot.values())):5.1f}% x{cnt[n]:5d}  {n}")
-open(os.path.join(ROOT, "prof_ct2.log"), "w").write("\n".join(lines) + "\n")
-print("\n".join(lines))
+open(OUT, "w").write("\n".join(lines) + "\n")
+print("\n".join(lines), flush=True)
+del m, e0, out                                  # release the model's worker threads while Python is alive
+import gc; gc.collect()
