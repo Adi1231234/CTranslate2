@@ -3,32 +3,10 @@
 // batch sizes, on random data with a wide dynamic range and on signed zeros.
 // usage: qk_check      -> per-(m, batch) mismatch counts (must all be 0) and the timings
 #include "probe_common.h"
+#include "probe_data.cuh"
 #include "../../../src/cuda/attention_scores_k64.cuh"
 
 using namespace ctranslate2::cuda;
-
-// Halves with random sign and magnitude 2^[lo, hi): exercises rounding in every partial sum.
-__global__ void fill(__half* x, size_t count, uint32_t seed, int lo, int hi) {
-  for (size_t t = blockIdx.x * (size_t)blockDim.x + threadIdx.x; t < count; t += (size_t)gridDim.x * blockDim.x) {
-    uint32_t h = (uint32_t)t * 2654435761u ^ seed;
-    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
-    const float mant = 1.f + (h & 1023) / 1024.f;
-    const int e = lo + (int)((h >> 10) % (uint32_t)(hi - lo));
-    x[t] = __float2half(((h >> 31) ? -1.f : 1.f) * ldexpf(mant, e));
-  }
-}
-
-__global__ void set_bits(__half* x, size_t count, unsigned short bits) {
-  for (size_t t = blockIdx.x * (size_t)blockDim.x + threadIdx.x; t < count; t += (size_t)gridDim.x * blockDim.x)
-    x[t] = __ushort_as_half(bits);
-}
-
-__global__ void count_diff(const __half* a, const __half* b, size_t count, unsigned long long* out) {
-  unsigned long long local = 0;
-  for (size_t t = blockIdx.x * (size_t)blockDim.x + threadIdx.x; t < count; t += (size_t)gridDim.x * blockDim.x)
-    local += __half_as_ushort(a[t]) != __half_as_ushort(b[t]);
-  if (local) atomicAdd(out, local);
-}
 
 int main() {
   const int max_batch = 1024, max_m = 8, n = 1500, k = 64;
@@ -62,12 +40,9 @@ int main() {
   for (int m = 1; m <= max_m; ++m) {
     unsigned long long m_total = 0;
     for (int batch : batches) {
-      const uint32_t seed = (uint32_t)(m * 100003 + batch);
-      const int lo = -10 + (batch % 5), hi = 1 + (batch % 4);    // |q|, |k| in [2^-10, 16)
-      fill<<<1024, 256>>>(p.dK, (size_t)batch * n * k, seed, lo, hi);
-      fill<<<64, 256>>>(p.dQ, (size_t)batch * m * k, seed ^ 0x9e3779b9u, lo, hi);
+      fill_case(p.dK, p.dQ, batch, m, n, k);
       const unsigned long long d = check(batch, m, 0.125f);
-      if (d) printf("  m=%d batch=%d: %llu mismatches\n", m, batch, d);
+      if (d) printf("  mismatch m=%d batch=%d: %llu\n", m, batch, d);
       m_total += d; outputs += (unsigned long long)batch * m * n;
     }
     printf("m=%d: %llu mismatches\n", m, m_total);

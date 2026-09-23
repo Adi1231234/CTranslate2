@@ -56,14 +56,14 @@ namespace ctranslate2 {
         if (j >= m)
           break;
         const float* qj = qs + j * 64;
-        float sum = 0;
+        float sum = 0;  // +0: an all-(-0) dot product gives +0, as in cuBLAS
 #pragma unroll
         for (int r = 0; r < 16; ++r) {
           float p = kv[r] * qj[r];
           p = fmaf(kv[r + 16], qj[r + 16], p);
           p = fmaf(kv[r + 32], qj[r + 32], p);
           p = fmaf(kv[r + 48], qj[r + 48], p);
-          sum = r == 0 ? p : sum + p;
+          sum += p;
         }
         cb[static_cast<size_t>(j) * n] = __float2half_rn(alpha * sum);
       }
