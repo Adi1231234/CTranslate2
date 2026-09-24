@@ -133,6 +133,14 @@ namespace ctranslate2 {
       dim_t output_size() const override;
       void operator()(const StorageView& input, StorageView& output, const StorageView* residual = nullptr) const;
       void select_weights(const StorageView* index, const StorageView* extra_bias = nullptr);
+      // For a caller that fuses the bias add into its next kernel: the same GEMM as operator()
+      // without the bias, and the bias. Only when can_defer_bias() (plain float weights, no
+      // activation, no tensor-parallel slice).
+      bool can_defer_bias() const;
+      void compute_without_bias(const StorageView& input, StorageView& output) const;
+      const StorageView* bias() const {
+        return _bias;
+      }
     private:
       bool _packed_weight;
       const StorageView& _weight;

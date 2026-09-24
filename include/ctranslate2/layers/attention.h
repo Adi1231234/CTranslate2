@@ -76,7 +76,9 @@ namespace ctranslate2 {
                                 StorageView* cached_values,
                                 const Padder* queries_padder,
                                 const Padder* values_padder,
-                                dim_t& beam_size) const;
+                                dim_t& beam_size,
+                                bool fused_queries) const;
+      bool fused_split_applies(const StorageView& x, const Dense& linear, const Padder* padder) const;
 
     private:
       static void split_heads(StorageView& x,

@@ -9,6 +9,7 @@
 
 #include "dispatch.h"
 #include "cpu/parallel.h"
+#include "split_heads_fused.h"
 
 namespace ctranslate2 {
   namespace layers {
@@ -379,17 +380,28 @@ namespace ctranslate2 {
         StorageView* cached_values,
         const Padder* queries_padder,
         const Padder* values_padder,
-        dim_t& beam_size) const {
+        dim_t& beam_size,
+        bool fused_queries) const {
 
-      queries_proj = std::move(fused_proj);
+      // With fused_queries, fused_proj keeps the queries' projection (no bias yet) until the split.
+      StorageView memory_proj(fused_proj.dtype(), fused_proj.device());
+      StorageView& kv_proj = fused_queries ? memory_proj : fused_proj;
+      if (!fused_queries)
+        queries_proj = std::move(fused_proj);
 
       if (cached_keys == nullptr || cached_keys->empty()) {
-        _linear[1](values, fused_proj);
+        const bool fused_kv = fused_split_applies(values, _linear[1], values_padder);
+        if (fused_kv)
+          _linear[1].compute_without_bias(values, kv_proj);
+        else
+          _linear[1](values, kv_proj);
 
-        if (_num_heads_kv == 1) { // MQA (Multi-Query Attention)
+        if (fused_kv) {
+          split_heads_with_bias(kv_proj, _linear[1].bias(), {&keys_proj, &values_proj}, _num_heads);
+        } else if (_num_heads_kv == 1) { // MQA (Multi-Query Attention)
           if (values_padder)
-            values_padder->add_padding(fused_proj);
-          ops::Split(2, {_d_head, _d_head})(fused_proj, keys_proj, values_proj);
+            values_padder->add_padding(kv_proj);
+          ops::Split(2, {_d_head, _d_head})(kv_proj, keys_proj, values_proj);
 
           apply_k_norm(keys_proj);
           apply_v_norm(values_proj);
@@ -400,10 +412,10 @@ namespace ctranslate2 {
 
         } else if (_num_heads_kv < _num_heads) { // GQA (Grouped-Query Attention)
           if (values_padder)
-            values_padder->add_padding(fused_proj);
+            values_padder->add_padding(kv_proj);
 
           const ops::Split split_op(2, {_num_heads_kv * _d_head, _num_heads_kv * _d_head});
-          split_op(fused_proj, keys_proj, values_proj);
+          split_op(kv_proj, keys_proj, values_proj);
 
           split_heads(keys_proj, _num_heads_kv);
           split_heads(values_proj, _num_heads_kv);
@@ -414,8 +426,8 @@ namespace ctranslate2 {
           replicate_heads(keys_proj, _num_heads / _num_heads_kv);
           replicate_heads(values_proj, _num_heads / _num_heads_kv);
         } else { //Standard Multi-Head Attention (MHA)
-          split_heads(fused_proj, 2 * _num_heads, values_padder);
-          ops::Split(1)(fused_proj, keys_proj, values_proj);
+          split_heads(kv_proj, 2 * _num_heads, values_padder);
+          ops::Split(1)(kv_proj, keys_proj, values_proj);
 
           apply_k_norm(keys_proj);
           apply_v_norm(values_proj);
@@ -433,10 +445,21 @@ namespace ctranslate2 {
         queries_proj = std::move(queries_normed);
       }
 
-      if (queries_proj.dim(1) == 1 && cached_keys)
-        beam_size = queries_proj.dim(0) / cached_keys->dim(0);
+      const StorageView& queries_raw = fused_queries ? fused_proj : queries_proj;
+      if (queries_raw.dim(1) == 1 && cached_keys)
+        beam_size = queries_raw.dim(0) / cached_keys->dim(0);
 
-      split_heads(queries_proj, _num_heads, queries_padder, beam_size);
+      if (fused_queries)
+        split_heads_with_bias(fused_proj, _linear[0].bias(), {&queries_proj}, _num_heads, beam_size);
+      else
+        split_heads(queries_proj, _num_heads, queries_padder, beam_size);
+    }
+
+    bool MultiHeadAttention::fused_split_applies(const StorageView& x,
+                                                 const Dense& linear,
+                                                 const Padder* padder) const {
+      return _num_heads_kv == _num_heads && !_merge_time_and_head_dims && !_q_norm && !_k_norm
+        && !_v_norm && !_rotary_embeddings && split_heads_fusable(x, linear, padder, _d_head);
     }
 
     void MultiHeadAttention::operator()(const StorageView& queries,
@@ -465,7 +488,12 @@ namespace ctranslate2 {
         q = &queries_proj;
       }
 
-      _linear[0](*q, fused_proj);
+      // Dense bias, head split and Q/K/V split in one kernel where it applies (split_heads_fused.h).
+      const bool fused_q = fused_split_applies(*q, _linear[0], queries_padder);
+      if (fused_q)
+        _linear[0].compute_without_bias(*q, fused_proj);
+      else
+        _linear[0](*q, fused_proj);
 
       dim_t beam_size = 1;
 
@@ -475,7 +503,7 @@ namespace ctranslate2 {
 
         process_cross_attention(queries, values, fused_proj, queries_proj, keys_proj,
                                 values_proj, cached_keys, cached_values,
-                                queries_padder, values_padder, beam_size);
+                                queries_padder, values_padder, beam_size, fused_q);
       } else {
 
         if (_num_heads_kv < _num_heads) {// MQA or GQA: queries stay in merged time/head format
@@ -510,6 +538,9 @@ namespace ctranslate2 {
             replicate_heads(values_proj, _num_heads / _num_heads_kv);
           }
 
+        } else if (fused_q) {
+          split_heads_with_bias(fused_proj, _linear[0].bias(),
+                                {&queries_proj, &keys_proj, &values_proj}, _num_heads);
         } else {
           split_heads(fused_proj, 3 * _num_heads, queries_padder);
           ops::Split(1)(fused_proj, queries_proj, keys_proj, values_proj);

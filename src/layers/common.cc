@@ -306,6 +306,15 @@ namespace ctranslate2 {
       return _output_type;
     }
 
+    bool Dense::can_defer_bias() const {
+      return !_quantized_gemm && !_qzero && !_qscale && !_activation_type && _partial_weight.empty()
+        && _partial_bias.empty() && ScopedMPISetter::getNRanks() <= 1;
+    }
+
+    void Dense::compute_without_bias(const StorageView& input, StorageView& output) const {
+      _gemm_op(input, _weight, output, nullptr, nullptr, nullptr);
+    }
+
     dim_t Dense::output_size() const {
       return _partial_weight ? _partial_weight.dim(0) : _weight.dim(0);
     }

@@ -134,6 +134,7 @@ set(SOURCES
   src/layers/attention.cc
   src/layers/flash_attention.cc
   src/layers/common.cc
+  src/layers/split_heads_fused.cc
   src/layers/decoder.cc
   src/layers/transformer.cc
   src/layers/wav2vec2.cc
@@ -232,6 +233,7 @@ set(CUDA_SOURCES
   src/cuda/disable_tokens.cu
   src/cuda/primitives.cu
   src/cuda/random.cu
+  src/cuda/split_heads.cu
   src/cuda/timestamp_rules.cu
   src/cuda/utils.cc
   src/ops/alibi_add_gpu.cu
