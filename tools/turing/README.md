@@ -45,6 +45,26 @@ Changes on branch `turing-perf` (`CT2_CUDA_STOCK_KERNELS=1` restores every upstr
    backend); `clear_cache()` trims the pool, so unloading a model still frees it;
    `CT2_CUDA_ASYNC_ALLOCATOR_RELEASE_THRESHOLD` overrides (docs/environment_variables.md). Pool peak
    in production is about 6.4 GB of 8 GB.
+7. `src/ops/softmax_rows1024.cuh` (514b95f): fp16 rows of 1026..2048 without lengths (the encoder's
+   1500). Each lane keeps its 32 legacy threads' values in registers (no shared memory, so no cap
+   of 8 warps per SM); same float operations as warp_softmax_forward. 8.19 -> 3.99 ms per 8-clip
+   layer, 81% of bandwidth (`kernels/softmax_bench.cu`).
+8. `src/cuda/split_heads.cu`, `src/layers/split_heads_fused.cc` (98a51b4): Dense bias add, head split
+   and Q/K/V split in one kernel (encoder and decoder QKV, cross-attention queries and memory K/V,
+   `Dense::compute_without_bias`). The add is `__hadd`, which is `cuda::plus<__half>` on sm_53+.
+9. Deferred beam reorder (6711bf1, c811fd7): `Decoder::update_state` leaves the beam order in
+   `state["pending_beam_reorder"]` and the next step's self-attention reorders and appends its keys
+   and values in one launch (`cuda/cache_reorder.cu`, `layers/kv_cache.cc`) instead of a Gather and
+   a Concat of every cache; flushed before a beam search returns.
+10. `src/ops/bias_add_vec.cuh` (0a8b952): fp16 BiasAdd on 16-byte vectors (plain, residual, GELU),
+   same `__hadd` / `gelu_func` arithmetic as the thrust paths.
+11. Timestamp rule (5650901): all rows' maxima and exp sums in two `cub::DeviceSegmentedReduce`
+   launches instead of four kernels per row; in this CCCL SegmentedReducePolicy is SingleTilePolicy,
+   so the sums keep their order (`kernels/ts_check.cu`).
+12. Stream priorities (e1a636e): worker streams at the highest priority, Whisper's encoder on the
+   thread's low-priority stream (`cuda::UseLowPriorityStreamInScope`). Without it the pipelined
+   encoder's big kernels delayed every decoder kernel (batch8 and pipe8 took the same time); now
+   the encoder fills the decoder's gaps. Only the order in which the GPU takes up kernels changes.
 Production setting, not a code change: `cpu_threads=1`. The OpenMP threads of the default only spin.
 Ruled out: the batched pipeline's up-front log-mel extraction is 0.53 s of 42 s (`feature_time.py`).
 
@@ -54,8 +74,19 @@ whose destructor joins threads during thread exit, under the loader lock, so mod
 
 Build: `build_windows.ps1` (CUDA 12.8, VS C++ tools, CMake, Ninja; output in a staging package dir).
 Measure: `python tools/turing/bench_whisper.py <sample_dir> <package parent dir>`.
-Probes: `kernels/run_probe.ps1 <softmax_check|qk_check|ts_check|qk_probe|qk_diff>` (nvcc sm_75,
-production's cuBLAS DLL). Profiles: Nsight Systems + `nsys_gaps.py`, `nsys_cpu.py`, `nsys_biggaps.py`.
+Probes: `kernels/run_probe.ps1 <name> [args]` (nvcc sm_75, production's cuBLAS DLL): softmax_check,
+qk_check, ts_check (gate), softmax_bench, qk_probe, qk_diff. Profiles: `host/nsys.ps1` (Nsight
+Systems on the production engine) + `nsys_gaps.py`, `nsys_streams.py`, `nsys_steps.py` (decode steps,
+`--grids`, `--pick=<q>`), `nsys_layer.py` (one encoder layer), `nsys_cpu.py`, `nsys_biggaps.py`.
+
+Researched, not used: the exact summation orders of cuBLAS 12.9.2's fp16 kernels here, recovered by
+comparing mma.sync m16n8k8 replicas with cuBLAS bit for bit (`kernels/gemm_probe.cu`, `attn_probe.cu`).
+Decoder Dense at 5..40 rows: one chain over k in 8-groups (rows <= 15; N = 1280 at 20..30); two
+chains alternating 32-k blocks, half(c0 + c1) (QKV and FFN1 at 20..40); split-K in 4 quarters each
+rounded to half, then ((p0 + p1) + p2) + p3 in fp32 (N = 1280 at 35..40). Attention: QK one chain;
+AV (k = 1500, encoder and decoder) residue-first groups (0-7, 8-15, 16-23, 24-27, then 28-35, ...).
+`kernels/small_m_gemm.cuh` replicates the decoder GEMMs exactly (`gemm_check.cu`) but is no faster
+than cuBLAS, and `lt_search.cu` found no faster cublasLt configuration with the same bits.
 
 Verification. Every change must leave the output byte-identical to the stock wheel's:
 - Inner loop, every change: `digest.py` (`host/digest.ps1 -Pkgs <build>`), one process, about 40 s
@@ -72,8 +103,9 @@ Verification. Every change must leave the output byte-identical to the stock whe
   `GATE PASS` or `GATE FAIL` in `D:\ct2build\ab.log`.
 - Kernel probes (`softmax_check`, `qk_check`, `ts_check`) when kernel sources change. `qk_check`
   counts only the routed shapes in its TOTAL; the batch 1 control is printed on its own line.
-- Speed: a separate A/B, `host/equiv_ab.ps1` (prod_equiv pipe8 on 150 clips, configurations
-  alternated, nvidia-smi samples). Discard the first run after idle: it is slower.
+- Speed: `host/iterate.ps1` (build, digest, then prod_equiv pipe8 alternated with a baseline build,
+  with `GPU_TIME=1`: CUPTI GPU busy time, which other processes' CPU load does not inflate) or
+  `host/equiv_ab.ps1` (environment settings). Discard the first run after idle: it is slower.
 
 Host scripts (`host/`, for the Yarin layout; start long ones detached, log in `D:\ct2build\ab.log`):
 `prod.ps1` shared helpers (pause/resume production, timed python runs); `gate.ps1` the full gate;
@@ -86,3 +118,7 @@ to stock (pipe8 262ababd, exact2 a83ba880; bench 6a0ac320 / 25b0f78a / 67bd5eeb)
 - stock 11.5x realtime (13.1x with `cpu_threads=1`)
 - softmax + cross-attention scores (724ae02) 14.0x, `cpu_threads=1` 15.5x, `add_range` 17.7x,
   timestamp rule 19.3x, DisableTokens on the GPU 19.3x, allocator (71841fb) 20.0x (40.6 s).
+- Changes 7-12, measured in the daytime (the host's other apps kept about 3 of 6 cores busy, so the
+  baseline took 47.5 s instead of 40.6), 71841fb vs e1a636e alternated: 47.5 -> 40.65 s wall, 37.9
+  -> 32.8 s GPU busy; ratio 0.856, i.e. about 23.4x at the night-time 20.0x. Steps (wall): softmax
+  45.2, split heads 44.6, deferred reorder 42.6, BiasAdd 42.5, timestamp rule 42.1, priorities 40.8.
