@@ -3,6 +3,7 @@
 // makes, on fp16 rows shaped like Whisper log-probs (51866 tokens, timestamps 50365..51865).
 // usage: ts_check      -> mismatching text maxima, timestamp maxima, exp sums and decisions; must be 0
 #include <cmath>
+#include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/reduce.h>
 #include "probe_common.h"
