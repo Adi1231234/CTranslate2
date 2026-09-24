@@ -9,7 +9,8 @@
 //   recipe 3: split-K in 4 contiguous quarters, each done as recipe 2 and rounded to half; the four
 //             partials added forward in fp32 (((p0 + p1) + p2) + p3); out = half(sum)
 // Same instruction, same groups, same order: the same bits, with one warp per (8 columns, chain) and
-// no separate reduction kernel. Checked on every routed shape by tools/turing/kernels/gemm_check.cu.
+// no separate reduction kernel. Checked on every shape by gemm_check.cu. Not used by the library:
+// the replica only matches cuBLAS's speed (a win needs a CUTLASS-grade kernel); kept with its proofs.
 
 #include <cstdint>
 

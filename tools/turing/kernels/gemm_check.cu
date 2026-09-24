@@ -7,7 +7,7 @@
 #include <vector>
 #include "probe_common.h"
 #include "probe_data.cuh"
-#include "../../../src/cuda/small_m_gemm.cuh"
+#include "small_m_gemm.cuh"
 
 using namespace ctranslate2::cuda;
 
