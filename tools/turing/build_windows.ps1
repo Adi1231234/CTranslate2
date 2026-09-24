@@ -11,8 +11,9 @@ $Src = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $Build = "$Root\build-sm$($Arch.Replace('.', ''))-msvc$env:VCToolsVersion-omp"; $Inst = "$Root\install"
 if (-not (Test-Path "$Build\build.ninja")) {
   $fwd = { param($p) $p.Replace('\', '/') }         # CMake reads backslashes in paths as escapes
+  # Quoted: PowerShell 5.1 splits an unquoted -Dname=3.5 at the dot and CMake 4 rejects the "3" it gets.
   cmake -S $Src -B $Build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$(& $fwd $Inst)" `
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_CLI=OFF -DWITH_MKL=OFF -DOPENMP_RUNTIME=COMP `
+    '-DCMAKE_POLICY_VERSION_MINIMUM=3.5' -DBUILD_CLI=OFF -DWITH_MKL=OFF -DOPENMP_RUNTIME=COMP `
     -DWITH_CUDA=ON -DWITH_CUDNN=OFF -DCUDA_TOOLKIT_ROOT_DIR="$(& $fwd $Cuda)" -DCUDA_DYNAMIC_LOADING=ON `
     -DCUDA_NVCC_FLAGS="-Xfatbin=-compress-all" -DCUDA_ARCH_LIST="$Arch" 2>&1 | Out-String -Stream
   Check 'cmake configure'
