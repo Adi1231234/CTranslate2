@@ -3,8 +3,10 @@
 // tensor-core instruction (mma.sync m16n8k8 f32.f16.f16.f32) are compared with cuBLAS bit for bit.
 // A candidate splits the 8-wide k-groups into nz split-K ranges, each into ns chains (ns = 2: group g
 // of a range goes to chain (g / w) % 2), accumulates each chain in order from zero, adds the two
-// chains, then reduces the nz partials sequentially (red 0) or pairwise (red 1) in fp32 and rounds
-// once to half. The candidate with 0 mismatches on every trial is the order to replicate.
+// chains, optionally rounds that partial to half (hp 1, as cuBLAS's split-K workspace in fp16), then
+// reduces the nz partials in fp32 forward (red 0), pairwise (red 1) or backward (red 2) and rounds
+// once to half. Split-K ranges are contiguous (il 0) or interleaved by 64-wide k-tiles (il 1).
+// The candidate with 0 mismatches on every trial is the order to replicate.
 // usage: gemm_probe [M N K ...]   (default: the decoder shapes at 40 rows)
 #include <cstdio>
 #include <cstdlib>
@@ -12,7 +14,7 @@
 #include "probe_common.h"
 #include "probe_data.cuh"
 
-struct Candidate { int nz, ns, w, red; };
+struct Candidate { int nz, ns, w, red, hp, il; };
 
 __device__ __forceinline__ void mma1688(float* d, const unsigned* a, unsigned b) {
   asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};"
@@ -27,13 +29,15 @@ __device__ __forceinline__ unsigned pack(const __half* p, int stride) {   // p[0
 // One warp per 16 x 8 output tile. A [M, K] (rows past M read as zero), W [N, K], C [M, N].
 __global__ void replica(const __half* A, const __half* W, __half* C, int M, int N, int K, Candidate c) {
   const int lane = threadIdx.x, m0 = blockIdx.y * 16, n0 = blockIdx.x * 8;
-  const int g4 = lane / 4, t4 = lane % 4, groups = K / 8, per_z = groups / c.nz;
+  const int g4 = lane / 4, t4 = lane % 4, groups = K / 8, per_z = groups / c.nz, tiles_z = per_z / 8;
   const __half zero = __float2half(0.f);
   float partial[8][4];
   for (int z = 0; z < c.nz; ++z) {
     float chain[2][4] = {};
     for (int r = 0; r < per_z; ++r) {
-      const int g = z * per_z + r, s = c.ns == 1 ? 0 : (r / c.w) % 2, k = g * 8 + t4 * 2;
+      const int g = c.il ? ((r / 8) * c.nz + z) * 8 + r % 8 : z * per_z + r;   // il: 64-wide tiles
+      const int s = c.ns == 1 ? 0 : (r / c.w) % 2, k = g * 8 + t4 * 2;
+      (void)tiles_z;
       __half a[4];
       for (int i = 0; i < 2; ++i) {
         const int row = m0 + g4 + 8 * i;
@@ -43,8 +47,10 @@ __global__ void replica(const __half* A, const __half* W, __half* C, int M, int 
       const unsigned af[2] = {pack(a, 1), pack(a + 2, 1)};
       mma1688(chain[s], af, pack(W + (size_t)(n0 + g4) * K + k, 1));
     }
-    for (int e = 0; e < 4; ++e)
+    for (int e = 0; e < 4; ++e) {
       partial[z][e] = c.ns == 1 ? chain[0][e] : chain[0][e] + chain[1][e];
+      if (c.hp) partial[z][e] = __half2float(__float2half_rn(partial[z][e]));
+    }
   }
   for (int e = 0; e < 4; ++e) {
     float total = partial[0][e];
@@ -54,6 +60,9 @@ __global__ void replica(const __half* A, const __half* W, __half* C, int M, int 
       for (int n = c.nz; n > 1; n /= 2)
         for (int z = 0; z < n / 2; ++z) level[z] = level[2 * z] + level[2 * z + 1];
       total = level[0];
+    } else if (c.red == 2) {
+      total = partial[c.nz - 1][e];
+      for (int z = c.nz - 2; z >= 0; --z) total = total + partial[z][e];
     } else {
       for (int z = 1; z < c.nz; ++z) total = total + partial[z][e];
     }
@@ -66,10 +75,11 @@ int main(int argc, char** argv) {
   std::vector<int> shapes = {40, 1280, 1280, 40, 3840, 1280, 40, 5120, 1280, 40, 1280, 5120};
   if (argc > 3) { shapes.clear(); for (int i = 1; i + 2 < argc; i += 3) for (int j = 0; j < 3; ++j) shapes.push_back(atoi(argv[i + j])); }
   std::vector<Candidate> cands;
-  for (int nz : {1, 2, 4, 8}) for (int ns : {1, 2}) for (int w : {1, 2, 4}) for (int red : {0, 1}) {
-    if ((ns == 1 && w > 1) || (nz == 1 && red == 1)) continue;
-    cands.push_back({nz, ns, w, red});
-  }
+  for (int nz : {1, 2, 4, 8}) for (int ns : {1, 2}) for (int w : {1, 2, 4}) for (int red : {0, 1, 2})
+    for (int hp : {0, 1}) for (int il : {0, 1}) {
+      if ((ns == 1 && w > 1) || (nz == 1 && (red || hp || il)) || (ns == 2 && w != 4 && (hp || il))) continue;
+      cands.push_back({nz, ns, w, red, hp, il});
+    }
   cublasHandle_t h;
   CK(cublasCreate(&h));
   unsigned long long* dcount;
@@ -88,7 +98,7 @@ int main(int argc, char** argv) {
         const float alpha = 1.f, beta = 0.f;
         CK(cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, W, CUDA_R_16F, K, A, CUDA_R_16F, K,
                         &beta, C, CUDA_R_16F, N, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
-        if ((K / 8) % c.nz) { bad = ~0ull; break; }
+        if ((K / 8) % c.nz || (c.il && (K / 8 / c.nz) % 8)) { bad = ~0ull; break; }
         replica<<<dim3(N / 8, (M + 15) / 16), 32>>>(A, W, R, M, N, K, c);
         CK(cudaMemset(dcount, 0, sizeof(*dcount)));
         count_diff<<<256, 256>>>(C, R, (size_t)M * N, dcount);
@@ -96,7 +106,8 @@ int main(int argc, char** argv) {
         CK(cudaMemcpy(&d, dcount, sizeof(d), cudaMemcpyDeviceToHost));
         bad += d;
       }
-      if (bad != ~0ull) printf(" [z%d s%d w%d r%d]=%llu", c.nz, c.ns, c.w, c.red, bad);
+      if (bad != ~0ull && (bad == 0 || !getenv("ONLY_ZERO")))
+        printf(" [z%d s%d w%d r%d h%d i%d]=%llu", c.nz, c.ns, c.w, c.red, c.hp, c.il, bad);
     }
     printf("\n");
     cudaFree(A); cudaFree(W); cudaFree(C); cudaFree(R);
