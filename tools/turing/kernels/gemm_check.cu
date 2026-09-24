@@ -1,4 +1,4 @@
-// Bit-for-bit check and timing of src/cuda/small_m_gemm.cuh against the cuBLAS call that
+// Bit-for-bit check and timing of small_m_gemm.cuh (this folder) against the cuBLAS call that
 // CTranslate2 makes for its decoder Dense layers, on every routed shape (rows 5..40 by 5 x the
 // decoder's N x K): four random fills with different ranges, and one where each split-K quarter has
 // a single +-2^e product so that the order of the partial sums decides the result.
