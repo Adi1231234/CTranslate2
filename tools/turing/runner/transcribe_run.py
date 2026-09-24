@@ -4,20 +4,21 @@ usage: python transcribe_run.py <front|back> <mode: exact2|batch8>
 Producer thread streams row groups from HF and decodes audio; the GPU side never waits on I/O.
 Each finished unit is written atomically to out/<unit_id>.jsonl, so a restart skips it.
 """
-import os, sys, io, json, time, queue, threading
+import os, sys, json, time, queue, threading
 from concurrent.futures import Future, ThreadPoolExecutor
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import cudaenv  # noqa: F401
 os.environ["HF_HOME"] = os.path.join(ROOT, "hf")
-import numpy as np, pyarrow.parquet as pq, av
+import pyarrow.parquet as pq
 from huggingface_hub import HfApi, HfFileSystem
 from faster_whisper import WhisperModel
 from units import DS, list_units, unit_id, my_order, should_stop, should_skip
 from engine import transcribe_unit
+from audio import audio_format, decode
 
 DIRECTION, MODE = sys.argv[1], sys.argv[2]
-OUT = os.path.join(ROOT, "out"); os.makedirs(OUT, exist_ok=True)
+OUT = os.environ.get("RUN_OUT") or os.path.join(ROOT, "out"); os.makedirs(OUT, exist_ok=True)
 TOK = open(os.path.join(ROOT, "hf_token.txt")).read().strip()
 fs, api = HfFileSystem(token=TOK), HfApi(token=TOK)
 
@@ -29,20 +30,6 @@ units_path = os.path.join(ROOT, "units.json")
 if not os.path.exists(units_path):
     json.dump(list_units(fs, api), open(units_path, "w"))
 units = my_order(json.load(open(units_path)), DIRECTION)
-
-def audio_format(path):
-    """The container the dataset declares (the audio file name's extension). Left to probe the
-    content, FFmpeg took 3 valid crowd-v5 MP3s for raw VVC video (same probe score), with no audio
-    stream; forcing the declared format decodes them, and changes nothing for the others."""
-    ext = os.path.splitext(path or "")[1].lstrip(".").lower()
-    return ext if ext in ("mp3", "wav", "flac", "ogg") else None
-
-def decode(buf, fmt=None):
-    with av.open(io.BytesIO(buf), format=fmt) as c:
-        rs = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=16000)
-        ch = [r.to_ndarray().reshape(-1) for fr in c.decode(c.streams.audio[0]) for r in rs.resample(fr)]
-        ch += [r.to_ndarray().reshape(-1) for r in rs.resample(None)]
-    return np.concatenate(ch).astype("float32") if ch else np.zeros(0, "float32")
 
 q = queue.Queue(maxsize=4)                      # ~4 row groups of decoded audio buffered
 producer_failed = []

@@ -13,5 +13,7 @@ groups) and `out\<unit>.jsonl`; copy these files there after a pull.
   batches of 8 with the next batch's encoder overlapped, clips failing the thresholds re-run with
   the full temperature ladder on a side thread). Units whose output exists are skipped.
 - `stop.json` (re-read before every unit): `skip_units`, `only_units`, `stop_before_unit`, `deadline`.
+- `audio.py`: the decode (container from the declared file extension); `decode_check.py <units>`
+  compares it with content probing, bit for bit. `RUN_OUT=<dir>` writes the outputs elsewhere.
 - `redo_units.txt`: the 382 units Yarin wrote on 23.9 between 14:25 and 18:38 with the faulty
   softmax build (see ../README.md, incident); rerun with `only_units` = this list.
