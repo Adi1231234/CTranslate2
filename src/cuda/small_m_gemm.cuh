@@ -1,35 +1,14 @@
 #pragma once
 
-// Decoder Dense layers at a few rows: C[m][n] = sum_k A[m][k] * W[n][k] (fp16, COMPUTE_32F, alpha 1,
-// beta 0), with the exact arithmetic of the cuBLAS 12.9.2 kernels on sm_75, recovered by
-// tools/turing/kernels/gemm_probe.cu. Every cuBLAS kernel here accumulates 8-wide k-groups with the
-// tensor-core instruction mma.sync m16n8k8 (f32 accumulators from zero, groups in increasing order):
-//   recipe 1: one chain over all of k; out = half(c)
-//   recipe 2: two chains, 32-k blocks alternating (chain s takes blocks s, s + 2, ...); out = half(c0 + c1)
-//   recipe 3: split-K in 4 contiguous quarters, each done as recipe 2 and rounded to half; the four
-//             partials added forward in fp32 (((p0 + p1) + p2) + p3); out = half(sum)
-// Same instruction, same groups, same order: the same bits, with one warp per (8 columns, chain) and
-// no separate reduction kernel. Checked on every routed shape by tools/turing/kernels/gemm_check.cu.
+// The kernel of small_m_gemm_recipe.h: one warp per (8 columns, chain) and no separate reduction.
 
 #include <cstdint>
 #include <cuda_fp16.h>
 
+#include "small_m_gemm_recipe.h"
+
 namespace ctranslate2 {
   namespace cuda {
-
-    // The recipe of the cuBLAS call at these sizes (the decoder's rows are 5 beams per batch entry),
-    // or 0 when the shape was not verified.
-    inline int small_m_gemm_recipe(int64_t m, int64_t n, int64_t k) {
-      if (m < 5 || m > 40 || m % 5 != 0)
-        return 0;
-      const bool narrow = n == 1280 && (k == 1280 || k == 5120);
-      const bool wide = (n == 3840 || n == 5120) && k == 1280;
-      if (!narrow && !wide)
-        return 0;
-      if (m <= 15)
-        return 1;
-      return wide ? 2 : (m >= 35 ? 3 : 1);
-    }
 
     __device__ __forceinline__ void smg_mma(float* d, unsigned a0, unsigned a1, unsigned b) {
       asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};"
@@ -138,8 +117,8 @@ namespace ctranslate2 {
       using S = smg_cfg<Recipe>;
       constexpr size_t smem = smg_smem_bytes<Recipe, MT>();
       static const bool configured = [] {           // opt in above the 48 KB default once
-        return cudaFuncSetAttribute(small_m_gemm_kernel<Recipe, MT>,
-                                    cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)) == cudaSuccess;
+        return cudaFuncSetAttribute(small_m_gemm_kernel<Recipe, MT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                    int(smg_smem_bytes<Recipe, MT>())) == cudaSuccess;
       }();
       (void)configured;
       small_m_gemm_kernel<Recipe, MT><<<N / 8 / S::tiles, S::warps * 32, smem, stream>>>(A, W, C, M, N, K);
