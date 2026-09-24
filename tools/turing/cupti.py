@@ -1,5 +1,6 @@
 """CUPTI kernel activity records through ctypes (cupti-python is Linux-only).
-Records: (name, stream, start_ns, end_ns, grid (x, y, z), block (x, y, z), dynamic shared memory)."""
+Records: (name, stream, start_ns, end_ns, grid (x, y, z), block (x, y, z), dynamic shared memory),
+or with names=False only (start_ns, end_ns), cheap enough for a whole production run."""
 import os, ctypes, zipfile, urllib.request
 from ctypes import CFUNCTYPE, POINTER, byref, c_size_t, c_uint8, c_uint32, c_int32, c_uint64, c_void_p
 
@@ -15,7 +16,7 @@ def _i32(a, off):
 
 
 class Tracer:
-    def __init__(self, cache_dir):
+    def __init__(self, cache_dir, names=True):
         dll = os.path.join(cache_dir, "cupti64_2024.3.2.dll")
         if not os.path.exists(dll):
             os.makedirs(cache_dir, exist_ok=True)
@@ -27,7 +28,7 @@ class Tracer:
                         open(os.path.join(cache_dir, os.path.basename(n)), "wb").write(z.read(n))
         os.add_dll_directory(cache_dir)
         self.lib = ctypes.CDLL(dll)
-        self.bufs, self.records = {}, []
+        self.bufs, self.records, self.names = {}, [], names
         self._req, self._done = REQ(self._requested), DONE(self._completed)   # keep the callbacks alive
         assert self.lib.cuptiActivityRegisterCallbacks(self._req, self._done) == 0
 
@@ -40,7 +41,11 @@ class Tracer:
         rec = c_void_p()
         while self.lib.cuptiActivityGetNextRecord(buf, c_size_t(valid), byref(rec)) == 0:
             a = rec.value                                       # CUpti_ActivityKernel9 offsets
-            if c_uint32.from_address(a).value == KIND_CONCURRENT_KERNEL:
+            if c_uint32.from_address(a).value != KIND_CONCURRENT_KERNEL:
+                continue
+            if not self.names:
+                self.records.append((c_uint64.from_address(a + 16).value, c_uint64.from_address(a + 24).value))
+            else:
                 name = ctypes.string_at(c_void_p.from_address(a + 104).value).decode(errors="replace")
                 self.records.append((name, c_uint32.from_address(a + 48).value,
                                      c_uint64.from_address(a + 16).value, c_uint64.from_address(a + 24).value,

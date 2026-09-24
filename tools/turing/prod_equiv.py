@@ -7,7 +7,9 @@ N_CLIPS=<n>: only the first n sample clips. CPU_THREADS=<n>: CTranslate2 intra_t
 PROFILE_RANGE=1: run once to warm up, then mark the measured run with cuProfilerStart/Stop, so
 `nsys profile --capture-range=cudaProfilerApi` records only the steady state.
 POOL_RETAIN=1: the CUDA memory pool keeps freed memory (release threshold UINT64_MAX) instead of
-returning it to the OS at every synchronize. The output also reports the pool's high-water marks."""
+returning it to the OS at every synchronize. The output also reports the pool's high-water marks.
+GPU_TIME=1: CUPTI kernel records of the measured run: gpu_busy_s (union of kernel intervals) and
+gpu_kernel_s (sum of kernel durations), which other processes' CPU load does not inflate."""
 import os, sys, json, time, hashlib
 from concurrent.futures import Future, ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -41,17 +43,32 @@ if profile:
     cuda = ctypes.WinDLL("nvcuda.dll") if os.name == "nt" else ctypes.CDLL("libcuda.so.1")
     run()
     cuda.cuProfilerStart()
+tracer = None
+if os.environ.get("GPU_TIME") == "1":
+    from cupti import Tracer
+    tracer = Tracer(os.path.join(ENGINE, "cupti"), names=False)
+    tracer.start()
 t = time.time()
 rows = run()
 T = time.time() - t
 if profile:
     cuda.cuProfilerStop()
+gpu = {}
+if tracer:
+    tracer.stop()
+    iv = sorted(tracer.records)
+    busy, end = 0, -1
+    for s, e in iv:
+        busy += max(0, e - max(s, end)); end = max(end, e)
+    gpu = {"gpu_busy_s": round(busy / 1e9, 2), "gpu_kernel_s": round(sum(e - s for s, e in iv) / 1e9, 2),
+           "kernels": len(iv)}
 audio = sum(len(w) for _, w in clips) / 16000
 print(json.dumps({"ctranslate2": ctranslate2.__file__, "mode": MODE, "cpu_threads": cpu_threads, "clips": len(rows),
                   "fallback": sum(r.get("path") == "fallback" for r in rows),
                   "seconds": round(T, 1), "realtime": round(audio / T, 1),
                   "release_threshold": mem(common.RELEASE_THRESHOLD), "pool_reserved_high_mb":
                   mem(common.RESERVED_HIGH) >> 20, "pool_used_high_mb": mem(common.USED_HIGH) >> 20,
+                  **gpu,
                   "rows_sha": hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()[:16]}),
       flush=True)
 pool.shutdown()
