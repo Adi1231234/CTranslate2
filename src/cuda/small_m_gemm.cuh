@@ -27,7 +27,7 @@ namespace ctranslate2 {
 
     template <int Recipe> struct smg_cfg {
       static constexpr int chains = Recipe == 1 ? 1 : 2, quarters = Recipe == 3 ? 4 : 1;
-      static constexpr int tiles = Recipe == 3 ? 2 : 4;                 // 8-column tiles per block
+      static constexpr int tiles = Recipe == 3 ? 2 : 8;                 // 8-column tiles per block
       static constexpr int warps = chains * quarters * tiles / 2;       // two tiles per warp
       static constexpr int kw = Recipe == 1 ? 64 : 32;                  // k per warp and step
     };
@@ -51,8 +51,8 @@ namespace ctranslate2 {
       const int pair = warp % (S::tiles / 2), role = warp / (S::tiles / 2);
       const int quarter = role / S::chains, chain = role % S::chains;
       const int n0 = blockIdx.x * S::tiles * 8, range = K / S::quarters, steps = range / 64;
-      uint4 pre[per_thread];
-      auto fetch = [&](int s) {                             // global -> registers
+      uint4 pre[2][per_thread];                             // two steps ahead, alternating
+      auto fetch = [&](int s, uint4* pre) {                 // global -> registers
         #pragma unroll
         for (int i = 0; i < per_thread; ++i) {
           const int v = threadIdx.x + i * threads;
@@ -63,8 +63,7 @@ namespace ctranslate2 {
         }
       };
       float acc[2][MT][4] = {};
-      fetch(0);
-      for (int s = 0; s < steps; ++s) {
+      auto step = [&](int s, uint4* pre) {
         #pragma unroll
         for (int i = 0; i < per_thread; ++i) {              // registers -> shared memory
           const int v = threadIdx.x + i * threads;
@@ -72,8 +71,8 @@ namespace ctranslate2 {
             *reinterpret_cast<uint4*>(st + (v / 8) * smg_row + (v % 8) * 8) = pre[i];
         }
         __syncthreads();
-        if (s + 1 < steps)
-          fetch(s + 1);
+        if (s + 2 < steps)
+          fetch(s + 2, pre);
         const __half* base = st + quarter * G::rows * smg_row + (S::chains == 2 ? chain * 32 : 0);
         #pragma unroll
         for (int h = 0; h < S::kw / 32; ++h) {             // this chain's 32-k blocks, in order
@@ -95,6 +94,14 @@ namespace ctranslate2 {
             }
         }
         __syncthreads();
+      };
+      fetch(0, pre[0]);
+      if (steps > 1)
+        fetch(1, pre[1]);
+      for (int s = 0; s < steps; s += 2) {                  // unrolled by two: static register buffers
+        step(s, pre[0]);
+        if (s + 1 < steps)
+          step(s + 1, pre[1]);
       }
       float* part = reinterpret_cast<float*>(smg_smem);    // [role][tile][MT * 4][32]
       constexpr int per_role = S::tiles * MT * 4 * 32;
