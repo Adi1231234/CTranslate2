@@ -73,6 +73,20 @@ Build notes (Windows): VS 2022 (MSVC 19.27 miscompiles pybind11 2.11), and OpenM
 whose destructor joins threads during thread exit, under the loader lock, so model teardown hangs.
 
 Build: `build_windows.ps1` (CUDA 12.8, VS C++ tools, CMake, Ninja; output in a staging package dir).
+Without a CUDA install: `fetch_cuda.ps1 -Dest <dir>` unpacks the official build's CUDA 12.8.1 components
+from NVIDIA's redistributable archives (sha256-checked); set `CUDA_PATH_V12_8=<dir>` before building.
+
+Other GPUs. The official wheel is built with `CUDA_ARCH_LIST=Common`, which CMake's FindCUDA turns into
+sm_53 ... sm_86 plus compute_86 PTX (`cuobjdump --list-elf/--list-ptx`). A newer GPU (the store PC's
+RTX 5060 Ti, sm_120) therefore runs the driver's JIT of that PTX, and the build that matches it is
+`-Arch '8.6+PTX'`, not the GPU's own arch. `ptx_compare.py` checks a build against the official DLL
+kernel by kernel: the store PC build (862d77c, built on another machine with `fetch_cuda.ps1` and VS 2022
+Build Tools, moved over as a zip) has all 475 official kernels PTX-identical plus the fork's 28 new ones.
+Results there (24.9, golden digest recorded from its own stock wheel): digest PASS; prod_equiv pipe8 (150
+clips, `cpu_threads=1`) stock 49.4 s (16.6x) -> fork 25.2 s (32.2x), GPU busy 35.9 -> 23.3 s, rows_sha
+ccbbc32e in every run (also stock batch8's). `cpu_threads=1` alone gains little on that CPU (48.8 -> 48.0 s).
+GPU time there needs CUPTI 12.9 (12.6 and 12.8 answer CUPTI_ERROR_INVALID_DEVICE); `cupti.py` picks it by
+compute capability. The full gate still has the RTX 2080's stock hashes and sm_75 probes built in.
 Measure: `python tools/turing/bench_whisper.py <sample_dir> <package parent dir>`.
 Probes: `kernels/run_probe.ps1 <name> [args]` (nvcc sm_75, production's cuBLAS DLL): softmax_check,
 qk_check, ts_check (gate), softmax_bench, qk_probe, qk_diff. Profiles: `host/nsys.ps1` (Nsight
@@ -114,7 +128,9 @@ Verification. Every change must leave the output byte-identical to the stock whe
 - Build: `build_windows.ps1` no longer forces the Python extension (64 s of every build): setup.py
   lists the public headers in `depends`, so it is rebuilt only when they or its sources change.
 
-Host scripts (`host/`, for the Yarin layout; start long ones detached, log in `D:\ct2build\ab.log`):
+Host scripts (`host/`, for the Yarin layout; another host names its run folder in `<root>\work_dir.txt`;
+each pulls the clone first and re-runs itself when that moved HEAD; start long ones detached, log in
+`D:\ct2build\ab.log`):
 `prod.ps1` shared helpers (pause/resume production, timed python runs); `gate.ps1` the full gate;
 `digest.ps1` the fast check; `iterate.ps1` + `verdict.ps1` the dev loop; `equiv_ab.ps1` environment
 A/Bs; `ab.ps1` builds and A/Bs with production
