@@ -7,6 +7,9 @@
 // reduces the nz partials in fp32 forward (red 0), pairwise (red 1) or backward (red 2) and rounds
 // once to half. Split-K ranges are contiguous (il 0) or interleaved by 64-wide k-tiles (il 1).
 // The candidate with 0 mismatches on every trial is the order to replicate.
+// ORDER=<nz>: instead of random data, one nonzero product per split-K range of nz (A = 1 at the
+// first k of each range, W = +-2^[-10, 14] there), so that the order of the partial reduction
+// decides the result wherever the partials do not add exactly.
 // usage: gemm_probe [M N K ...]   (default: the decoder shapes at 40 rows)
 #include <cstdio>
 #include <cstdlib>
@@ -71,6 +74,19 @@ __global__ void replica(const __half* A, const __half* W, __half* C, int M, int 
   }
 }
 
+void order_data(__half* A, __half* W, int M, int N, int K, int nz, uint32_t seed) {
+  std::vector<__half> a((size_t)M * K, __float2half(0.f)), w((size_t)N * K, __float2half(0.f));
+  for (int m = 0; m < M; ++m)
+    for (int z = 0; z < nz; ++z) a[(size_t)m * K + z * (K / nz)] = __float2half(1.f);
+  for (int n = 0; n < N; ++n)
+    for (int z = 0; z < nz; ++z) {
+      seed = seed * 1664525u + 1013904223u;
+      w[(size_t)n * K + z * (K / nz)] = __float2half(((seed >> 31) ? -1.f : 1.f) * ldexpf(1.f, (int)((seed >> 8) % 25) - 10));
+    }
+  CK(cudaMemcpy(A, a.data(), a.size() * 2, cudaMemcpyHostToDevice));
+  CK(cudaMemcpy(W, w.data(), w.size() * 2, cudaMemcpyHostToDevice));
+}
+
 int main(int argc, char** argv) {
   std::vector<int> shapes = {40, 1280, 1280, 40, 3840, 1280, 40, 5120, 1280, 40, 1280, 5120};
   if (argc > 3) { shapes.clear(); for (int i = 1; i + 2 < argc; i += 3) for (int j = 0; j < 3; ++j) shapes.push_back(atoi(argv[i + j])); }
@@ -93,8 +109,12 @@ int main(int argc, char** argv) {
     for (const Candidate& c : cands) {
       unsigned long long bad = 0;
       for (int trial = 0; trial < 3; ++trial) {
-        fill<<<256, 256>>>(A, (size_t)M * K, 1000u * trial + s, -6, 3);   // activations ~ 2^[-6, 3)
-        fill<<<256, 256>>>(W, (size_t)N * K, 7000u * trial + s, -12, -3); // weights ~ 2^[-12, -3)
+        if (getenv("ORDER")) {
+          order_data(A, W, M, N, K, atoi(getenv("ORDER")), 31u * trial + s);
+        } else {
+          fill<<<256, 256>>>(A, (size_t)M * K, 1000u * trial + s, -6, 3);   // activations ~ 2^[-6, 3)
+          fill<<<256, 256>>>(W, (size_t)N * K, 7000u * trial + s, -12, -3); // weights ~ 2^[-12, -3)
+        }
         const float alpha = 1.f, beta = 0.f;
         CK(cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, W, CUDA_R_16F, K, A, CUDA_R_16F, K,
                         &beta, C, CUDA_R_16F, N, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
