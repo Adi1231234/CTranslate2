@@ -26,26 +26,25 @@ namespace ctranslate2 {
       const DT lowest = DT(std::numeric_limits<T>::lowest());   // the init of primitives::max
       const int begin = static_cast<int>(timestamp_begin);
       const int end = static_cast<int>(timestamp_end);
-      const size_t temp_bytes = timestamp_mass_temp_bytes<DT>(begin, end, lowest, stream);
+      const size_t temp_bytes = timestamp_mass_temp_bytes<DT>(static_cast<int>(n), begin, end, lowest, stream);
 
-      // One allocation: [n] text max, [n] timestamp max, [n] exp sums, then cub's temporary storage.
+      // One allocation: [n] text max, [n] timestamp max, [n] exp sums, then the temporary storage.
       const size_t results_bytes = n * (2 * sizeof (DT) + sizeof (float));
       const size_t temp_offset = (results_bytes + 255) / 256 * 256;
       Allocator& allocator = get_allocator<Device::CUDA>();
       char* buffer = static_cast<char*>(allocator.allocate(temp_offset + temp_bytes));
-      DT* text_max = reinterpret_cast<DT*>(buffer);
-      DT* timestamp_max = text_max + n;
-      float* timestamp_sum = reinterpret_cast<float*>(timestamp_max + n);   // 2n * sizeof(DT): 4-aligned
+      DT* device_maxima = reinterpret_cast<DT*>(buffer);
+      float* device_sums = reinterpret_cast<float*>(device_maxima + 2 * n);   // 2n * sizeof(DT): 4-aligned
 
-      const std::vector<int64_t> rows64(rows.begin(), rows.end());
-      timestamp_mass_enqueue<DT>(device_cast(log_probs), vocabulary_size, rows64, begin, end, lowest,
-                                 text_max, timestamp_max, timestamp_sum, buffer + temp_offset,
+      const std::vector<int32_t> rows32(rows.begin(), rows.end());
+      timestamp_mass_enqueue<DT>(device_cast(log_probs), static_cast<int>(vocabulary_size), rows32,
+                                 begin, end, lowest, device_maxima, device_sums, buffer + temp_offset,
                                  temp_bytes, stream);
 
       std::vector<T> maxima(2 * n);
       std::vector<float> sums(n);
-      CUDA_CHECK(cudaMemcpyAsync(maxima.data(), text_max, 2 * n * sizeof (DT), cudaMemcpyDeviceToHost, stream));
-      CUDA_CHECK(cudaMemcpyAsync(sums.data(), timestamp_sum, n * sizeof (float), cudaMemcpyDeviceToHost, stream));
+      CUDA_CHECK(cudaMemcpyAsync(maxima.data(), device_maxima, 2 * n * sizeof (DT), cudaMemcpyDeviceToHost, stream));
+      CUDA_CHECK(cudaMemcpyAsync(sums.data(), device_sums, n * sizeof (float), cudaMemcpyDeviceToHost, stream));
       CUDA_CHECK(cudaStreamSynchronize(stream));
       allocator.free(buffer);
 

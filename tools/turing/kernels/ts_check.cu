@@ -1,4 +1,4 @@
-// Bit-for-bit check of src/cuda/timestamp_rules.cuh (all rows enqueued, one read-back) against the
+// Bit-for-bit check of src/cuda/timestamp_rules.cuh (two segmented reductions, one read-back) against the
 // per-row thrust::reduce calls of primitives<CUDA>::max and ::logsumexp that should_sample_timestamp
 // makes, on fp16 rows shaped like Whisper log-probs (51866 tokens, timestamps 50365..51865).
 // usage: ts_check      -> mismatching text maxima, timestamp maxima, exp sums and decisions; must be 0
@@ -40,21 +40,20 @@ int main() {
     old_sum[r] = thrust::reduce(pol, it, it + nts);
   }
   // New path.
-  std::vector<int64_t> ids(rows);
+  std::vector<int32_t> ids(rows);
   for (int r = 0; r < rows; ++r) ids[r] = (r * 7) % rows;             // rows in a shuffled order
-  const size_t temp_bytes = timestamp_mass_temp_bytes<__half>(begin, end, lowest, 0);
-  __half *text_max, *ts_max;
+  const size_t temp_bytes = timestamp_mass_temp_bytes<__half>(rows, begin, end, lowest, 0);
+  __half* maxima;
   float* ts_sum;
   void* temp;
-  CK(cudaMalloc(&text_max, sizeof(__half) * rows));
-  CK(cudaMalloc(&ts_max, sizeof(__half) * rows));
+  CK(cudaMalloc(&maxima, sizeof(__half) * 2 * rows));
   CK(cudaMalloc(&ts_sum, sizeof(float) * rows));
   CK(cudaMalloc(&temp, temp_bytes));
-  timestamp_mass_enqueue<__half>(lp, vocab, ids, begin, end, lowest, text_max, ts_max, ts_sum, temp, temp_bytes, 0);
+  timestamp_mass_enqueue<__half>(lp, vocab, ids, begin, end, lowest, maxima, ts_sum, temp, temp_bytes, 0);
   std::vector<__half> new_text(rows), new_ts(rows);
   std::vector<float> new_sum(rows);
-  CK(cudaMemcpy(new_text.data(), text_max, sizeof(__half) * rows, cudaMemcpyDeviceToHost));
-  CK(cudaMemcpy(new_ts.data(), ts_max, sizeof(__half) * rows, cudaMemcpyDeviceToHost));
+  CK(cudaMemcpy(new_text.data(), maxima, sizeof(__half) * rows, cudaMemcpyDeviceToHost));
+  CK(cudaMemcpy(new_ts.data(), maxima + rows, sizeof(__half) * rows, cudaMemcpyDeviceToHost));
   CK(cudaMemcpy(new_sum.data(), ts_sum, sizeof(float) * rows, cudaMemcpyDeviceToHost));
   int bad_text = 0, bad_ts = 0, bad_sum = 0, bad_decision = 0, timestamps = 0;
   for (int i = 0; i < rows; ++i) {
