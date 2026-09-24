@@ -6,6 +6,8 @@
 // order from zero with mma.sync m16n8k8, then alpha * sum rounded to half. For k = 1500 the
 // candidates differ in where the partial group sits: last (natural) or first (residue-first, as a
 // CUTLASS mainloop that predicates its first k-tile of 32 or 64). 0 mismatches = the order.
+// XAV=1: the decoder's cross-attention AV instead: rows = 5 beams per (clip, head), batch = clips
+// x 20 heads (O[b][beam][d] = sum_k P[b][beam][k] V[b][k][d], k 1500).
 // usage: attn_probe [batch=4]
 #include <cstdio>
 #include <cstdlib>
@@ -66,6 +68,8 @@ std::vector<int2> residue_first(int K, int tile) {
 
 int main(int argc, char** argv) {
   const int batch = argc > 1 ? atoi(argv[1]) : 4, T = 1500, D = 64;
+  const bool xav = getenv("XAV") != nullptr;
+  const int rows = xav ? 5 : T;                   // query rows of the AV matmul
   cublasHandle_t h; CK(cublasCreate(&h));
   __half *Q, *Kt, *S, *R, *P, *V, *O;
   CK(cudaMalloc(&Q, 2ull * batch * T * D)); CK(cudaMalloc(&Kt, 2ull * batch * T * D));
@@ -92,8 +96,8 @@ int main(int argc, char** argv) {
     CK(cublasGemmStridedBatchedEx(h, CUBLAS_OP_T, CUBLAS_OP_N, T, T, D, &qk_alpha, Kt, CUDA_R_16F, D, (long long)T * D,
                                   Q, CUDA_R_16F, D, (long long)T * D, &zero, S, CUDA_R_16F, T, (long long)T * T, batch,
                                   CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
-    CK(cublasGemmStridedBatchedEx(h, CUBLAS_OP_N, CUBLAS_OP_N, D, T, T, &one, V, CUDA_R_16F, D, (long long)T * D,
-                                  P, CUDA_R_16F, T, (long long)T * T, &zero, O, CUDA_R_16F, D, (long long)T * D, batch,
+    CK(cublasGemmStridedBatchedEx(h, CUBLAS_OP_N, CUBLAS_OP_N, D, rows, T, &one, V, CUDA_R_16F, D, (long long)T * D,
+                                  P, CUDA_R_16F, T, (long long)rows * T, &zero, O, CUDA_R_16F, D, (long long)rows * D, batch,
                                   CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
     // QK: B = K rows [n][k]: element (k, n) at n * D + k.
     run(natural(D), Q, Kt, R, T, T, D, 1, D, qk_alpha);
@@ -102,8 +106,8 @@ int main(int argc, char** argv) {
     struct { const char* name; std::vector<int2> g; } av[] = {
       {"natural", natural(T)}, {"residue-first 32", residue_first(T, 32)}, {"residue-first 64", residue_first(T, 64)}};
     for (auto& c : av) {
-      run(c.g, P, V, R, T, D, T, D, 1, 1.f);
-      printf("trial %d AV %s: %llu mismatches of %d\n", trial, c.name, diff(O, R, (size_t)batch * T * D), batch * T * D);
+      run(c.g, P, V, R, rows, D, T, D, 1, 1.f);
+      printf("trial %d AV %s: %llu mismatches of %d\n", trial, c.name, diff(O, R, (size_t)batch * rows * D), batch * rows * D);
     }
   }
   return 0;
