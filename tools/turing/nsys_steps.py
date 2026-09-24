@@ -4,11 +4,13 @@ on each stream the kernels between two of them are one step. Prints the steps' t
 kernel mix (name + grid, by GPU time), one median step in launch order, and the kernels outside steps
 (encoder, first steps, fallback).
 usage: nsys_steps.py <report.sqlite> [kernels of the listed step, default 120] [--grids]
---grids: the per-step mix split by launch grid too (e.g. one GEMM kernel's different shapes)."""
+--grids: the per-step mix split by launch grid too (e.g. one GEMM kernel's different shapes).
+--pick=<q>: list the step at quantile q of GPU time instead of the median (0.95: a full batch)."""
 import sys, sqlite3, collections, statistics
 
 db = sqlite3.connect(sys.argv[1])
-args = [a for a in sys.argv[2:] if a != "--grids"]
+args = [a for a in sys.argv[2:] if not a.startswith("--")]
+pick = float(next((a.split("=")[1] for a in sys.argv if a.startswith("--pick=")), 0.5))
 show = int(args[0]) if args else 120
 by_grid = "--grids" in sys.argv
 S = dict(db.execute("SELECT id, value FROM StringIds"))
@@ -42,7 +44,7 @@ for st in steps:
 print("\nper-step kernel mix (ms total, calls per step, us per call):")
 for n, t in tot.most_common(40 if by_grid else 25):
     print(f"  {t / 1e6:8.1f} ms  {cnt[n] / len(steps):6.1f}/step  {t / cnt[n] / 1e3:7.1f} us  {n}")
-mid = sorted(range(len(steps)), key=lambda i: gpu[i])[len(steps) // 2]
+mid = sorted(range(len(steps)), key=lambda i: gpu[i])[min(len(steps) - 1, int(pick * len(steps)))]
 st = steps[mid]
 print(f"\nmedian step: {len(st)} kernels, GPU {gpu[mid] / 1e3:.0f} us, span {span[mid] / 1e3:.0f} us")
 for s, e, n, g in st[:show]:
