@@ -121,6 +121,9 @@ namespace ctranslate2 {
     // Replacements that replay a cuBLAS kernel's arithmetic were verified on sm_75 against one cuBLAS
     // build (tools/turing/kernels/qk_check.cu); anywhere else the cuBLAS call runs.
     bool cublas_replicas_verified();
+    // The same for the decoder Dense replica (hmma_gemm.cuh): sm_120 with cuBLAS 12.9.2
+    // (tools/turing/kernels/hmma_probe.cu and hmma_check.cu).
+    bool hmma_replicas_verified();
 
     // Work of the calling thread goes to its low-priority stream while an instance lives (e.g. a
     // Whisper encoder run next to another thread's decoding): the GPU then runs the other threads'

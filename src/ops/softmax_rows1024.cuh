@@ -24,11 +24,13 @@ namespace at {
         && reinterpret_cast<uintptr_t>(y) % 8 == 0;
     }
 
-    __device__ __forceinline__ void rows1024_load(const __half* p, unsigned n, float* v) {
+    // Values 4q..4q+3 of a lane's chunk are the 8-byte slot q, slot_stride slots after slot q - 1: 1 for a
+    // contiguous row, more where lanes' chunks are interleaved slot by slot (no shared-memory bank conflicts).
+    __device__ __forceinline__ void rows1024_load(const __half* p, unsigned n, float* v, unsigned slot_stride = 1) {
       #pragma unroll
       for (unsigned q = 0; q < 8; ++q) {
         if (4 * q < n) {
-          const uint2 raw = reinterpret_cast<const uint2*>(p)[q];
+          const uint2 raw = reinterpret_cast<const uint2*>(p)[q * slot_stride];
           const __half2 a = *reinterpret_cast<const __half2*>(&raw.x);
           const __half2 b = *reinterpret_cast<const __half2*>(&raw.y);
           v[4 * q] = __low2float(a); v[4 * q + 1] = __high2float(a);
@@ -53,20 +55,21 @@ namespace at {
       }
     }
 
-    __global__ void __launch_bounds__(rows1024_per_block * C10_WARP_SIZE)
-    softmax_rows1024(__half* output, const __half* input, const unsigned rows, const unsigned classes)
+    // One row by one warp: out = softmax of the row, 1024 < classes <= 2048, out 8-byte aligned. The lane's
+    // input chunks (values 32L.. and 1024 + 32L..) start at in0 and in1 with their slots stride0 and stride1
+    // apart (rows1024_load): a contiguous row, or attention_scores_softmax's scores, interleaved slot by slot
+    // in shared memory.
+    __device__ __forceinline__ void rows1024_row(__half* out, const __half* in0, const unsigned stride0,
+                                                 const __half* in1, const unsigned stride1,
+                                                 const unsigned classes, const unsigned lane)
     {
-      const unsigned lane = threadIdx.x % C10_WARP_SIZE;
-      const unsigned row = blockIdx.x * rows1024_per_block + threadIdx.x / C10_WARP_SIZE;
-      if (row >= rows)
-        return;
-      const size_t first = size_t(row) * classes + C10_WARP_SIZE * lane;
+      const unsigned first = C10_WARP_SIZE * lane;
       const unsigned tail = classes - 1024;                 // values past the first 1024
       const unsigned n1 = tail > C10_WARP_SIZE * lane
         ? min(tail - C10_WARP_SIZE * lane, unsigned(C10_WARP_SIZE)) : 0;
       float e0[C10_WARP_SIZE], e1[C10_WARP_SIZE];
-      rows1024_load(input + first, C10_WARP_SIZE, e0);
-      rows1024_load(input + first + 1024, n1, e1);
+      rows1024_load(in0, C10_WARP_SIZE, e0, stride0);
+      rows1024_load(in1, n1, e1, stride1);
 
       float lane_max = -max_float;
       #pragma unroll
@@ -96,8 +99,18 @@ namespace at {
       for (unsigned g = 0; g < C10_WARP_SIZE; ++g)
         sum = Add<float>()(sum, __shfl_sync(0xffffffff, warp_sum, g));
 
-      rows1024_store(output + first, C10_WARP_SIZE, e0, sum);
-      rows1024_store(output + first + 1024, n1, e1, sum);
+      rows1024_store(out + first, C10_WARP_SIZE, e0, sum);
+      rows1024_store(out + first + 1024, n1, e1, sum);
+    }
+
+    static __global__ void __launch_bounds__(rows1024_per_block * C10_WARP_SIZE)
+    softmax_rows1024(__half* output, const __half* input, const unsigned rows, const unsigned classes)
+    {
+      const unsigned row = blockIdx.x * rows1024_per_block + threadIdx.x / C10_WARP_SIZE;
+      const unsigned lane = threadIdx.x % C10_WARP_SIZE;
+      const __half* in = input + size_t(row) * classes + C10_WARP_SIZE * lane;
+      if (row < rows)
+        rows1024_row(output + size_t(row) * classes, in, 1, in + 1024, 1, classes, lane);
     }
 
   }

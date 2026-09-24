@@ -302,10 +302,9 @@ namespace ctranslate2 {
       return stock;
     }
 
-    bool cublas_replicas_verified() {
-#ifdef CT2_USE_HIP
-      return false;
-#else
+#ifndef CT2_USE_HIP
+    // True where the fork's replicas of this cuBLAS build's kernels were verified on the device's arch.
+    static bool replicas_verified_on(int major, int minor) {
       constexpr int verified_cublas_version = 120902;
       static const int cublas_version = [] {
         int version = 0;
@@ -314,8 +313,24 @@ namespace ctranslate2 {
       }();
       const cudaDeviceProp& device_prop = get_device_properties();
       return !use_stock_kernels()
-        && device_prop.major == 7 && device_prop.minor == 5
+        && device_prop.major == major && device_prop.minor == minor
         && cublas_version == verified_cublas_version;
+    }
+#endif
+
+    bool cublas_replicas_verified() {
+#ifdef CT2_USE_HIP
+      return false;
+#else
+      return replicas_verified_on(7, 5);
+#endif
+    }
+
+    bool hmma_replicas_verified() {
+#ifdef CT2_USE_HIP
+      return false;
+#else
+      return replicas_verified_on(12, 0);
 #endif
     }
 
