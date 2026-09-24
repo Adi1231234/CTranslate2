@@ -36,88 +36,127 @@ namespace ctranslate2 {
                    : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]) : "r"(a0), "r"(a1), "r"(b));
     }
 
-    __device__ __forceinline__ unsigned smg_ld(const __half* p) {
-      return __ldg(reinterpret_cast<const unsigned*>(p));
+    __device__ __forceinline__ unsigned smg_lds(const __half* p) {
+      return *reinterpret_cast<const unsigned*>(p);
     }
 
-    // Warps per block, and warps per 8-column tile (one per chain).
-    template <int Recipe> struct smg_shape {
-      static constexpr int warps = Recipe == 3 ? 8 : 4;
-      static constexpr int per_tile = Recipe == 1 ? 1 : Recipe == 2 ? 2 : 8;
+    // Warps are (n-tile, role): a role is one chain (recipe 2) or one (quarter, chain) (recipe 3).
+    // All warps walk k in steps of 64 per quarter, with the block's rows of A for the step staged in
+    // shared memory (double-buffered, 72-half rows: conflict-free fragment reads) and each warp's
+    // weights for the next step loaded ahead into registers.
+    template <int Recipe> struct smg_cfg {
+      static constexpr int roles = Recipe == 1 ? 1 : Recipe == 2 ? 2 : 8;
+      static constexpr int quarters = Recipe == 3 ? 4 : 1;
+      static constexpr int tiles = Recipe == 3 ? 1 : 4;              // 8-column tiles per block
+      static constexpr int warps = roles * tiles;
+      static constexpr int groups = Recipe == 1 ? 8 : 4;             // k-groups per warp and step
     };
+    constexpr int smg_row = 72;
 
     template <int Recipe, int MT>
-    __global__ void __launch_bounds__(smg_shape<Recipe>::warps * 32)
+    constexpr size_t smg_smem_bytes() {
+      using S = smg_cfg<Recipe>;
+      const size_t a = 2 * S::quarters * MT * 16 * smg_row * sizeof (__half);
+      const size_t part = S::warps * MT * 4 * 32 * sizeof (float);
+      return a > part ? a : part;
+    }
+
+    template <int Recipe, int MT>
+    __global__ void __launch_bounds__(smg_cfg<Recipe>::warps * 32)
     small_m_gemm_kernel(const __half* A, const __half* W, __half* C, int M, int N, int K) {
-      using S = smg_shape<Recipe>;
-      __shared__ float part[S::warps][MT * 4][32];
+      using S = smg_cfg<Recipe>;
+      extern __shared__ __align__(16) unsigned char smg_smem[];
+      __half* a_s = reinterpret_cast<__half*>(smg_smem);
+      constexpr int rows = MT * 16, buf = S::quarters * rows * smg_row;
       const int warp = threadIdx.x / 32, lane = threadIdx.x % 32, g4 = lane / 4, t4 = lane % 4;
-      const int role = warp % S::per_tile;                     // recipe 2: chain; 3: 2 * quarter + chain
-      const int n0 = (blockIdx.x * (S::warps / S::per_tile) + warp / S::per_tile) * 8;
-      const int blocks = K / 32, first = Recipe == 3 ? (role / 2) * blocks / 4 : 0;
-      const int last = Recipe == 3 ? first + blocks / 4 : blocks, chain = Recipe == 1 ? 0 : role % 2;
-      const __half* w = W + (size_t)(n0 + g4) * K + 2 * t4;
-      float acc[MT][4] = {};
-      for (int blk = first + chain * (Recipe != 1); blk < last; blk += Recipe == 1 ? 1 : 2) {
-        const int k0 = blk * 32;
-        unsigned b[4], a[MT][4][2];
-        #pragma unroll
-        for (int j = 0; j < 4; ++j) b[j] = smg_ld(w + k0 + 8 * j);
-        #pragma unroll
-        for (int mt = 0; mt < MT; ++mt) {
-          const int r0 = mt * 16 + g4, r1 = r0 + 8;
-          #pragma unroll
-          for (int j = 0; j < 4; ++j) {
-            a[mt][j][0] = r0 < M ? smg_ld(A + (size_t)r0 * K + k0 + 8 * j + 2 * t4) : 0u;
-            a[mt][j][1] = r1 < M ? smg_ld(A + (size_t)r1 * K + k0 + 8 * j + 2 * t4) : 0u;
-          }
+      const int role = warp % S::roles, n0 = (blockIdx.x * S::tiles + warp / S::roles) * 8;
+      const int quarter = Recipe == 3 ? role / 2 : 0, chain = Recipe == 1 ? 0 : role % 2;
+      const int range = K / S::quarters, steps = range / 64, shift = Recipe == 1 ? 0 : chain * 32;
+      const __half* w = W + (size_t)(n0 + g4) * K + quarter * range + shift + 2 * t4;
+      auto stage = [&](int s, int b) {
+        for (int v = threadIdx.x; v < S::quarters * rows * 8; v += blockDim.x) {
+          const int q = v / (rows * 8), r = (v / 8) % rows, c = v % 8;
+          uint4 x = make_uint4(0, 0, 0, 0);
+          if (r < M)
+            x = __ldg(reinterpret_cast<const uint4*>(A + (size_t)r * K + q * range + s * 64 + c * 8));
+          *reinterpret_cast<uint4*>(a_s + b * buf + (q * rows + r) * smg_row + c * 8) = x;
         }
+      };
+      unsigned wb[S::groups], wn[S::groups];
+      auto load_w = [&](int s, unsigned* b) {
         #pragma unroll
-        for (int j = 0; j < 4; ++j)
+        for (int j = 0; j < S::groups; ++j)
+          b[j] = __ldg(reinterpret_cast<const unsigned*>(w + s * 64 + 8 * j));
+      };
+      float acc[MT][4] = {};
+      stage(0, 0);
+      load_w(0, wb);
+      __syncthreads();
+      for (int s = 0; s < steps; ++s) {
+        if (s + 1 < steps) {
+          stage(s + 1, (s + 1) & 1);
+          load_w(s + 1, wn);
+        }
+        const __half* a = a_s + (s & 1) * buf + quarter * rows * smg_row + shift + 2 * t4;
+        #pragma unroll
+        for (int j = 0; j < S::groups; ++j)            // this chain's groups, in increasing k
           #pragma unroll
-          for (int mt = 0; mt < MT; ++mt)
-            smg_mma(acc[mt], a[mt][j][0], a[mt][j][1], b[j]);
-      }
-      #pragma unroll
-      for (int mt = 0; mt < MT; ++mt)
+          for (int mt = 0; mt < MT; ++mt) {
+            const __half* p = a + (mt * 16 + g4) * smg_row + 8 * j;
+            smg_mma(acc[mt], smg_lds(p), smg_lds(p + 8 * smg_row), wb[j]);
+          }
+        __syncthreads();
         #pragma unroll
-        for (int e = 0; e < 4; ++e) part[warp][mt * 4 + e][lane] = acc[mt][e];
+        for (int j = 0; j < S::groups; ++j) wb[j] = wn[j];
+      }
+      float* part = reinterpret_cast<float*>(smg_smem);          // [warps][MT * 4][32], A is done
+      #pragma unroll
+      for (int i = 0; i < MT * 4; ++i) part[(warp * MT * 4 + i) * 32 + lane] = acc[i / 4][i % 4];
       __syncthreads();
       if (role != 0)
         return;
       #pragma unroll
-      for (int mt = 0; mt < MT; ++mt)
-        #pragma unroll
-        for (int e = 0; e < 4; ++e) {
-          const int i = mt * 4 + e;
-          float total = part[warp][i][lane];
-          if (Recipe == 2)
-            total = total + part[warp + 1][i][lane];
-          if (Recipe == 3)
-            for (int q = 0; q < 4; ++q) {
-              const float p = __half2float(__float2half_rn(part[warp + 2 * q][i][lane] + part[warp + 2 * q + 1][i][lane]));
-              total = q == 0 ? p : total + p;
-            }
-          const int row = mt * 16 + g4 + 8 * (e / 2), col = n0 + 2 * t4 + e % 2;
-          if (row < M)
-            C[(size_t)row * N + col] = __float2half_rn(total);
-        }
+      for (int i = 0; i < MT * 4; ++i) {
+        auto at = [&](int wp) { return part[((warp + wp) * MT * 4 + i) * 32 + lane]; };
+        float total = at(0);
+        if (Recipe == 2)
+          total = total + at(1);
+        if (Recipe == 3)
+          for (int q = 0; q < 4; ++q) {
+            const float p = __half2float(__float2half_rn(at(2 * q) + at(2 * q + 1)));
+            total = q == 0 ? p : total + p;
+          }
+        const int row = (i / 4) * 16 + g4 + 8 * ((i % 4) / 2), col = n0 + 2 * t4 + i % 2;
+        if (row < M)
+          C[(size_t)row * N + col] = __float2half_rn(total);
+      }
+    }
+
+    template <int Recipe, int MT>
+    void small_m_gemm_run(const __half* A, const __half* W, __half* C, int M, int N, int K,
+                          cudaStream_t stream) {
+      using S = smg_cfg<Recipe>;
+      constexpr size_t smem = smg_smem_bytes<Recipe, MT>();
+      static const bool configured = [] {           // opt in above the 48 KB default once
+        return cudaFuncSetAttribute(small_m_gemm_kernel<Recipe, MT>,
+                                    cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)) == cudaSuccess;
+      }();
+      (void)configured;
+      small_m_gemm_kernel<Recipe, MT><<<N / 8 / S::tiles, S::warps * 32, smem, stream>>>(A, W, C, M, N, K);
     }
 
     template <int Recipe>
     void small_m_gemm_launch(const __half* A, const __half* W, __half* C, int M, int N, int K,
                              cudaStream_t stream) {
-      using S = smg_shape<Recipe>;
-      const int grid = N / 8 / (S::warps / S::per_tile), threads = S::warps * 32;
       if (M <= 16)
-        small_m_gemm_kernel<Recipe, 1><<<grid, threads, 0, stream>>>(A, W, C, M, N, K);
+        small_m_gemm_run<Recipe, 1>(A, W, C, M, N, K, stream);
       else if (M <= 32)
-        small_m_gemm_kernel<Recipe, 2><<<grid, threads, 0, stream>>>(A, W, C, M, N, K);
+        small_m_gemm_run<Recipe, 2>(A, W, C, M, N, K, stream);
       else
-        small_m_gemm_kernel<Recipe, 3><<<grid, threads, 0, stream>>>(A, W, C, M, N, K);
+        small_m_gemm_run<Recipe, 3>(A, W, C, M, N, K, stream);
     }
 
-    // C = A W^T for a verified shape (small_m_gemm_recipe(M, N, K) != 0). A, W and C 4-byte aligned.
+    // C = A W^T for a verified shape (small_m_gemm_recipe(M, N, K) != 0). A 16-byte aligned, W and C 4.
     inline void small_m_gemm(const __half* A, const __half* W, __half* C, int M, int N, int K,
                              cudaStream_t stream) {
       switch (small_m_gemm_recipe(M, N, K)) {
