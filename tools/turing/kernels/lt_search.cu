@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
     cublasLtMatmulAlgoCapGetAttribute(&algo, CUBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX, &custom_max, sizeof custom_max, &b);
     for (int tile : tiles) for (int stage : stages) for (int sk : {1, 2, 4, 8}) for (uint32_t sc : {0u, 1u, 2u, 4u})
       for (int co = 0; co <= custom_max && co < 4; ++co) {
-        if ((sk > 1 && !splitk_ok) || (sk == 1 && sc) || (sk > 1 && sc && !(schemes & sc))) continue;
+        if ((sk > 1 && !splitk_ok) || (sk == 1 && sc) || (sk > 1 && sc && !(schemes & sc)) || tried > 4000) continue;
         LT(cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_TILE_ID, &tile, sizeof tile));
         LT(cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_STAGES_ID, &stage, sizeof stage));
         LT(cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &sk, sizeof sk));
