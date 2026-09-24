@@ -16,17 +16,13 @@ namespace ctranslate2 {
       uint4* p[3];
     };
 
-    // float(bias) + float(x) rounded to half, on 8 packed halves (cuda::plus<__half> per element).
+    // bias + x on 8 packed halves with __hadd, which is cuda::plus<__half> per element.
     __device__ __forceinline__ uint4 add_bias8(uint4 x, uint4 b) {
-      unsigned* xs = reinterpret_cast<unsigned*>(&x);
-      const unsigned* bs = reinterpret_cast<const unsigned*>(&b);
+      __half2* xs = reinterpret_cast<__half2*>(&x);
+      const __half2* bs = reinterpret_cast<const __half2*>(&b);
       #pragma unroll
-      for (int k = 0; k < 4; ++k) {
-        const float2 xf = __half22float2(*reinterpret_cast<const __half2*>(xs + k));
-        const float2 bf = __half22float2(*reinterpret_cast<const __half2*>(bs + k));
-        const __half2 s = __floats2half2_rn(bf.x + xf.x, bf.y + xf.y);
-        xs[k] = *reinterpret_cast<const unsigned*>(&s);
-      }
+      for (int k = 0; k < 4; ++k)
+        xs[k] = __hadd2(bs[k], xs[k]);
       return x;
     }
 

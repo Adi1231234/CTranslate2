@@ -8,8 +8,9 @@ namespace ctranslate2 {
     // Attention input layout in one pass. x is [rows, time, parts * heads * head_dim] (a fused
     // projection without its bias); out[p] is [rows, heads, time, head_dim] and receives part p:
     //   out[p][r, h, t, i] = x[r, t, (p * heads + h) * head_dim + i] + bias[(p * heads + h) * head_dim + i]
-    // with the bias add of Dense (cuda::plus<__half>: float(bias) + float(x), rounded once to half),
-    // so the result equals Dense + MultiHeadAttention::split_heads + ops::Split bit for bit.
+    // with the bias add of Dense (cuda::plus<__half>, which is __hadd where half math is available,
+    // as on every GPU this library builds for), so the result equals Dense +
+    // MultiHeadAttention::split_heads + ops::Split bit for bit.
     // bias may be null. parts <= 3, head_dim a multiple of split_heads_bias_granule, and every
     // pointer split_heads_bias_aligned.
     constexpr dim_t split_heads_bias_granule = 8;

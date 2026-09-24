@@ -1,7 +1,10 @@
 #include "ctranslate2/ops/bias_add.h"
 
+#include <type_traits>
+
 #include "type_dispatch.h"
 #include "cuda/helpers.h"
+#include "bias_add_vec.cuh"
 
 namespace ctranslate2 {
   namespace ops {
@@ -58,6 +61,18 @@ namespace ctranslate2 {
       const T* x = value.data<T>();
       const T* b = bias.data<T>();
       T* y = output.data<T>();
+
+      if constexpr (std::is_same<T, float16_t>::value) {
+        const bool gelu = _activation_type && *_activation_type == ActivationType::GELU;
+        if (!_activation_type || (gelu && !residual)) {
+          const BiasAddVecMode mode = (residual ? BiasAddVecMode::residual
+                                       : gelu ? BiasAddVecMode::gelu : BiasAddVecMode::plain);
+          if (bias_add_vec(mode, cuda::device_cast(x), cuda::device_cast(b),
+                           residual ? cuda::device_cast(residual->data<T>()) : nullptr,
+                           cuda::device_cast(y), numel, depth, width))
+            return;
+        }
+      }
 
       if (residual) {
         trinary_add(b, x, residual->data<T>(), y, width, depth, value.size());
