@@ -72,15 +72,24 @@ namespace ctranslate2 {
     // before the others, so it will be the first to see the flag below set to true.
     static std::atomic<bool> is_main_thread(true);
 
+    // Worker streams get the highest priority, a thread's low-priority stream the lowest (the
+    // default of a plain stream); CT2_CUDA_STOCK_KERNELS=1 keeps plain streams.
+    static int stream_priority(bool low) {
+      int least = 0, greatest = 0;
+      if (use_stock_kernels() || cudaDeviceGetStreamPriorityRange(&least, &greatest) != cudaSuccess)
+        return 0;
+      return low ? least : greatest;
+    }
+
     class CudaStream {
     public:
-      CudaStream() {
-        if (is_main_thread) {
+      CudaStream(bool low = false) {
+        if (is_main_thread && !low) {
           is_main_thread = false;
           _stream = cudaStreamDefault;
         } else {
           CUDA_CHECK(cudaGetDevice(&_device));
-          CUDA_CHECK(cudaStreamCreate(&_stream));
+          CUDA_CHECK(cudaStreamCreateWithPriority(&_stream, cudaStreamDefault, stream_priority(low)));
         }
       }
       ~CudaStream() {
@@ -119,13 +128,34 @@ namespace ctranslate2 {
     // We create one cuBLAS/cuDNN handle per host thread. The handle is destroyed
     // when the thread exits.
 
+    static thread_local bool low_priority_stream = false;
+
     cudaStream_t get_cuda_stream() {
       static thread_local CudaStream cuda_stream;
+      if (low_priority_stream) {
+        static thread_local CudaStream low_stream(/*low=*/true);
+        return low_stream.get();
+      }
       return cuda_stream.get();
+    }
+
+    UseLowPriorityStreamInScope::UseLowPriorityStreamInScope()
+      : _previous_value(low_priority_stream) {
+      low_priority_stream = true;
+    }
+
+    UseLowPriorityStreamInScope::~UseLowPriorityStreamInScope() {
+      low_priority_stream = _previous_value;
     }
 
     cublasHandle_t get_cublas_handle() {
       static thread_local CublasHandle cublas_handle;
+      static thread_local cudaStream_t bound = get_cuda_stream();   // the handle's stream at creation
+      const cudaStream_t stream = get_cuda_stream();
+      if (stream != bound) {                                        // follow the thread's active stream
+        CUBLAS_CHECK(cublasSetStream(cublas_handle.get(), stream));
+        bound = stream;
+      }
       return cublas_handle.get();
     }
 

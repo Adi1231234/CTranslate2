@@ -85,6 +85,8 @@ namespace ctranslate2 {
 
 #ifdef CT2_WITH_CUDA
       const cuda::UseTrueFp16GemmInScope use_true_fp16_gemm(false);
+      // The encoder yields to decoding on other threads (the output is synchronized below).
+      const cuda::UseLowPriorityStreamInScope low_priority_stream;
 #endif
 
       const auto scoped_device_setter = _model->get_scoped_device_setter();

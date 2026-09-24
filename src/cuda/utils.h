@@ -122,6 +122,19 @@ namespace ctranslate2 {
     // build (tools/turing/kernels/qk_check.cu); anywhere else the cuBLAS call runs.
     bool cublas_replicas_verified();
 
+    // Work of the calling thread goes to its low-priority stream while an instance lives (e.g. a
+    // Whisper encoder run next to another thread's decoding): the GPU then runs the other threads'
+    // kernels first whenever both wait, and this work in the gaps. Only the order in which the GPU
+    // takes up kernels changes, never what a kernel computes. The work must be synchronized before
+    // the scope ends if another stream consumes it.
+    class UseLowPriorityStreamInScope {
+    public:
+      UseLowPriorityStreamInScope();
+      ~UseLowPriorityStreamInScope();
+    private:
+      const bool _previous_value;
+    };
+
     class UseTrueFp16GemmInScope {
     public:
       UseTrueFp16GemmInScope(const bool use)
