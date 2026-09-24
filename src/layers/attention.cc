@@ -579,8 +579,7 @@ namespace ctranslate2 {
             *cached_values = std::move(values_proj);
           } else if (cache_reorder) {
             // The beam order left by Decoder::update_state, applied while appending this step.
-            reorder_and_append(*cached_keys, *cache_reorder, keys_proj);
-            reorder_and_append(*cached_values, *cache_reorder, values_proj);
+            reorder_and_append(*cached_keys, *cached_values, *cache_reorder, keys_proj, values_proj);
           } else {
             const ops::Concat concat_op(_cache_time_dim);
             StorageView& tmp = fused_proj;  // Reuse storage.
