@@ -35,14 +35,19 @@ def mempool(device=0):
     return attr
 
 
-def sample_waves(sample):
-    """The 150 sample clips (first occurrence of each key), shortest first."""
+def sample_clips(sample):
+    """The 150 sample clips (first occurrence of each key) as (key, waveform), in meta.json order."""
     import numpy as np
     meta, seen = [], set()
     for m in json.load(open(os.path.join(sample, "meta.json"), encoding="utf-8")):
         if m["key"] not in seen:
             seen.add(m["key"]); meta.append(m)
-    return sorted([np.load(os.path.join(sample, x["key"] + ".npy")) for x in meta[:150]], key=len)
+    return [(x["key"], np.load(os.path.join(sample, x["key"] + ".npy"))) for x in meta[:150]]
+
+
+def sample_waves(sample):
+    """The 150 sample clips, shortest first."""
+    return sorted([w for _, w in sample_clips(sample)], key=len)
 
 
 def whisper(num_workers=1, cpu_threads=0):

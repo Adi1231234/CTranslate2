@@ -17,17 +17,12 @@ import common
 SAMPLE, ENGINE, MODE = sys.argv[1:4]
 common.init(sys.argv[4] if len(sys.argv) > 4 else None)
 sys.path.insert(0, ENGINE)
-import numpy as np
 import ctranslate2
 from faster_whisper import WhisperModel
 from engine import transcribe_unit
 
-meta, seen = [], set()
-for m in json.load(open(os.path.join(SAMPLE, "meta.json"), encoding="utf-8")):
-    if m["key"] not in seen:
-        seen.add(m["key"]); meta.append(m)
 n_clips = int(os.environ.get("N_CLIPS", "150"))       # fewer clips keep a sampled profile small
-clips = [(m["key"], np.load(os.path.join(SAMPLE, m["key"] + ".npy"))) for m in meta[:150][:n_clips]]
+clips = common.sample_clips(SAMPLE)[:n_clips]
 workers = 1 + int(MODE.startswith("pipe")) + 1                  # as transcribe_run.py
 cpu_threads = int(os.environ.get("CPU_THREADS", "0"))    # CTranslate2 intra_threads (OpenMP team size)
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
@@ -45,7 +40,7 @@ if profile:
     cuda.cuProfilerStart()
 tracer = None
 if os.environ.get("GPU_TIME") == "1":
-    from cupti import Tracer
+    from cupti import Tracer, busy
     tracer = Tracer(os.path.join(ENGINE, "cupti"), names=False)
     tracer.start()
 t = time.time()
@@ -56,11 +51,8 @@ if profile:
 gpu = {}
 if tracer:
     tracer.stop()
-    iv = sorted(tracer.records)
-    busy, end = 0, -1
-    for s, e in iv:
-        busy += max(0, e - max(s, end)); end = max(end, e)
-    gpu = {"gpu_busy_s": round(busy / 1e9, 2), "gpu_kernel_s": round(sum(e - s for s, e in iv) / 1e9, 2),
+    iv = tracer.records
+    gpu = {"gpu_busy_s": round(busy(iv) / 1e9, 2), "gpu_kernel_s": round(sum(e - s for s, e in iv) / 1e9, 2),
            "kernels": len(iv)}
 audio = sum(len(w) for _, w in clips) / 16000
 print(json.dumps({"ctranslate2": ctranslate2.__file__, "mode": MODE, "cpu_threads": cpu_threads, "clips": len(rows),

@@ -85,6 +85,14 @@ class Tracer:
         t = c_uint64(); self.lib.cuptiGetTimestamp(byref(t)); return t.value
 
 
+def busy(intervals):
+    """Length of the union of (start, end) intervals: the time at least one of them was running."""
+    tot, end = 0, -1
+    for s, e in sorted(intervals):
+        tot += max(0, e - max(s, end)); end = max(end, e)
+    return tot
+
+
 def short(n, width=90):
     n = n.replace("void ", "")
     return (n.split("(")[0].split("<")[0] + ("<" + n.split("<")[1][:40] if "<" in n else ""))[:width]

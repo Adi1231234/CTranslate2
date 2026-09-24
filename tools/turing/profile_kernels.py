@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common
 SAMPLE, OUT = sys.argv[1], sys.argv[2]
 common.init(sys.argv[3] if len(sys.argv) > 3 else None)
-from cupti import Tracer, short
+from cupti import Tracer, short, busy
 tr = Tracer(os.path.join(os.path.dirname(OUT), "cupti"))
 m, (f0, f1), gen = common.load(SAMPLE, batches=2, num_workers=2)
 gen(m.encode(f0)); gen(m.encode(f1))                            # warmup, outside the trace
@@ -17,18 +17,6 @@ t0 = tr.now(); e0 = m.encode(f0); t1 = tr.now(); out = gen(e0); t2 = tr.now()
 steps = max(len(r.sequences_ids[0]) for r in out) + 1
 th = threading.Thread(target=m.encode, args=(f1,)); t3 = tr.now(); th.start(); gen(e0); th.join(); t4 = tr.now()
 tr.stop()
-
-
-def busy(iv):
-    tot, end = 0, -1
-    for s, e in sorted(iv):
-        if s > end:
-            tot += e - s; end = e
-        elif e > end:
-            tot += e - end; end = e
-    return tot
-
-
 lines = []
 for tag, a, b in (("encoder_bs8", t0, t1), ("decode_bs8_beam5", t1, t2), ("enc_next||decode", t3, t4)):
     rs = [r[:4] for r in tr.records if a <= r[2] <= b]
