@@ -19,11 +19,13 @@ if (-not (Test-Path "$Build\build.ninja")) {
 }
 cmake --build $Build --target install --parallel 2>&1 | Out-String -Stream
 Check 'cmake build'
-# Python extension against the fresh library, packaged next to its DLL.
+# Python extension against the fresh library, packaged next to its DLL. Not forced: setup.py lists the
+# public headers in `depends`, so it is rebuilt only when they (or its sources) are newer than it. A change
+# to the library internals leaves the bindings' ABI alone; forcing cost 64 s per build (Yarin, 24.9).
 $env:CTRANSLATE2_ROOT = $Inst
 $env:PYTHONPATH = "$Root\pydeps"
 Push-Location "$Src\python"
-& $Python setup.py build_ext --inplace --force 2>&1 | Out-String -Stream
+& $Python setup.py build_ext --inplace 2>&1 | Out-String -Stream
 Check 'python extension'
 Pop-Location
 $Pkg = "$Out\ctranslate2"

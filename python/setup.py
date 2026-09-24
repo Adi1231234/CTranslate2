@@ -58,6 +58,10 @@ elif sys.platform == "linux":
 ctranslate2_module = Extension(
     "ctranslate2._ext",
     sources=glob.glob(os.path.join("cpp", "*.cc")),
+    # The public headers the bindings compile against: build_ext rebuilds the extension when one is
+    # newer than it, so an unforced build skips it after a change to the library internals only.
+    depends=glob.glob(os.path.join("cpp", "*.h"))
+    + glob.glob(os.path.join("..", "include", "**", "*.h"), recursive=True),
     extra_compile_args=cflags,
     extra_link_args=ldflags,
     include_dirs=include_dirs,

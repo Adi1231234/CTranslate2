@@ -103,13 +103,21 @@ Verification. Every change must leave the output byte-identical to the stock whe
   `GATE PASS` or `GATE FAIL` in `D:\ct2build\ab.log`.
 - Kernel probes (`softmax_check`, `qk_check`, `ts_check`) when kernel sources change. `qk_check`
   counts only the routed shapes in its TOTAL; the batch 1 control is printed on its own line.
-- Speed: `host/iterate.ps1` (build, digest, then prod_equiv pipe8 alternated with a baseline build,
-  with `GPU_TIME=1`: CUPTI GPU busy time, which other processes' CPU load does not inflate) or
-  `host/equiv_ab.ps1` (environment settings). Discard the first run after idle: it is slower.
+- Speed: `host/iterate.ps1` (build, digest, a discarded warm-up, then ONE base/next pair of prod_equiv
+  pipe8 with `GPU_TIME=1` and a `verdict` line from `host/verdict.ps1`) or `host/equiv_ab.ps1`
+  (environment settings). Why one pair: within one iterate run (same two builds, 24.9, 9 runs) the
+  run-to-run noise was 1.74% on wall time and 0.18% on CUPTI GPU busy time, and the NIST sample size
+  (e-Handbook 7.2.2.2) gives 64 runs per build to see a 1% change on wall time, 1 on GPU time. GPU
+  time misses host-side and overlap gains (allocator, syncs, stream priorities): judge those with
+  `-WallDelta <percent>`, which runs as many pairs as that change needs (16 for 2%). Before this the
+  A/B was 79% of each ~11 min iteration (build 2, digest 1, A/B 8.6 min).
+- Build: `build_windows.ps1` no longer forces the Python extension (64 s of every build): setup.py
+  lists the public headers in `depends`, so it is rebuilt only when they or its sources change.
 
 Host scripts (`host/`, for the Yarin layout; start long ones detached, log in `D:\ct2build\ab.log`):
 `prod.ps1` shared helpers (pause/resume production, timed python runs); `gate.ps1` the full gate;
-`digest.ps1` the fast check; `equiv_ab.ps1` the speed A/B; `ab.ps1` builds and A/Bs with production
+`digest.ps1` the fast check; `iterate.ps1` + `verdict.ps1` the dev loop; `equiv_ab.ps1` environment
+A/Bs; `ab.ps1` builds and A/Bs with production
 paused; `run_paused.ps1` runs one tool paused; `deploy.ps1` swaps `pyct2-next` into `pyct2` and ends
 with Resume-Production, which STARTS the production supervisor.
 
