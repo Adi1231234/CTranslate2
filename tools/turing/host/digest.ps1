@@ -4,7 +4,7 @@
 # usage: digest.ps1 [-Pkgs 'D:\ct2build\pyct2-next', 'stock', ...] [-Record]
 param([string[]]$Pkgs = @('D:\ct2build\pyct2-next'), [switch]$Record)
 . "$PSScriptRoot\prod.ps1"
-& $Git -C $Src pull -q --ff-only 2>&1 | Out-Null
+Sync-Checkout $PSCommandPath $PSBoundParameters
 $gold = "$R\golden_digest.json"
 $d = "$Src\tools\turing\digest.py"
 Log ("---- digest at " + (& $Git -C $Src log --oneline -1))

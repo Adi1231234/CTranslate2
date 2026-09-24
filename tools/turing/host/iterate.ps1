@@ -11,7 +11,7 @@ param([string]$Base = 'D:\ct2build\pyct2-base', [int]$Rounds = 1, [double]$WallD
 . "$PSScriptRoot\prod.ps1"
 . "$PSScriptRoot\verdict.ps1"
 $T = "$Src\tools\turing"; $Next = "$R\pyct2-next"
-& $Git -C $Src pull -q --ff-only 2>&1 | Out-Null
+Sync-Checkout $PSCommandPath $PSBoundParameters
 Log ("---- iterate at " + (& $Git -C $Src log --oneline -1))
 if (-not $NoBuild) {
   & powershell -NoProfile -ExecutionPolicy Bypass -File "$T\build_windows.ps1" *> "$R\build.log"

@@ -4,7 +4,7 @@ param([switch]$NoBuild, [switch]$Stock, [int]$Rounds = 2)
 . "$PSScriptRoot\prod.ps1"
 Log '---- ab start'
 if (-not $NoBuild) {
-  & $Git -C $Src pull -q --ff-only 2>&1 | Out-Null
+  Sync-Checkout $PSCommandPath $PSBoundParameters
   Log ('commit ' + (& $Git -C $Src log --oneline -1))
   & powershell -NoProfile -ExecutionPolicy Bypass -File "$Src\tools\turing\build_windows.ps1" *> "$R\build.log"
   $rc = $LASTEXITCODE

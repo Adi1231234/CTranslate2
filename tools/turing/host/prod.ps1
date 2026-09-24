@@ -9,6 +9,13 @@ $Py = "$W\venv\Scripts\python.exe"
 $Git = if (Test-Path "$R\tools\git\cmd\git.exe") { "$R\tools\git\cmd\git.exe" } else { 'git' }
 $env:HF_HOME = "$W\hf"
 function Log($m) { Add-Content -Path "$R\ab.log" -Value "$(Get-Date -Format HH:mm:ss) $m" }
+# Pulls this clone. PowerShell has already parsed the running script (and this file), so when the pull moves
+# HEAD the fresh copy runs instead: usage `Sync-Checkout $PSCommandPath $PSBoundParameters`.
+function Sync-Checkout($script, $params) {
+  $before = & $Git -C $Src rev-parse HEAD
+  & $Git -C $Src pull -q --ff-only 2>&1 | Out-Null
+  if ((& $Git -C $Src rev-parse HEAD) -ne $before) { & $script @params; exit $LASTEXITCODE }
+}
 # A ctranslate2 package for the python tools: a build's parent dir, or 'stock' for the venv's own wheel.
 function PkgArg($p) { if ($p -ne 'stock') { $p } }                 # wrap in @(): 'stock' adds no argument
 function PkgLabel($p) { if ($p -eq 'stock') { 'stock' } else { Split-Path $p -Leaf } }

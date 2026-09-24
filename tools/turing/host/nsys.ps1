@@ -4,7 +4,7 @@
 # usage: nsys.ps1 [-Name v5] [-Pkg D:\ct2build\pyct2-next] [-Mode pipe8] [-Sample]
 param([string]$Name = 'v5', [string]$Pkg = 'D:\ct2build\pyct2-next', [string]$Mode = 'pipe8', [switch]$Sample)
 . "$PSScriptRoot\prod.ps1"
-& $Git -C $Src pull -q --ff-only 2>&1 | Out-Null
+Sync-Checkout $PSCommandPath $PSBoundParameters
 $T = "$Src\tools\turing"; $N = "$R\nsys\$Name"
 $Nsys = 'C:\Program Files\NVIDIA Corporation\Nsight Systems 2024.6.2\target-windows-x64\nsys.exe'
 Log ("---- nsys $Name at " + (& $Git -C $Src log --oneline -1) + " pkg $Pkg mode $Mode")

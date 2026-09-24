@@ -5,11 +5,12 @@ import os, ctypes, zipfile, urllib.request
 from ctypes import CFUNCTYPE, POINTER, byref, c_size_t, c_uint8, c_uint32, c_int32, c_uint64, c_void_p
 
 PYPI = "https://files.pythonhosted.org/packages/"
-# CUPTI 12.6 answers CUPTI_ERROR_INVALID_DEVICE on Blackwell once a context exists; 12.8 is the first with it.
+# On the RTX 5060 Ti (driver 610.47) CUPTI 12.6.80 and 12.8.90 answer CUPTI_ERROR_INVALID_DEVICE once a
+# context exists; 12.9.79 traces it (measured 24.9).
 WHEELS = {"12.6.80": ("1c/81/7796f096afaf726796b1b648f3bc80cafc61fe7f77f44a483c89e6c5ef34/"
                       "nvidia_cuda_cupti_cu12-12.6.80-py3-none-win_amd64.whl", "cupti64_2024.3.2.dll"),
-          "12.8.90": ("41/bc/83f5426095d93694ae39fe1311431b5d5a9bb82e48bf0dd8e19be2765942/"
-                      "nvidia_cuda_cupti_cu12-12.8.90-py3-none-win_amd64.whl", "cupti64_2025.1.1.dll")}
+          "12.9.79": ("3b/b4/298983ab1a83de500f77d0add86d16d63b19d1a82c59f8eaf04f90445703/"
+                      "nvidia_cuda_cupti_cu12-12.9.79-py3-none-win_amd64.whl", "cupti64_2025.2.1.dll")}
 KIND_CONCURRENT_KERNEL, BUF = 10, 8 << 20
 REQ = CFUNCTYPE(None, POINTER(POINTER(c_uint8)), POINTER(c_size_t), POINTER(c_size_t))
 DONE = CFUNCTYPE(None, c_void_p, c_uint32, POINTER(c_uint8), c_size_t, c_size_t)
@@ -20,11 +21,11 @@ def _i32(a, off):
 
 
 def _version(device=0):
-    """12.8 on compute capability 10+ (Blackwell); 12.6, which every Turing measurement used, below."""
+    """12.9 on compute capability 10+ (Blackwell); 12.6, which every Turing measurement used, below."""
     cu, dev, major = ctypes.WinDLL("nvcuda.dll"), c_int32(), c_int32()
     assert cu.cuInit(0) == 0 and cu.cuDeviceGet(byref(dev), device) == 0
     assert cu.cuDeviceGetAttribute(byref(major), 75, dev) == 0      # COMPUTE_CAPABILITY_MAJOR
-    return "12.8.90" if major.value >= 10 else "12.6.80"
+    return "12.9.79" if major.value >= 10 else "12.6.80"
 
 
 class Tracer:

@@ -8,7 +8,7 @@
 param([string[]]$Configs = @('base=CPU_THREADS=1'), [string]$Pkg = 'D:\ct2build\pyct2-next',
       [string]$Mode = 'pipe8', [int]$Rounds = 2, [int]$Limit = 300)
 . "$PSScriptRoot\prod.ps1"
-& $Git -C $Src pull -q --ff-only 2>&1 | Out-Null
+Sync-Checkout $PSCommandPath $PSBoundParameters
 Log ("---- equiv_ab at " + (& $Git -C $Src log --oneline -1) + " pkg $Pkg mode $Mode")
 $csv = "$R\smi_run.csv"
 for ($i = 0; $i -lt $Rounds; $i++) {
