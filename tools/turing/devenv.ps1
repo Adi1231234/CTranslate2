@@ -5,7 +5,8 @@
 function Check($what) {
   if ($LASTEXITCODE -ne 0) { Write-Output "FAILED: $what (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
 }
-$Cuda = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
+# CUDA 12.8 as its installer sets CUDA_PATH_V12_8, or an unpacked tree of NVIDIA's redistributable archives.
+$Cuda = if ($env:CUDA_PATH_V12_8) { $env:CUDA_PATH_V12_8 } else { 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8' }
 $T = "$Root\tools"
 $env:PATH = "$T\git\cmd;$T\cmake-3.31.12-windows-x86_64\bin;$T\ninja;$Cuda\bin;$env:PATH"
 # Newest Visual Studio: the official wheels use VS 2022, and MSVC 19.27 miscompiles pybind11 2.11.

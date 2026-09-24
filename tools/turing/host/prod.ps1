@@ -1,12 +1,17 @@
 # Shared helpers (dot-source): pause/resume the crowd-v5 production run around GPU experiments, and
 # run one python tool with a hard time limit so production is always resumed.
 # Host layout: this clone lives in $R\CTranslate2 next to $R\tools (git, cmake, ninja) and the builds;
-# $W holds the production run (supervise.ps1, transcribe_run.py, the venv with the stock wheel, sample).
+# $W holds the production run (supervise.ps1, transcribe_run.py, the venv with the stock wheel, sample):
+# D:\wsbench-tmp on Yarin, or the folder named in $R\work_dir.txt (the store PC: C:\Windows\Temp\wsbench).
 $Src = (Resolve-Path "$PSScriptRoot\..\..\..").Path; $R = Split-Path -Parent $Src
-$W = 'D:\wsbench-tmp'; $Py = "$W\venv\Scripts\python.exe"
-$Git = "$R\tools\git\cmd\git.exe"
+$W = if (Test-Path "$R\work_dir.txt") { (Get-Content "$R\work_dir.txt" -TotalCount 1).Trim() } else { 'D:\wsbench-tmp' }
+$Py = "$W\venv\Scripts\python.exe"
+$Git = if (Test-Path "$R\tools\git\cmd\git.exe") { "$R\tools\git\cmd\git.exe" } else { 'git' }
 $env:HF_HOME = "$W\hf"
 function Log($m) { Add-Content -Path "$R\ab.log" -Value "$(Get-Date -Format HH:mm:ss) $m" }
+# A ctranslate2 package for the python tools: a build's parent dir, or 'stock' for the venv's own wheel.
+function PkgArg($p) { if ($p -ne 'stock') { $p } }                 # wrap in @(): 'stock' adds no argument
+function PkgLabel($p) { if ($p -eq 'stock') { 'stock' } else { Split-Path $p -Leaf } }
 function Suspend-Production {
   $ids = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*supervise.ps1*' }) +
          @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*transcribe_run*' }) |

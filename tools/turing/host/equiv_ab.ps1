@@ -4,6 +4,7 @@
 # does not pause production. Log: D:\ct2build\ab.log. Start it detached (Start-Process) so it survives
 # the remote session, e.g.
 #   powershell -NoProfile -ExecutionPolicy Bypass -Command "& '<this file>' -Configs 'base=CPU_THREADS=1','retain=CPU_THREADS=1;POOL_RETAIN=1'"
+# A configuration's MODE (e.g. 'b8=MODE=batch8') replaces -Mode for its runs. -Pkg 'stock' = the venv's wheel.
 param([string[]]$Configs = @('base=CPU_THREADS=1'), [string]$Pkg = 'D:\ct2build\pyct2-next',
       [string]$Mode = 'pipe8', [int]$Rounds = 2, [int]$Limit = 300)
 . "$PSScriptRoot\prod.ps1"
@@ -18,7 +19,8 @@ for ($i = 0; $i -lt $Rounds; $i++) {
     Remove-Item $csv -ErrorAction SilentlyContinue
     $smi = Start-Process nvidia-smi -PassThru -WindowStyle Hidden -ArgumentList ('--query-gpu=memory.used,utilization.gpu,' +
       "power.draw,clocks.sm --format=csv,noheader,nounits -lms 500 -f $csv")
-    try { Invoke-Timed $label @("$Src\tools\turing\prod_equiv.py", "$W\sample", $W, $Mode, $Pkg) $Limit }
+    $m = if ($env:MODE) { $env:MODE } else { $Mode }
+    try { Invoke-Timed $label (@("$Src\tools\turing\prod_equiv.py", "$W\sample", $W, $m) + @(PkgArg $Pkg)) $Limit }
     finally {
       Stop-Process -Id $smi.Id -Force -ErrorAction SilentlyContinue
       foreach ($v in $set) { Remove-Item ("env:" + ($v -split '=', 2)[0]) -ErrorAction SilentlyContinue }

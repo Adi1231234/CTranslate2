@@ -10,8 +10,6 @@ $d = "$Src\tools\turing\digest.py"
 Log ("---- digest at " + (& $Git -C $Src log --oneline -1))
 if ($Record) { $null = Invoke-Timed 'record' @($d, "$W\sample", '--save', $gold) 300 }
 foreach ($p in $Pkgs) {
-  $pkg = if ($p -eq 'stock') { @() } else { @($p) }
-  $label = if ($p -eq 'stock') { 'stock' } else { Split-Path $p -Leaf }
-  $null = Invoke-Timed $label (@($d, "$W\sample") + $pkg + @('--golden', $gold)) 300
+  $null = Invoke-Timed (PkgLabel $p) (@($d, "$W\sample") + @(PkgArg $p) + @('--golden', $gold)) 300
 }
 Log '---- digest done'

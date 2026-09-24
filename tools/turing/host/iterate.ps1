@@ -5,7 +5,7 @@
 # time sees a 1% kernel change; -WallDelta <percent> judges on wall time instead (host-side and overlap changes)
 # with as many pairs as that change needs. For an idle GPU only. Log: D:\ct2build\ab.log.
 # Start it detached so it survives the remote session.
-# usage: iterate.ps1 [-Base D:\ct2build\pyct2-base] [-Rounds 1] [-WallDelta 2] [-NoBuild] [-Mode pipe8]
+# usage: iterate.ps1 [-Base D:\ct2build\pyct2-base | stock] [-Rounds 1] [-WallDelta 2] [-NoBuild] [-Mode pipe8]
 param([string]$Base = 'D:\ct2build\pyct2-base', [int]$Rounds = 1, [double]$WallDelta = 0, [switch]$NoBuild,
       [string]$Mode = 'pipe8')
 . "$PSScriptRoot\prod.ps1"
@@ -27,7 +27,7 @@ $env:CPU_THREADS = '1'; $env:GPU_TIME = '1'
 $null = Invoke-Timed 'warmup' @("$T\prod_equiv.py", "$W\sample", $W, $Mode, $Next) 300
 $base = @(); $next = @()
 for ($i = 0; $i -lt $Rounds; $i++) {
-  $base += Invoke-Timed 'base' @("$T\prod_equiv.py", "$W\sample", $W, $Mode, $Base) 300
+  $base += Invoke-Timed 'base' (@("$T\prod_equiv.py", "$W\sample", $W, $Mode) + @(PkgArg $Base)) 300
   $next += Invoke-Timed 'next' @("$T\prod_equiv.py", "$W\sample", $W, $Mode, $Next) 300
 }
 Remove-Item env:CPU_THREADS, env:GPU_TIME
