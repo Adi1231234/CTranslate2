@@ -8,8 +8,8 @@
 // once to half. Split-K ranges are contiguous (il 0) or interleaved by 64-wide k-tiles (il 1).
 // The candidate with 0 mismatches on every trial is the order to replicate.
 // ORDER=<nz>: instead of random data, one nonzero product per split-K range of nz (A = 1 at the
-// first k of each range, W = +-2^[-10, 14] there), so that the order of the partial reduction
-// decides the result wherever the partials do not add exactly.
+// first k of each range, W = +-2^[-24, 15] there, subnormals included), so that the order of the
+// partial reduction decides the result wherever the partials do not add exactly (spread > 24 bits).
 // usage: gemm_probe [M N K ...]   (default: the decoder shapes at 40 rows)
 #include <cstdio>
 #include <cstdlib>
@@ -81,7 +81,7 @@ void order_data(__half* A, __half* W, int M, int N, int K, int nz, uint32_t seed
   for (int n = 0; n < N; ++n)
     for (int z = 0; z < nz; ++z) {
       seed = seed * 1664525u + 1013904223u;
-      w[(size_t)n * K + z * (K / nz)] = __float2half(((seed >> 31) ? -1.f : 1.f) * ldexpf(1.f, (int)((seed >> 8) % 25) - 10));
+      w[(size_t)n * K + z * (K / nz)] = __float2half(((seed >> 31) ? -1.f : 1.f) * ldexpf(1.f, (int)((seed >> 8) % 40) - 24));
     }
   CK(cudaMemcpy(A, a.data(), a.size() * 2, cudaMemcpyHostToDevice));
   CK(cudaMemcpy(W, w.data(), w.size() * 2, cudaMemcpyHostToDevice));
