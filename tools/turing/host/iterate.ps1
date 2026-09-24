@@ -25,11 +25,11 @@ $metric = 'gpu'
 if ($WallDelta -gt 0) { $metric = 'wall'; $Rounds = Get-RoundsFor 'wall' $WallDelta }
 $env:CPU_THREADS = '1'; $env:GPU_TIME = '1'
 $null = Invoke-Timed 'warmup' @("$T\prod_equiv.py", "$W\sample", $W, $Mode, $Next) 300
-$base = @(); $next = @()
+$baseRuns = @(); $nextRuns = @()                 # not $base/$next: PowerShell names ignore case ($Base, $Next)
 for ($i = 0; $i -lt $Rounds; $i++) {
-  $base += Invoke-Timed 'base' (@("$T\prod_equiv.py", "$W\sample", $W, $Mode) + @(PkgArg $Base)) 300
-  $next += Invoke-Timed 'next' @("$T\prod_equiv.py", "$W\sample", $W, $Mode, $Next) 300
+  $baseRuns += Invoke-Timed 'base' (@("$T\prod_equiv.py", "$W\sample", $W, $Mode) + @(PkgArg $Base)) 300
+  $nextRuns += Invoke-Timed 'next' @("$T\prod_equiv.py", "$W\sample", $W, $Mode, $Next) 300
 }
 Remove-Item env:CPU_THREADS, env:GPU_TIME
-Log ('verdict    ' + (Get-AbVerdict $base $next $metric))
+Log ('verdict    ' + (Get-AbVerdict $baseRuns $nextRuns $metric))
 Log '---- iterate done'
