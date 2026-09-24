@@ -30,8 +30,15 @@ if not os.path.exists(units_path):
     json.dump(list_units(fs, api), open(units_path, "w"))
 units = my_order(json.load(open(units_path)), DIRECTION)
 
-def decode(buf):
-    with av.open(io.BytesIO(buf)) as c:
+def audio_format(path):
+    """The container the dataset declares (the audio file name's extension). Left to probe the
+    content, FFmpeg took 3 valid crowd-v5 MP3s for raw VVC video (same probe score), with no audio
+    stream; forcing the declared format decodes them, and changes nothing for the others."""
+    ext = os.path.splitext(path or "")[1].lstrip(".").lower()
+    return ext if ext in ("mp3", "wav", "flac", "ogg") else None
+
+def decode(buf, fmt=None):
+    with av.open(io.BytesIO(buf), format=fmt) as c:
         rs = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=16000)
         ch = [r.to_ndarray().reshape(-1) for fr in c.decode(c.streams.audio[0]) for r in rs.resample(fr)]
         ch += [r.to_ndarray().reshape(-1) for r in rs.resample(None)]
@@ -65,7 +72,7 @@ def _produce():
             log(f"FETCH FAILED {uid}"); continue
         clips = []
         for uu, a in zip(t.column("uuid").to_pylist(), t.column("audio").to_pylist()):
-            try: clips.append((uu, decode(a["bytes"])))
+            try: clips.append((uu, decode(a["bytes"], audio_format(a.get("path")))))
             except Exception as e: clips.append((uu, None)); log(f"decode fail {uu}: {e}")
         q.put((uid, clips))
 
@@ -73,7 +80,8 @@ threading.Thread(target=producer, daemon=True).start()
 BATCHED = MODE != "exact2"
 workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith("pipe")) + 1   # +1 for async fallback
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
-                     num_workers=workers, flash_attention=MODE.endswith("-fa"))
+                     num_workers=workers, cpu_threads=1,   # the OpenMP threads of the default only spin
+                     flash_attention=MODE.endswith("-fa"))
 pool = ThreadPoolExecutor(max_workers=1) if BATCHED else None   # fallback clips off the critical path
 done = queue.Queue()
 stats = {"units": 0, "audio": 0.0, "t0": time.time()}

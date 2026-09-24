@@ -31,8 +31,11 @@ def load_stop(root):
         return {}
 
 def should_skip(root, uid):
-    """stop.json {"skip_units": [...]} = units another machine already finished."""
-    return uid in set(load_stop(root).get("skip_units", []))
+    """stop.json {"skip_units": [...]} = units another machine already finished;
+    {"only_units": [...]} = a run limited to these units (e.g. a redo list)."""
+    s = load_stop(root)
+    only = s.get("only_units")
+    return uid in set(s.get("skip_units", [])) or (only is not None and uid not in set(only))
 
 def should_stop(root, uid):
     import time
