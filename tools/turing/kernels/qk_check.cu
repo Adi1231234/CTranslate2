@@ -1,7 +1,9 @@
 // Bit-for-bit check and timing of src/cuda/attention_scores_k64.cuh against the cuBLAS call that
 // CTranslate2 makes for Whisper cross-attention scores, over every query count 1..8 and every batch
 // size 1..1024, on random data with a wide dynamic range and on signed zeros.
-// usage: qk_check      -> per-(m, batch) mismatch counts (must all be 0) and the timings
+// Shapes outside the route (attention_scores_k64_verified_shape, e.g. batch 1, where cuBLAS runs
+// another kernel) are counted apart as a control: the gate needs TOTAL (routed shapes) = 0.
+// usage: qk_check      -> per-(m, batch) mismatch counts and the timings
 #include "probe_common.h"
 #include "probe_data.cuh"
 #include "../../../src/cuda/attention_scores_k64.cuh"
@@ -34,19 +36,21 @@ int main() {
   printf("signed zeros: %llu mismatches\n", check(1, 5, 0.125f));
   std::vector<int> batches;                      // every batch size the route accepts, and 1
   for (int b = 1; b <= max_batch; ++b) batches.push_back(b);
-  unsigned long long total = 0, outputs = 0;
+  unsigned long long total = 0, outputs = 0, control = 0;
   for (int m = 1; m <= max_m; ++m) {
     unsigned long long m_total = 0;
     for (int batch : batches) {
       fill_case(p.dK, p.dQ, batch, m, n, k);
       const unsigned long long d = check(batch, m, 0.125f);
-      if (d) printf("  mismatch m=%d batch=%d: %llu\n", m, batch, d);
-      m_total += d; outputs += (unsigned long long)batch * m * n;
+      const bool routed = attention_scores_k64_verified_shape(batch, m, n, k);
+      if (d) printf("  mismatch m=%d batch=%d%s: %llu\n", m, batch, routed ? "" : " (not routed)", d);
+      if (routed) { m_total += d; outputs += (unsigned long long)batch * m * n; } else control += d;
     }
     printf("m=%d: %llu mismatches\n", m, m_total);
     total += m_total;
   }
-  printf("TOTAL %llu mismatches over %llu outputs\n", total, outputs);
+  printf("control, shapes not routed: %llu mismatches\n", control);
+  printf("TOTAL %llu mismatches over %llu outputs of the routed shapes\n", total, outputs);
   // Timing at the production shape: 8 clips x 20 heads, 5 beams.
   cudaEvent_t e0, e1;
   cudaEventCreate(&e0); cudaEventCreate(&e1);

@@ -35,24 +35,39 @@ def mempool(device=0):
     return attr
 
 
-def load(sample, batches=4, num_workers=1, first=60):
-    """Model, `batches` feature batches of 8 real clips (sorted by length, from index `first`), and a
-    beam-5 generate with the production decode parameters."""
+def sample_waves(sample):
+    """The 150 sample clips (first occurrence of each key), shortest first."""
     import numpy as np
-    from faster_whisper import WhisperModel
-    from faster_whisper.audio import pad_or_trim
-    from faster_whisper.tokenizer import Tokenizer
     meta, seen = [], set()
     for m in json.load(open(os.path.join(sample, "meta.json"), encoding="utf-8")):
         if m["key"] not in seen:
             seen.add(m["key"]); meta.append(m)
+    return sorted([np.load(os.path.join(sample, x["key"] + ".npy")) for x in meta[:150]], key=len)
+
+
+def whisper(num_workers=1, cpu_threads=0):
+    """The production model on the GPU, its Hebrew tokenizer and the production prompt."""
+    from faster_whisper import WhisperModel
+    from faster_whisper.tokenizer import Tokenizer
     model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
-                         num_workers=num_workers)
+                         num_workers=num_workers, cpu_threads=cpu_threads)
     tk = Tokenizer(model.hf_tokenizer, True, task="transcribe", language="he")
-    prompt = model.get_prompt(tk, [], without_timestamps=False)
-    ws = sorted([np.load(os.path.join(sample, x["key"] + ".npy")) for x in meta[:150]], key=len)
-    feats = [np.stack([pad_or_trim(model.feature_extractor(w)[..., :-1]) for w in ws[i:i + 8]])
-             for i in range(first, first + 8 * batches, 8)]
+    return model, tk, model.get_prompt(tk, [], without_timestamps=False)
+
+
+def features(model, waves):
+    """A batch of padded log-mel features, as the batched pipeline computes them."""
+    import numpy as np
+    from faster_whisper.audio import pad_or_trim
+    return np.stack([pad_or_trim(model.feature_extractor(w)[..., :-1]) for w in waves])
+
+
+def load(sample, batches=4, num_workers=1, first=60):
+    """Model, `batches` feature batches of 8 real clips (sorted by length, from index `first`), and a
+    beam-5 generate with the production decode parameters."""
+    model, _, prompt = whisper(num_workers)
+    ws = sample_waves(sample)
+    feats = [features(model, ws[i:i + 8]) for i in range(first, first + 8 * batches, 8)]
     gen = lambda e: model.model.generate(e, [prompt] * e.shape[0], beam_size=5, patience=1,
                                          length_penalty=1, max_length=448, suppress_blank=True,
                                          suppress_tokens=[-1], return_scores=True,
