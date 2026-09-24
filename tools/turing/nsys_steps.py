@@ -46,7 +46,7 @@ for n, t in tot.most_common(40 if by_grid else 25):
     print(f"  {t / 1e6:8.1f} ms  {cnt[n] / len(steps):6.1f}/step  {t / cnt[n] / 1e3:7.1f} us  {n}")
 mid = sorted(range(len(steps)), key=lambda i: gpu[i])[min(len(steps) - 1, int(pick * len(steps)))]
 st = steps[mid]
-print(f"\nmedian step: {len(st)} kernels, GPU {gpu[mid] / 1e3:.0f} us, span {span[mid] / 1e3:.0f} us")
+print(f"\nstep at quantile {pick}: {len(st)} kernels, GPU {gpu[mid] / 1e3:.0f} us, span {span[mid] / 1e3:.0f} us")
 for s, e, n, g in st[:show]:
     print(f"  {(s - st[0][0]) / 1e3:8.1f} +{(e - s) / 1e3:6.1f} us  {g:<22} {n[:70]}")
 tot, cnt = collections.Counter(), collections.Counter()
