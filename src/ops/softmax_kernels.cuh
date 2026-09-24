@@ -286,16 +286,31 @@ namespace at {
       }
     }
 
+  }
+}
+
+#include "softmax_rows1024.cuh"
+
+namespace at {
+  namespace native {
+
     // Softmax (Epilogue = SoftMaxForwardEpilogue) or log-softmax of `rows` rows of `cols` values,
-    // masked to lengths[row] when given: the warp kernel for rows up to warp_softmax_max_cols when
-    // `warp` is set, the legacy kernel otherwise.
+    // masked to lengths[row] when given: when `warp` is set, softmax_rows1024 where it applies,
+    // else the warp kernel for rows up to warp_softmax_max_cols; the legacy kernel otherwise.
     template <typename T, template <typename, typename, typename> class Epilogue>
     void softmax_rows(cudaStream_t stream, const T* x, T* y, unsigned rows, unsigned cols,
                       const int32_t* lengths, bool warp) {
       const dim3 block(ctranslate2::cuda::get_block_size(cols));
+      constexpr bool is_log = std::is_same<Epilogue<T, float, T>,
+                                           LogSoftMaxForwardEpilogue<T, float, T>>::value;
+      constexpr bool is_half = std::is_same<T, __half>::value;
+      if (warp && softmax_rows1024_applies(x, y, cols, block.x, is_half, is_log, lengths != nullptr)) {
+        const unsigned grid = (rows + rows1024_per_block - 1) / rows1024_per_block;
+        softmax_rows1024<<<grid, rows1024_per_block * C10_WARP_SIZE, 0, stream>>>(
+          reinterpret_cast<__half*>(y), reinterpret_cast<const __half*>(x), rows, cols);
+        return;
+      }
       if (warp && cols <= warp_softmax_max_cols) {
-        constexpr bool is_log = std::is_same<Epilogue<T, float, T>,
-                                             LogSoftMaxForwardEpilogue<T, float, T>>::value;
         const dim3 grid((rows + warp_softmax_rows_per_block - 1) / warp_softmax_rows_per_block);
         const size_t smem = warp_softmax_rows_per_block * (warp_softmax_slot(cols) + 1) * sizeof (float);
         warp_softmax_forward<T, is_log>
