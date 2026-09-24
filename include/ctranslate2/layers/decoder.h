@@ -39,17 +39,28 @@ namespace ctranslate2 {
       // Update the decoder state in greedy search.
       void update_state(DecoderState& state, const StorageView& alive_batches) const;
 
-      // Update the decoder state in beam search.
+      // Update the decoder state in beam search. When defers_state_reorder(), the replicated
+      // entries keep their order and the beam order waits in state[pending_reorder_key] for the
+      // next step, which applies it while appending to the caches (TransformerDecoder).
       void update_state(DecoderState& state,
                         StorageView beam_indices,
                         const dim_t beam_size,
                         const StorageView* alive_batches = nullptr) const;
+
+      // Applies a beam order left by update_state, so the state is complete again.
+      void flush_state_reorder(DecoderState& state) const;
+      static constexpr const char* pending_reorder_key = "pending_beam_reorder";
 
       // Replicate the decoder state beam_size times.
       void replicate_state(DecoderState& state, const dim_t beam_size) const;
 
       // Returns true if the state must be replicated beam_size times.
       virtual bool replicate_state(const std::string& name) const;
+
+      // Whether the next forward step can apply update_state's beam order itself.
+      virtual bool defers_state_reorder() const {
+        return false;
+      }
 
       // Restrict the output layer to a set of ids and/or resize it to a preferred size multiple.
       // Elements in restrict_ids must be unique and sorted.

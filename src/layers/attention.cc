@@ -6,9 +6,11 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <stdexcept>
 
 #include "dispatch.h"
 #include "cpu/parallel.h"
+#include "kv_cache.h"
 #include "split_heads_fused.h"
 
 namespace ctranslate2 {
@@ -455,6 +457,10 @@ namespace ctranslate2 {
         split_heads(queries_proj, _num_heads, queries_padder, beam_size);
     }
 
+    bool MultiHeadAttention::supports_cache_reorder() const {
+      return _self_attention && _cache_time_dim == 2 && _sliding_window == 0;
+    }
+
     bool MultiHeadAttention::fused_split_applies(const StorageView& x,
                                                  const Dense& linear,
                                                  const Padder* padder) const {
@@ -473,7 +479,8 @@ namespace ctranslate2 {
                                         const Padder* values_padder,
                                         bool return_normalized_attention,
                                         StorageView* position_bias,
-                                        dim_t offset) const {
+                                        dim_t offset,
+                                        const StorageView* cache_reorder) const {
       PROFILE("MultiHeadAttention");
       const Device device = queries.device();
       const DataType dtype = queries.dtype();
@@ -566,8 +573,14 @@ namespace ctranslate2 {
 
         if (cached_keys != nullptr) {
           if (cached_keys->empty()) {
+            if (cache_reorder)
+              throw std::logic_error("A deferred beam order for an empty attention cache");
             *cached_keys = std::move(keys_proj);
             *cached_values = std::move(values_proj);
+          } else if (cache_reorder) {
+            // The beam order left by Decoder::update_state, applied while appending this step.
+            reorder_and_append(*cached_keys, *cache_reorder, keys_proj);
+            reorder_and_append(*cached_values, *cache_reorder, values_proj);
           } else {
             const ops::Concat concat_op(_cache_time_dim);
             StorageView& tmp = fused_proj;  // Reuse storage.

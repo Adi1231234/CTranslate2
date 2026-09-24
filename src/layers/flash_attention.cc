@@ -1,5 +1,7 @@
 #include "ctranslate2/layers/flash_attention.h"
 
+#include <stdexcept>
+
 namespace ctranslate2 {
   namespace layers {
     FlashMultiHeadAttention::FlashMultiHeadAttention(const models::Model& model,
@@ -26,8 +28,11 @@ namespace ctranslate2 {
                                              const Padder*,
                                              bool return_normalized_attention,
                                              StorageView*,
-                                             dim_t offset) const {
+                                             dim_t offset,
+                                             const StorageView* cache_reorder) const {
       PROFILE("MultiHeadAttention");
+      if (cache_reorder)
+        throw std::logic_error("FlashMultiHeadAttention does not apply a deferred beam order");
       const Device device = queries.device();
       const DataType dtype = queries.dtype();
 

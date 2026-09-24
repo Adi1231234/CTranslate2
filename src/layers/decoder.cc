@@ -31,6 +31,7 @@ namespace ctranslate2 {
     }
 
     void Decoder::update_state(DecoderState& state, const StorageView& alive_batches) const {
+      flush_state_reorder(state);
       for (auto& pair : state) {
         ops::Gather()(pair.second, alive_batches);
       }
@@ -40,21 +41,40 @@ namespace ctranslate2 {
                                StorageView beam_indices,
                                const dim_t beam_size,
                                const StorageView* alive_batches) const {
+      flush_state_reorder(state);
       if (alive_batches) {
         split_batch_beam(beam_indices, beam_size);
         ops::Gather()(beam_indices, *alive_batches);
         merge_batch_beam(beam_indices);
       }
 
+      const bool defer = defers_state_reorder();
+      for (auto& [name, value] : state) {
+        if (replicate_state(name)) {
+          if (!defer)
+            ops::Gather()(value, beam_indices);
+        } else if (alive_batches) {
+          ops::Gather()(value, *alive_batches);
+        }
+      }
+      if (defer)
+        state.emplace(pending_reorder_key, std::move(beam_indices));
+    }
+
+    void Decoder::flush_state_reorder(DecoderState& state) const {
+      auto it = state.find(pending_reorder_key);
+      if (it == state.end())
+        return;
+      const StorageView order = std::move(it->second);
+      state.erase(it);
       for (auto& [name, value] : state) {
         if (replicate_state(name))
-          ops::Gather()(value, beam_indices);
-        else if (alive_batches)
-          ops::Gather()(value, *alive_batches);
+          ops::Gather()(value, order);
       }
     }
 
     void Decoder::replicate_state(DecoderState& state, const dim_t beam_size) const {
+      flush_state_reorder(state);
       for (auto& [name, value] : state) {
         if (value && replicate_state(name))
           repeat_batch(value, beam_size);

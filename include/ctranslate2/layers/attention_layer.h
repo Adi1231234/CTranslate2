@@ -37,7 +37,14 @@ namespace ctranslate2 {
                       const Padder* values_padder = nullptr,
                       bool return_normalized_attention = true,
                       StorageView* position_bias = nullptr,
-                      dim_t offset = 0) const = 0;
+                      dim_t offset = 0,
+                      const StorageView* cache_reorder = nullptr) const = 0;
+      // cache_reorder: a beam order that Decoder::update_state left for this step (rows of the
+      // cached keys/values to take, see Decoder::defers_state_reorder); only layers with
+      // supports_cache_reorder() receive one.
+      virtual bool supports_cache_reorder() const {
+        return false;
+      }
 
       virtual bool has_positional_embeddings() const = 0;
 

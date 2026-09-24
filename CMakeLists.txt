@@ -136,6 +136,7 @@ set(SOURCES
   src/layers/common.cc
   src/layers/split_heads_fused.cc
   src/layers/decoder.cc
+  src/layers/kv_cache.cc
   src/layers/transformer.cc
   src/layers/wav2vec2.cc
   src/layers/wav2vec2bert.cc
@@ -230,6 +231,7 @@ set(SOURCES
 )
 set(CUDA_SOURCES
   src/cuda/allocator.cc
+  src/cuda/cache_reorder.cu
   src/cuda/disable_tokens.cu
   src/cuda/primitives.cu
   src/cuda/random.cu

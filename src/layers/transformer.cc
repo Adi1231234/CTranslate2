@@ -2,6 +2,10 @@
 
 #include <cmath>
 
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/utils.h"
+#endif
+
 namespace ctranslate2 {
   namespace layers {
 
@@ -207,7 +211,8 @@ namespace ctranslate2 {
                                              const Padder* memory_padder,
                                              bool return_normalized_attention,
                                              StorageView* position_bias,
-                                             dim_t offset) const {
+                                             dim_t offset,
+                                             const StorageView* self_cache_reorder) const {
       PROFILE("TransformerDecoderLayer");
 
       const DataType dtype = input.dtype();
@@ -245,7 +250,8 @@ namespace ctranslate2 {
                              input_padder,
                              true,
                              position_bias,
-                             offset);
+                             offset,
+                             self_cache_reorder);
         }
         (*_post_attention_layer_norm)(context, output);
         ops::Add()(output, input, output);
@@ -319,7 +325,8 @@ namespace ctranslate2 {
                         input_padder,
                         true,
                         position_bias,
-                        offset);
+                        offset,
+                        self_cache_reorder);
 
         if (_post_attention_layer_norm)
           (*_post_attention_layer_norm)(input, hidden);
@@ -343,7 +350,8 @@ namespace ctranslate2 {
                       input_padder,
                       true,
                       position_bias,
-                      offset);
+                      offset,
+                      self_cache_reorder);
 
       StorageView context(dtype, device);
       if (_encoder_attention) {
@@ -562,6 +570,22 @@ namespace ctranslate2 {
       return !_with_encoder_attention || !starts_with(name, "memory");
     }
 
+    bool TransformerDecoder::defers_state_reorder() const {
+      // The self-attention layers then reorder their caches while appending the next step, one
+      // copy of each cache per step instead of two (kv_cache.h).
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      if (_device != Device::CUDA || output_type() != DataType::FLOAT16 || _sliding_window > 0
+          || cuda::use_stock_kernels())
+        return false;
+      for (const auto& layer : _layers)
+        if (!layer->supports_self_cache_reorder())
+          return false;
+      return true;
+#else
+      return false;
+#endif
+    }
+
     void TransformerDecoder::set_alignment_heads(const dim_t layer,
                                                  const dim_t num_heads_to_average) {
       std::vector<dim_t> range(num_heads_to_average);
@@ -629,6 +653,15 @@ namespace ctranslate2 {
       const DataType dtype = output_type();
       const Device device = ids.device();
       const bool is_sequence = ids.rank() > 1;
+
+      // A beam order that update_state left for this step (defers_state_reorder).
+      std::unique_ptr<StorageView> self_cache_reorder;
+      if (step < 0) {
+        flush_state_reorder(state);
+      } else if (auto it = state.find(pending_reorder_key); it != state.end()) {
+        self_cache_reorder = std::make_unique<StorageView>(std::move(it->second));
+        state.erase(it);
+      }
 
       StorageView layer_in(dtype, device);
       StorageView layer_out(dtype, device);
@@ -805,7 +838,8 @@ namespace ctranslate2 {
                         memory_padder.get(),
                         return_normalized_attention(),
                         &position_bias,
-                        offset);
+                        offset,
+                        i == 0 ? self_cache_reorder.get() : nullptr);
           *layer_in_chunk = std::move(layer_out);
 
           if (layer_attention) {

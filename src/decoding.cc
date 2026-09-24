@@ -716,6 +716,7 @@ namespace ctranslate2 {
         bias_towards_prefix = !all_beams_diverged_from_prefix(beams_diverged_from_prefix);
     }
 
+    decoder.flush_state_reorder(state);  // callers may reuse the state
     return results;
   }
 

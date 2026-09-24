@@ -100,7 +100,8 @@ namespace ctranslate2 {
                       const Padder* memory_padder = nullptr,
                       bool return_normalized_attention = true,
                       StorageView* position_bias = nullptr,
-                      dim_t offset = 0) const;
+                      dim_t offset = 0,
+                      const StorageView* self_cache_reorder = nullptr) const;
 
       DataType output_type() const override {
         return _ff.output_type();
@@ -108,6 +109,12 @@ namespace ctranslate2 {
 
       dim_t output_size() const override {
         return _ff.output_size();
+      }
+
+      // Whether operator() can apply a deferred beam order to its self-attention cache.
+      bool supports_self_cache_reorder() const {
+        return !_has_merged_encoder_attention && _self_attention
+          && _self_attention->supports_cache_reorder();
       }
 
       bool has_cross_attention() const {
@@ -174,6 +181,7 @@ namespace ctranslate2 {
 
       DecoderState initial_state(bool iterative_decoding = true) const override;
       bool replicate_state(const std::string& name) const override;
+      bool defers_state_reorder() const override;
 
       void operator()(dim_t step,
                       const StorageView& ids,
