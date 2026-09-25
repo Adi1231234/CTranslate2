@@ -2,6 +2,7 @@
 
 #include <cstdio>
 
+#include "cuda/graph_memory.h"
 #include "env.h"
 
 namespace ctranslate2 {
@@ -30,12 +31,14 @@ namespace ctranslate2 {
       // Thread-local: other threads' work (the encoder beside the decoder) is not captured nor restricted.
       CUDA_CHECK(cudaStreamBeginCapture(_stream, cudaStreamCaptureModeThreadLocal));
       _capturing = true;
+      set_step_capturing(true);
     }
 
     void StepGraph::launch() {
       if (!_capturing)
         return;
       _capturing = false;
+      set_step_capturing(false);
       cudaGraph_t graph = nullptr;
       CUDA_CHECK(cudaStreamEndCapture(_stream, &graph));
       cudaGraphExec_t exec = nullptr;
@@ -43,14 +46,17 @@ namespace ctranslate2 {
       CUDA_CHECK(cudaGraphLaunch(exec, _stream));
       CUDA_CHECK(cudaGraphExecDestroy(exec));           // the launched work completes regardless
       CUDA_CHECK(cudaGraphDestroy(graph));
+      release_deferred(_stream);
     }
 
     StepGraph::~StepGraph() {
       if (_capturing) {                                 // an exception left the step: end the capture
+        set_step_capturing(false);
         cudaGraph_t graph = nullptr;
         cudaStreamEndCapture(_stream, &graph);
         if (graph)
           cudaGraphDestroy(graph);
+        release_deferred(_stream);
       }
     }
 

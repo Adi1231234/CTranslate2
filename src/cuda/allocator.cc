@@ -8,6 +8,9 @@
 
 #include "ctranslate2/utils.h"
 #include "cuda/utils.h"
+#ifndef CT2_USE_HIP
+#include "cuda/graph_memory.h"
+#endif
 #include "env.h"
 
 #ifdef CT2_USE_HIP
@@ -112,6 +115,9 @@ namespace ctranslate2 {
 
         void* ptr = nullptr;
         CUDA_CHECK(cudaMallocAsync(&ptr, size, get_cuda_stream()));
+#ifndef CT2_USE_HIP
+        note_allocation(ptr);
+#endif
 
         if (prev_device_index >= 0) {
           CUDA_CHECK(cudaSetDevice(prev_device_index));
@@ -127,6 +133,10 @@ namespace ctranslate2 {
 
       void free(void* ptr, int device_index) override {
 #if CT2_USE_ASYNC_ALLOC
+#ifndef CT2_USE_HIP
+        if (defer_free(ptr))
+          return;
+#endif
         int prev_device_index = -1;
         if (device_index >= 0) {
           CUDA_CHECK(cudaGetDevice(&prev_device_index));
