@@ -65,6 +65,13 @@ namespace at {
               if (k1 < ca_keys) row[k1] = __float2half_rn(alpha * d[2 + h]);
             }
         }
+        // The memory is idle while the block finishes its scores and runs the softmax: the first values it will
+        // read (keys 0 .. 4 * 128 - 1, a 128-byte row each) are fetched into L2 meanwhile.
+        if (j0 == 0)
+          #pragma unroll
+          for (int i = 0; i < 4; ++i)
+            asm volatile("prefetch.global.L2 [%0];"
+                         :: "l"(v + ((size_t)entry * ca_keys + threadIdx.x + i * ca_warps * 32) * ca_depth));
         __syncthreads();
         for (int r = warp; r < rows; r += ca_warps) {        // softmax in place, a row per warp
           __half* row = p + r * ca_pitch;
@@ -89,7 +96,7 @@ namespace at {
         };
         for (int s = 0; s < residue; s += 16)
           group(s, residue);
-        #pragma unroll 4
+        #pragma unroll 8
         for (int s = residue; s < ca_keys; s += 16)
           group(s, ca_keys);
         #pragma unroll
