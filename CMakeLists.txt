@@ -237,6 +237,7 @@ set(CUDA_SOURCES
   src/cuda/primitives.cu
   src/cuda/random.cu
   src/cuda/split_heads.cu
+  src/cuda/residual_norm.cu
   src/cuda/timestamp_rules.cu
   src/cuda/utils.cc
   src/ops/alibi_add_gpu.cu

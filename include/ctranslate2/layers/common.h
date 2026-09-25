@@ -122,6 +122,16 @@ namespace ctranslate2 {
       StorageView _encoding;
     };
 
+    class LayerNorm;
+
+    // The next sublayer's pre-norm, computed by the sublayer before it: a sublayer given one also writes
+    // norm(its output) to *normed (with its last bias and residual add in the same kernel where
+    // cuda/residual_norm.h applies), and the next sublayer takes *normed instead of normalizing again.
+    struct NormHandoff {
+      const LayerNorm* norm = nullptr;
+      StorageView* normed = nullptr;
+    };
+
     class Dense : public Layer
     {
     public:
@@ -131,7 +141,9 @@ namespace ctranslate2 {
             const bool is_layer_out = false);
       DataType output_type() const override;
       dim_t output_size() const override;
-      void operator()(const StorageView& input, StorageView& output, const StorageView* residual = nullptr) const;
+      // next: see NormHandoff (with a residual).
+      void operator()(const StorageView& input, StorageView& output, const StorageView* residual = nullptr,
+                      const NormHandoff* next = nullptr) const;
       void select_weights(const StorageView* index, const StorageView* extra_bias = nullptr);
       // For a caller that fuses the bias add into its next kernel: the same GEMM as operator()
       // without the bias, and the bias. Only when can_defer_bias() (plain float weights, no
@@ -142,6 +154,7 @@ namespace ctranslate2 {
         return _bias;
       }
     private:
+      void forward(const StorageView& input, StorageView& output, const StorageView* residual) const;
       bool _packed_weight;
       const StorageView& _weight;
       const StorageView* _bias;
@@ -169,6 +182,10 @@ namespace ctranslate2 {
       DataType output_type() const override;
       dim_t output_size() const override;
       void operator()(const StorageView& input, StorageView& output) const;
+      // sum = (bias + x) + residual, as Dense's bias and residual add, then normed = this norm of sum; in one
+      // kernel where cuda/residual_norm.h applies. sum may be x.
+      void after_residual(const StorageView& x, const StorageView& bias, const StorageView& residual,
+                          StorageView& sum, StorageView& normed) const;
     private:
       const StorageView* _beta;
       const StorageView& _gamma;

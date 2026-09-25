@@ -3,8 +3,14 @@
 #include <cmath>
 
 #include "ctranslate2/ops/activation.h"
+#include "ctranslate2/ops/bias_add.h"
 #include "cpu/backend.h"
 #include "dispatch.h"
+
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/residual_norm.h"
+#  include "cuda/utils.h"
+#endif
 
 namespace ctranslate2 {
   namespace layers {
@@ -345,8 +351,20 @@ namespace ctranslate2 {
       }
     }
 
-    void Dense::operator()(const StorageView& input, StorageView& output, const StorageView* residual) const {
+    void Dense::operator()(const StorageView& input, StorageView& output, const StorageView* residual,
+                           const NormHandoff* next) const {
       PROFILE("Dense");
+      if (next && residual && _bias && can_defer_bias()) {       // the bias and residual add, fused with the norm
+        compute_without_bias(input, output);
+        next->norm->after_residual(output, *_bias, *residual, output, *next->normed);
+        return;
+      }
+      forward(input, output, residual);
+      if (next)
+        (*next->norm)(output, *next->normed);
+    }
+
+    void Dense::forward(const StorageView& input, StorageView& output, const StorageView* residual) const {
       const StorageView* qscale = _partial_qscale.empty() ? _qscale : &_partial_qscale;
       const StorageView* weight = _partial_weight.empty() ? &_weight : &_partial_weight;
       const StorageView* bias = _partial_bias.empty() ? _bias : &_partial_bias;
@@ -478,6 +496,28 @@ namespace ctranslate2 {
         const ops::RMSNorm norm_op(_epsilon, _use_residual);
         norm_op(_gamma, input, output);
       }
+    }
+
+    void LayerNorm::after_residual(const StorageView& x, const StorageView& bias, const StorageView& residual,
+                                   StorageView& sum, StorageView& normed) const {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      const DataType half = DataType::FLOAT16;
+      const dim_t depth = x.rank() > 0 ? x.dim(-1) : 0;
+      if (_beta && x.device() == Device::CUDA && !cuda::use_stock_kernels() && x.dtype() == half
+          && bias.dtype() == half && residual.dtype() == half && _gamma.dtype() == half && _beta->dtype() == half
+          && residual.shape() == x.shape() && bias.size() == depth && _gamma.size() == depth
+          && _beta->size() == depth && depth > 0) {
+        if (&sum != &x)
+          sum.resize(x.shape());
+        normed.resize(x.shape());
+        cuda::residual_norm(x.data<float16_t>(), bias.data<float16_t>(), residual.data<float16_t>(),
+                            _gamma.data<float16_t>(), _beta->data<float16_t>(), _epsilon,
+                            sum.data<float16_t>(), normed.data<float16_t>(), x.size() / depth, depth);
+        return;
+      }
+#endif
+      ops::BiasAdd()(x, bias, sum, &residual);
+      (*this)(sum, normed);
     }
 
 

@@ -489,7 +489,9 @@ namespace ctranslate2 {
                                         bool return_normalized_attention,
                                         StorageView* position_bias,
                                         dim_t offset,
-                                        const StorageView* cache_reorder) const {
+                                        const StorageView* cache_reorder,
+                                        const StorageView* queries_normed,
+                                        const NormHandoff* next) const {
       PROFILE("MultiHeadAttention");
       const Device device = queries.device();
       const DataType dtype = queries.dtype();
@@ -500,8 +502,12 @@ namespace ctranslate2 {
 
       const StorageView* q = &queries;
       if (_layer_norm && _pre_norm) {
-        (*_layer_norm)(queries, queries_proj);
-        q = &queries_proj;
+        if (queries_normed) {
+          q = queries_normed;                                // made with the previous sublayer's residual add
+        } else {
+          (*_layer_norm)(queries, queries_proj);
+          q = &queries_proj;
+        }
       }
 
       // Dense bias, head split and Q/K/V split in one kernel where it applies (split_heads_fused.h).
@@ -653,7 +659,9 @@ namespace ctranslate2 {
       } else {
         combine_heads(context, _num_heads, queries_padder, beam_size, heads_combined);
       }
-      _linear.back()(context, output, _layer_norm ? &queries : nullptr);
+      // With a pre-norm and one device, the output is final after the residual add: the next norm joins it.
+      const bool hands_off = next && _layer_norm && _pre_norm && !_tensor_parallel;
+      _linear.back()(context, output, _layer_norm ? &queries : nullptr, hands_off ? next : nullptr);
 
       if (_tensor_parallel) {
         Shape shape = output.shape();
@@ -664,6 +672,8 @@ namespace ctranslate2 {
       }
       if (_layer_norm && !_pre_norm)
         (*_layer_norm)(output, output);
+      if (next && !hands_off)
+        (*next->norm)(output, *next->normed);
     }
 
     // Expand a 4-D tensor [batch, heads, time, d_head] along the batch dimension

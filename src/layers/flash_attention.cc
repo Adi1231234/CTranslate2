@@ -29,7 +29,9 @@ namespace ctranslate2 {
                                              bool return_normalized_attention,
                                              StorageView*,
                                              dim_t offset,
-                                             const StorageView* cache_reorder) const {
+                                             const StorageView* cache_reorder,
+                                             const StorageView* queries_normed,
+                                             const NormHandoff* next) const {
       PROFILE("MultiHeadAttention");
       if (cache_reorder)
         throw std::logic_error("FlashMultiHeadAttention does not apply a deferred beam order");
@@ -43,8 +45,12 @@ namespace ctranslate2 {
 
       const StorageView* q = &queries;
       if (_layer_norm && _pre_norm) {
-        (*_layer_norm)(queries, queries_proj);
-        q = &queries_proj;
+        if (queries_normed) {
+          q = queries_normed;
+        } else {
+          (*_layer_norm)(queries, queries_proj);
+          q = &queries_proj;
+        }
       }
 
       _linear[0](*q, fused_proj);
@@ -139,6 +145,8 @@ namespace ctranslate2 {
       }
       if (_layer_norm && !_pre_norm)
         (*_layer_norm)(output, output);
+      if (next)
+        (*next->norm)(output, *next->normed);
     }
 
     void FlashMultiHeadAttention::split_heads(StorageView& x,

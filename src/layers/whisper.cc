@@ -52,12 +52,25 @@ namespace ctranslate2 {
       _transpose(output, input);
       _position_embedding(input);
 
-      for (const auto& layer : _layers) {
-        (*layer)(input, nullptr, output);
+      // A layer's last residual add also makes the next layer's first pre-norm, or the output norm (NormHandoff).
+      StorageView normed(output_type(), features.device());
+      StorageView next_normed(output_type(), features.device());
+      bool have_normed = false;
+      for (size_t l = 0; l < _layers.size(); ++l) {
+        const LayerNorm* next_norm = l + 1 < _layers.size() ? _layers[l + 1]->input_norm() : &_output_norm;
+        const NormHandoff next{next_norm, &next_normed};
+        (*_layers[l])(input, nullptr, output, nullptr, nullptr, have_normed ? &normed : nullptr,
+                      next_norm ? &next : nullptr);
         input = std::move(output);
+        have_normed = next_norm != nullptr;
+        if (have_normed)
+          normed = std::move(next_normed);
       }
 
-      _output_norm(input, output);
+      if (have_normed)
+        output = std::move(normed);
+      else
+        _output_norm(input, output);
     }
 
 

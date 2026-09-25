@@ -18,7 +18,13 @@ namespace ctranslate2 {
                          const bool pre_norm = true,
                          const ops::ActivationType activation_type = ops::ActivationType::ReLU);
 
-      void operator()(const StorageView& input, StorageView& output) const;
+      // input_normed, next: see NormHandoff (common.h).
+      void operator()(const StorageView& input, StorageView& output,
+                      const StorageView* input_normed = nullptr, const NormHandoff* next = nullptr) const;
+
+      const LayerNorm* pre_norm_layer() const {
+        return _pre_norm ? _layer_norm.get() : nullptr;
+      }
 
       DataType output_type() const override {
         return _ff2.output_type();
@@ -48,11 +54,17 @@ namespace ctranslate2 {
                               const ops::ActivationType activation_type = ops::ActivationType::ReLU,
                               bool use_flash_attention = false);
 
+      // input_normed, next: see NormHandoff (common.h).
       void operator()(const StorageView& input,
                       const StorageView* lengths,
                       StorageView& output,
                       const Padder* padder = nullptr,
-                      StorageView* position_bias = nullptr) const;
+                      StorageView* position_bias = nullptr,
+                      const StorageView* input_normed = nullptr,
+                      const NormHandoff* next = nullptr) const;
+
+      // The first sublayer's pre-norm, when a previous layer may hand it over (nullptr otherwise).
+      const LayerNorm* input_norm() const;
 
       DataType output_type() const override {
         return _ff.output_type();
@@ -101,7 +113,12 @@ namespace ctranslate2 {
                       bool return_normalized_attention = true,
                       StorageView* position_bias = nullptr,
                       dim_t offset = 0,
-                      const StorageView* self_cache_reorder = nullptr) const;
+                      const StorageView* self_cache_reorder = nullptr,
+                      const StorageView* input_normed = nullptr,
+                      const NormHandoff* next = nullptr) const;
+
+      // The first sublayer's pre-norm, when a previous layer may hand it over (nullptr otherwise).
+      const LayerNorm* input_norm() const;
 
       DataType output_type() const override {
         return _ff.output_type();

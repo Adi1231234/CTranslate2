@@ -38,7 +38,14 @@ namespace ctranslate2 {
                       bool return_normalized_attention = true,
                       StorageView* position_bias = nullptr,
                       dim_t offset = 0,
-                      const StorageView* cache_reorder = nullptr) const = 0;
+                      const StorageView* cache_reorder = nullptr,
+                      const StorageView* queries_normed = nullptr,
+                      const NormHandoff* next = nullptr) const = 0;
+      // queries_normed: this layer's pre-norm of queries, made by the sublayer before (NormHandoff); next: the
+      // next sublayer's pre-norm, to compute with this layer's residual add.
+      const LayerNorm* pre_norm_layer() const {
+        return _pre_norm ? _layer_norm.get() : nullptr;
+      }
       // cache_reorder: a beam order that Decoder::update_state left for this step (rows of the
       // cached keys/values to take, see Decoder::defers_state_reorder); only layers with
       // supports_cache_reorder() receive one.

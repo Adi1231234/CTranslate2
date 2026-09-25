@@ -22,11 +22,16 @@ namespace ctranslate2 {
       , _tensor_parallel(model.tensor_parallel()) {
     }
 
-    void FeedForwardNetwork::operator()(const StorageView& input, StorageView& output) const {
+    void FeedForwardNetwork::operator()(const StorageView& input, StorageView& output,
+                                        const StorageView* input_normed, const NormHandoff* next) const {
       const StorageView* x = &input;
       if (_layer_norm && _pre_norm) {
-        (*_layer_norm)(input, output);
-        x = &output;
+        if (input_normed) {
+          x = input_normed;                                  // made with the previous sublayer's residual add
+        } else {
+          (*_layer_norm)(input, output);
+          x = &output;
+        }
       }
 
       const Device device = input.device();
@@ -40,7 +45,8 @@ namespace ctranslate2 {
         ops::Mul()(linear, inner, inner);
       }
 
-      _ff2(inner, output, _layer_norm ? &input : nullptr);
+      const bool hands_off = next && _layer_norm && _pre_norm && !_tensor_parallel;
+      _ff2(inner, output, _layer_norm ? &input : nullptr, hands_off ? next : nullptr);
 
       if (_tensor_parallel) {
         Shape shape = output.shape();
@@ -52,6 +58,8 @@ namespace ctranslate2 {
 
       if (_layer_norm && !_pre_norm)
         (*_layer_norm)(output, output);
+      if (next && !hands_off)
+        (*next->norm)(output, *next->normed);
     }
 
 
@@ -82,7 +90,9 @@ namespace ctranslate2 {
                                              const StorageView* lengths,
                                              StorageView& output,
                                              const Padder* padder,
-                                             StorageView* position_bias) const {
+                                             StorageView* position_bias,
+                                             const StorageView* input_normed,
+                                             const NormHandoff* next) const {
       PROFILE("TransformerEncoderLayer");
 
       const DataType dtype = input.dtype();
@@ -133,7 +143,11 @@ namespace ctranslate2 {
         return;
       }
 
-      // Original path for standard pre-norm/post-norm architectures
+      // Original path for standard pre-norm/post-norm architectures; the attention's residual add also makes
+      // the feed-forward's pre-norm (NormHandoff).
+      const LayerNorm* ffn_norm = _ff.pre_norm_layer();
+      StorageView ffn_normed(dtype, device);
+      const NormHandoff to_ffn{ffn_norm, &ffn_normed};
       StorageView context(dtype, device);
       if (_self_attention)
         (*_self_attention)(input,
@@ -146,8 +160,18 @@ namespace ctranslate2 {
                         padder,
                         padder,
                         true,
-                        position_bias);
-      _ff(context, output);
+                        position_bias,
+                        0,
+                        nullptr,
+                        input_normed,
+                        ffn_norm ? &to_ffn : nullptr);
+      _ff(context, output, ffn_norm && _self_attention ? &ffn_normed : nullptr, next);
+    }
+
+    const LayerNorm* TransformerEncoderLayer::input_norm() const {
+      const bool pre_post = _input_layer_norm && _post_attention_layer_norm && _pre_feedforward_layer_norm
+        && _post_feedforward_layer_norm;
+      return !pre_post && _self_attention ? _self_attention->pre_norm_layer() : nullptr;
     }
 
 
@@ -212,7 +236,9 @@ namespace ctranslate2 {
                                              bool return_normalized_attention,
                                              StorageView* position_bias,
                                              dim_t offset,
-                                             const StorageView* self_cache_reorder) const {
+                                             const StorageView* self_cache_reorder,
+                                             const StorageView* input_normed,
+                                             const NormHandoff* next) const {
       PROFILE("TransformerDecoderLayer");
 
       const DataType dtype = input.dtype();
@@ -338,6 +364,15 @@ namespace ctranslate2 {
 
         return;
       }
+      // Each sublayer's residual add also makes the next sublayer's pre-norm (NormHandoff).
+      const LayerNorm* cross_norm = _encoder_attention ? _encoder_attention->pre_norm_layer() : nullptr;
+      const LayerNorm* ffn_norm = _ff.pre_norm_layer();
+      StorageView cross_normed(dtype, device);
+      StorageView ffn_normed(dtype, device);
+      const NormHandoff to_cross{cross_norm, &cross_normed};
+      const NormHandoff to_ffn{ffn_norm, &ffn_normed};
+      const NormHandoff* after_self = (_encoder_attention ? (cross_norm ? &to_cross : nullptr)
+                                       : (ffn_norm ? &to_ffn : nullptr));
       if (_self_attention)
         (*_self_attention)(input,
                       input,
@@ -351,7 +386,9 @@ namespace ctranslate2 {
                       true,
                       position_bias,
                       offset,
-                      self_cache_reorder);
+                      self_cache_reorder,
+                      input_normed,
+                      after_self);
 
       StorageView context(dtype, device);
       if (_encoder_attention) {
@@ -364,13 +401,24 @@ namespace ctranslate2 {
                               attention,
                               input_padder,
                               memory_padder,
-                              return_normalized_attention);
+                              return_normalized_attention,
+                              nullptr,
+                              0,
+                              nullptr,
+                              cross_norm && _self_attention ? &cross_normed : nullptr,
+                              ffn_norm ? &to_ffn : nullptr);
       }
       else {
         context = std::move(output);
       }
 
-      _ff(context, output);
+      _ff(context, output, ffn_norm && (_encoder_attention || _self_attention) ? &ffn_normed : nullptr, next);
+    }
+
+    const LayerNorm* TransformerDecoderLayer::input_norm() const {
+      const bool standard = !(_post_feedforward_layer_norm && _pre_feedforward_layer_norm)
+        && !_shared_layer_norm && !_input_layer_norm;
+      return standard && _self_attention ? _self_attention->pre_norm_layer() : nullptr;
     }
 
 
@@ -779,6 +827,13 @@ namespace ctranslate2 {
         }
       }
 
+      // A layer's last residual add also makes the next layer's first pre-norm, or the output norm
+      // (NormHandoff); for one chunk only.
+      const bool handoff = layer_ins.size() == 1;
+      StorageView normed(dtype, device);
+      StorageView next_normed(dtype, device);
+      bool have_normed = false;
+
       for (size_t i = 0; i < layer_ins.size(); ++i) {
         StorageView* layer_in_chunk = &layer_ins[i];
         for (size_t l = 0; l < _layers.size(); ++l) {
@@ -801,6 +856,11 @@ namespace ctranslate2 {
           std::unique_ptr<StorageView> layer_attention;
           if (attention && heads_to_select)
             layer_attention = std::make_unique<StorageView>(dtype, device);
+
+          const LayerNorm* next_norm = !handoff ? nullptr
+            : l + 1 < _layers.size() ? _layers[l + 1]->input_norm()
+            : outputs && !_project_out ? _output_norm.get() : nullptr;
+          const NormHandoff next{next_norm, &next_normed};
 
           dim_t offset = _sliding_window * i + step;
           offset = offset < 0 ? 0 : offset;
@@ -839,8 +899,13 @@ namespace ctranslate2 {
                         return_normalized_attention(),
                         &position_bias,
                         offset,
-                        i == 0 ? self_cache_reorder.get() : nullptr);
+                        i == 0 ? self_cache_reorder.get() : nullptr,
+                        have_normed ? &normed : nullptr,
+                        next_norm ? &next : nullptr);
           *layer_in_chunk = std::move(layer_out);
+          have_normed = next_norm != nullptr;
+          if (have_normed)
+            normed = std::move(next_normed);
 
           if (layer_attention) {
             alignment_heads.emplace_back(dtype, device);
@@ -874,7 +939,9 @@ namespace ctranslate2 {
       }
 
       if (outputs) {
-        if (_output_norm)
+        if (have_normed)                                     // the output norm, made by the last layer
+          layer_in = std::move(normed);
+        else if (_output_norm)
           (*_output_norm)(layer_in, layer_in);
         if (_project_out) {
           (*_project_out)(layer_in, layer_out);
