@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <numeric>
 
@@ -90,7 +91,14 @@ namespace ctranslate2 {
 #ifdef CT2_WITH_CUDA
     if (device == Device::CUDA && step > 0 && capturable) {
       cuda::StepGraph graph(true);
-      run();
+      try {
+        run();
+      } catch (const std::exception& e) {
+        std::fprintf(stderr, "decoding step %lld under CUDA graph capture failed: %s\n",
+                     static_cast<long long>(step), e.what());
+        std::fflush(stderr);
+        throw;
+      }
       graph.launch();
       return;
     }
