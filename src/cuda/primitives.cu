@@ -28,8 +28,6 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include "cuda/attention_scores_k64.cuh"
-#include "cuda/hmma_gemm.cuh"
-#include "ctranslate2/allocator.h"
 #endif
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
@@ -535,24 +533,6 @@ namespace ctranslate2 {
                                       float beta,
                                       float16_t* c, dim_t ldc,
                                       const float16_t*) {
-#ifndef CT2_USE_HIP
-    // Whisper decoder Dense layers (a few rows): the cuBLAS kernel's own arithmetic on sm_120, bit for bit,
-    // with the weights read at the memory bandwidth (hmma_gemm.cuh).
-    if (!transpose_a && transpose_b && !cuda::use_true_fp16_gemm() && alpha == 1 && beta == 0
-        && lda == k && ldb == k && ldc == n && cuda::hmma_gemm_recipe(m, n, k) != 0
-        && reinterpret_cast<uintptr_t>(a) % 16 == 0 && reinterpret_cast<uintptr_t>(b) % 16 == 0
-        && reinterpret_cast<uintptr_t>(c) % 4 == 0 && cuda::hmma_replicas_verified()) {
-      const size_t bytes = cuda::hmma_gemm_workspace_bytes(m, n, k);
-      Allocator& allocator = get_allocator<Device::CUDA>();
-      void* workspace = bytes ? allocator.allocate(bytes) : nullptr;
-      cuda::hmma_gemm(reinterpret_cast<const __half*>(a), reinterpret_cast<const __half*>(b),
-                      reinterpret_cast<__half*>(c), m, n, k, workspace, cuda::get_cuda_stream());
-      if (workspace)
-        allocator.free(workspace);                          // stream-ordered, after the kernels
-      return;
-    }
-#endif
-
     const __half alpha_h = alpha;
     const __half beta_h = beta;
 

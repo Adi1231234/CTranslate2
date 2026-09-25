@@ -8,7 +8,9 @@
 //   recipe 1: one chain over all of k; out = half(c)
 //   recipe 3: serial split-K in 3 slices of 1728 (ceil(k / 3) rounded up to 32), each a chain from zero;
 //             out = half(c0), then out = half(c_s + out) for s = 1, 2
-// Rows 1 and, at k = 5120, rows 17, 18, 23 and 24 run other kernels: not routed.
+// Rows 1 and, at k = 5120, rows 17, 18, 23 and 24 run other kernels. Not used by the library: with the
+// weights read from DRAM, hmma_gemm.cuh is exact on every shape but no faster than cuBLAS (hmma_check.cu),
+// and in production it was slower (25.9 vs 24.2 s on the store PC's 150 clips); kept with its proofs.
 
 #include <cstdint>
 

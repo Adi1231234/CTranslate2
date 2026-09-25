@@ -39,7 +39,8 @@ namespace at {
       }
     }
 
-    __device__ __forceinline__ void rows1024_store(__half* p, unsigned n, const float* e, float sum) {
+    __device__ __forceinline__ void rows1024_store(__half* p, unsigned n, const float* e, float sum,
+                                                   unsigned slot_stride = 1) {
       #pragma unroll
       for (unsigned q = 0; q < 8; ++q) {
         if (4 * q < n) {
@@ -50,20 +51,20 @@ namespace at {
           uint2 raw;
           raw.x = *reinterpret_cast<unsigned*>(&a);
           raw.y = *reinterpret_cast<unsigned*>(&b);
-          reinterpret_cast<uint2*>(p)[q] = raw;
+          reinterpret_cast<uint2*>(p)[q * slot_stride] = raw;
         }
       }
     }
 
-    // One row by one warp: out = softmax of the row, 1024 < classes <= 2048, out 8-byte aligned. The lane's
-    // input chunks (values 32L.. and 1024 + 32L..) start at in0 and in1 with their slots stride0 and stride1
-    // apart (rows1024_load): a contiguous row, or attention_scores_softmax's scores, interleaved slot by slot
-    // in shared memory.
-    __device__ __forceinline__ void rows1024_row(__half* out, const __half* in0, const unsigned stride0,
-                                                 const __half* in1, const unsigned stride1,
-                                                 const unsigned classes, const unsigned lane)
+    // One row by one warp: the softmax of a row, 1024 < classes <= 2048. The lane's chunks of the row (values
+    // 32L.. and 1024 + 32L..) are read at in0 and in1 and written at out0 and out1 (in place is fine), their
+    // 8-byte slots stride0 and stride1 slots apart (rows1024_load): a contiguous row (strides 1), or
+    // exact_attention's rows interleaved slot by slot in shared memory.
+    __device__ __forceinline__ void rows1024_row(__half* out0, __half* out1, const __half* in0,
+                                                 const __half* in1, const unsigned stride0,
+                                                 const unsigned stride1, const unsigned classes,
+                                                 const unsigned lane)
     {
-      const unsigned first = C10_WARP_SIZE * lane;
       const unsigned tail = classes - 1024;                 // values past the first 1024
       const unsigned n1 = tail > C10_WARP_SIZE * lane
         ? min(tail - C10_WARP_SIZE * lane, unsigned(C10_WARP_SIZE)) : 0;
@@ -99,8 +100,8 @@ namespace at {
       for (unsigned g = 0; g < C10_WARP_SIZE; ++g)
         sum = Add<float>()(sum, __shfl_sync(0xffffffff, warp_sum, g));
 
-      rows1024_store(out + first, C10_WARP_SIZE, e0, sum);
-      rows1024_store(out + first + 1024, n1, e1, sum);
+      rows1024_store(out0, C10_WARP_SIZE, e0, sum, stride0);
+      rows1024_store(out1, n1, e1, sum, stride1);
     }
 
     static __global__ void __launch_bounds__(rows1024_per_block * C10_WARP_SIZE)
@@ -108,9 +109,10 @@ namespace at {
     {
       const unsigned row = blockIdx.x * rows1024_per_block + threadIdx.x / C10_WARP_SIZE;
       const unsigned lane = threadIdx.x % C10_WARP_SIZE;
-      const __half* in = input + size_t(row) * classes + C10_WARP_SIZE * lane;
+      const size_t first = size_t(row) * classes + C10_WARP_SIZE * lane;
       if (row < rows)
-        rows1024_row(output + size_t(row) * classes, in, 1, in + 1024, 1, classes, lane);
+        rows1024_row(output + first, output + first + 1024, input + first, input + first + 1024, 1, 1,
+                     classes, lane);
     }
 
   }

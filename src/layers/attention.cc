@@ -11,7 +11,7 @@
 #include "dispatch.h"
 #include "cpu/parallel.h"
 #include "kv_cache.h"
-#include "scores_softmax_fused.h"
+#include "attention_fused.h"
 #include "split_heads_fused.h"
 
 namespace ctranslate2 {
@@ -217,13 +217,9 @@ namespace ctranslate2 {
                                        maximum_relative_position).to(queries.device()));
       }
 
-      if (!relative_positions && !relative_attention_bias && !alibi && !values_lengths
-          && !(attention && !return_normalized_attention) && scores_softmax_fusable(queries, keys)) {
-        StorageView attn(values.dtype(), values.device());   // the scores never reach memory
-        scores_softmax_fused(queries, keys, queries_scale, attn);
-        ops::MatMul()(attn, values, output);
-        if (attention)
-          save_attention(*attention, std::move(attn), beam_size);
+      if (!relative_positions && !relative_attention_bias && !alibi && !values_lengths && !attention
+          && attention_fusable(queries, keys, values)) {
+        attention_fused(queries, keys, values, queries_scale, output);   // scores stay in shared memory
         return;
       }
 
