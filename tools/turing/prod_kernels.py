@@ -44,6 +44,17 @@ def table(title, key):
 
 table("per kernel", lambda r: short(r[0], 110))
 table("per kernel and launch shape", lambda r: f"{short(r[0], 80)} g={r[4]} b={r[5]}")
+# Idle GPU: every gap in the union of all streams' kernels, by the kernels on either side of it.
+idle, count, end, last = collections.Counter(), collections.Counter(), None, None
+for r in sorted(recs, key=lambda r: r[2]):
+    if end is not None and r[2] > end:
+        key = f"{short(last, 50)} -> {short(r[0], 50)}"
+        idle[key] += r[2] - end; count[key] += 1
+    if end is None or r[3] > end:
+        end, last = r[3], r[0]
+print(f"== idle GPU {sum(idle.values()) / 1e9:.2f} s in {sum(count.values())} gaps, by the kernels around them")
+for k, v in idle.most_common(TOP):
+    print(f"{v / 1e9:8.3f} s x{count[k]:7d} {v / count[k] / 1e3:8.1f} us  {k}")
 pool.shutdown()
 del model
 import gc; gc.collect()
