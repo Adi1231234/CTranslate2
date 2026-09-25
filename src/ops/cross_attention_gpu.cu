@@ -33,8 +33,10 @@ namespace ctranslate2 {
     }
 
     // hmma_gemm_recipe.h: cuBLAS 12.9.2 runs the 1280 x 1280 Dense layer at 2..48 rows as one chain over k.
+    // Off by default (CT2_CROSS_Q=1 enables it): exact, but the store PC's 150 clips took 21.8 s with it and
+    // 21.5 s without (the projection's chain waits on L2 inside the attention kernel; cuBLAS's GEMM is faster).
     bool cross_attention_projects(dim_t rows, dim_t n, dim_t k) {
-      static const bool enabled = read_bool_from_env("CT2_CROSS_Q", true);
+      static const bool enabled = read_bool_from_env("CT2_CROSS_Q", false);
       return enabled && rows >= 2 && rows <= 48 && n == 1280 && k == 1280 && hmma_replicas_verified();
     }
 

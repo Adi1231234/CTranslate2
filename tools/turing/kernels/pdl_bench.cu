@@ -1,0 +1,58 @@
+// Does programmatic dependent launch (PDL, sm_90+) shorten the gaps between dependent kernels on this GPU and
+// driver? Times a chain of dependent small kernels (each reads the previous one's output and a slice of a large
+// buffer, ~the decoder's elementwise kernels) launched plainly and with PDL (cudaLaunchKernelEx with programmatic
+// stream serialization; the kernel waits with griddepcontrol.wait before reading), then the same after a cuBLAS
+// GEMM of the decoder's shape (40 x 1280 x 1280), whose kernel does not trigger its dependents early.
+// usage: pdl_bench [chain length, default 2000]   (build for sm_120: -gencode arch=compute_120,code=sm_120)
+#include <cstdio>
+#include "probe_common.h"
+#include "probe_data.cuh"
+
+__global__ void step(const float* in, float* out, const __half* big, int n, int pdl) {
+#if __CUDA_ARCH__ >= 900
+  if (pdl) asm volatile("griddepcontrol.wait;" ::: "memory");
+#endif
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) out[i] = in[i] * 0.5f + __half2float(big[(size_t)i * 8]);
+}
+
+int main(int argc, char** argv) {
+  const int chain = argc > 1 ? atoi(argv[1]) : 2000, n = 40 * 1280, blocks = (n + 255) / 256;
+  float *a, *b; __half* big;
+  CK(cudaMalloc(&a, 4ull * n)); CK(cudaMalloc(&b, 4ull * n)); CK(cudaMalloc(&big, 2ull * n * 8));
+  CK(cudaMemset(a, 0, 4ull * n)); CK(cudaMemset(big, 0, 2ull * n * 8));
+  cudaStream_t s; CK(cudaStreamCreate(&s));
+  cublasHandle_t h; CK(cublasCreate(&h)); CK(cublasSetStream(h, s));
+  __half *A, *W, *C;
+  CK(cudaMalloc(&A, 2ull * 40 * 1280)); CK(cudaMalloc(&W, 2ull * 1280 * 1280)); CK(cudaMalloc(&C, 2ull * 40 * 1280));
+  auto launch = [&](const float* in, float* out, int pdl) {
+    cudaLaunchConfig_t cfg = {};
+    cfg.gridDim = dim3(blocks); cfg.blockDim = dim3(256); cfg.stream = s;
+    cudaLaunchAttribute attr[1];
+    attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+    attr[0].val.programmaticStreamSerializationAllowed = 1;
+    cfg.attrs = attr; cfg.numAttrs = pdl ? 1 : 0;
+    CK(cudaLaunchKernelEx(&cfg, step, in, out, (const __half*)big, n, pdl));
+  };
+  auto gemm = [&]() {
+    const float one = 1.f, zero = 0.f;
+    CK(cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, 1280, 40, 1280, &one, W, CUDA_R_16F, 1280, A, CUDA_R_16F, 1280,
+                    &zero, C, CUDA_R_16F, 1280, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+  };
+  cudaEvent_t e0, e1; CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1));
+  for (int mode = 0; mode < 4; ++mode) {        // 0 plain, 1 PDL, 2 gemm + plain, 3 gemm + PDL
+    const int pdl = mode % 2, with_gemm = mode / 2;
+    for (int rep = 0; rep < 2; ++rep) {          // the first repetition warms up
+      CK(cudaEventRecord(e0, s));
+      for (int i = 0; i < chain; ++i) {
+        if (with_gemm) gemm();
+        launch(i % 2 ? b : a, i % 2 ? a : b, pdl);
+      }
+      CK(cudaEventRecord(e1, s)); CK(cudaEventSynchronize(e1));
+      float ms; CK(cudaEventElapsedTime(&ms, e0, e1));
+      if (rep) printf("%-14s %8.2f us per step\n", mode == 0 ? "plain" : mode == 1 ? "pdl" : mode == 2 ? "gemm+plain"
+                                                   : "gemm+pdl", 1000.f * ms / chain);
+    }
+  }
+  return 0;
+}
