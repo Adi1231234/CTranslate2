@@ -234,6 +234,8 @@ set(CUDA_SOURCES
   src/cuda/allocator.cc
   src/cuda/cache_reorder.cu
   src/cuda/disable_tokens.cu
+  src/cuda/encoder_gemm.cu
+  src/cuda/persistent.cu
   src/cuda/primitives.cu
   src/cuda/random.cu
   src/cuda/split_heads.cu
@@ -686,10 +688,21 @@ if (WITH_CUDA)
       src/ops/flash-attention/flash_fwd_split_hdim256_fp16_sm80.cu
       PROPERTIES COMPILE_FLAGS "--use_fast_math")
   endif()
+  # CUTLASS's device-level templates need constexpr host functions in device code and, with MSVC, the
+  # real __cplusplus (C++17 checks); only this file gets those options (FindCUDA has no per-source flags).
+  set(CUTLASS_NVCC_OPTIONS "--expt-relaxed-constexpr")
+  if(MSVC)
+    list(APPEND CUTLASS_NVCC_OPTIONS "-Xcompiler=/Zc:__cplusplus")
+  endif()
+  cuda_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include
+                           ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog/include)
+  cuda_compile(CUTLASS_OBJECTS src/cuda/encoder_gemm.cu SHARED OPTIONS ${CUTLASS_NVCC_OPTIONS})
+  list(REMOVE_ITEM CUDA_SOURCES src/cuda/encoder_gemm.cu)
   set(CUDA_LINK_LIBRARIES_KEYWORD PRIVATE)
   cuda_add_library(${PROJECT_NAME}
     ${SOURCES}
     ${CUDA_SOURCES}
+    ${CUTLASS_OBJECTS}
   )
 
 

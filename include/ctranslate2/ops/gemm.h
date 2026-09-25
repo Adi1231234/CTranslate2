@@ -58,6 +58,13 @@ namespace ctranslate2 {
                    const StorageView& b,
                    StorageView& c,
                    const StorageView* a_shift_compensation) const;
+
+      bool fused_bias_gelu(const StorageView& a,
+                           const StorageView& b,
+                           StorageView& c,
+                           const StorageView* a_shift_compensation,
+                           const StorageView* bias,
+                           const StorageView* residual) const;
     };
 
   }

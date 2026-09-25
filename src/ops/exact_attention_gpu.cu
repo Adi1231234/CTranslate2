@@ -4,7 +4,8 @@
 
 #include <cstdint>
 
-#include "exact_attention.cuh"
+#include "exact_attention_launch.cuh"
+#include "cuda/persistent.h"
 #include "cuda/utils.h"
 
 namespace ctranslate2 {
@@ -23,12 +24,16 @@ namespace ctranslate2 {
       return at::native::exact_attention_workspace(static_cast<int>(batch), static_cast<int>(n));
     }
 
+    // CT2_EA_BLOCKS=<n>: persistent, n blocks per SM (cuda/persistent.h).
     void exact_attention(const float16_t* q, const float16_t* k, const float16_t* v, void* workspace,
                          float16_t* o, dim_t batch, dim_t heads, dim_t m, dim_t n, float alpha) {
+      static const int per_sm = persistent_blocks_per_sm("CT2_EA_BLOCKS");
+      cudaStream_t stream = get_cuda_stream();
       at::native::exact_attention(reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
                                   reinterpret_cast<const __half*>(v), workspace,
                                   reinterpret_cast<__half*>(o), static_cast<int>(batch), static_cast<int>(heads),
-                                  static_cast<int>(m), static_cast<int>(n), alpha, get_cuda_stream());
+                                  static_cast<int>(m), static_cast<int>(n), alpha, stream,
+                                  per_sm > 0 ? work_counter(stream) : nullptr, per_sm * sm_count());
     }
 
   }

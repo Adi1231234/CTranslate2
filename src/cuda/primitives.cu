@@ -28,6 +28,7 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include "cuda/attention_scores_k64.cuh"
+#include "cuda/encoder_gemm.h"
 #endif
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
@@ -533,6 +534,13 @@ namespace ctranslate2 {
                                       float beta,
                                       float16_t* c, dim_t ldc,
                                       const float16_t*) {
+#ifndef CT2_USE_HIP
+    if (!transpose_a && transpose_b && alpha == 1 && beta == 0 && !cuda::use_true_fp16_gemm()
+        && lda == k && ldb == k && ldc == n && cuda::encoder_gemm_applies(m, n, k, a, b, c)) {
+      cuda::encoder_gemm(a, b, c, m, n, k);                   // cuBLAS's arithmetic, see cuda/encoder_gemm.h
+      return;
+    }
+#endif
     const __half alpha_h = alpha;
     const __half beta_h = beta;
 

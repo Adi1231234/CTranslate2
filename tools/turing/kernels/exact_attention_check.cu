@@ -7,7 +7,7 @@
 #include <cstdio>
 #include "probe_common.h"
 #include "probe_data.cuh"
-#include "ops/exact_attention.cuh"
+#include "ops/exact_attention_launch.cuh"
 
 template <typename F> float time_us(F run, int reps) {
   cudaEvent_t a, b; CK(cudaEventCreate(&a)); CK(cudaEventCreate(&b));

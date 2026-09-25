@@ -7,57 +7,32 @@
 //   softmax: rows1024_row, the fork's replay of the legacy kernel's order
 //   output:  one m16n8k16 chain per output over the keys, 16 at a time with the residue of the 64-key tiles
 //            first ([0, 16), [16, r) + zeros, then from r = n % 64 on), o = half(acc) (av_hmma_probe.cu)
-// A block owns 16 query rows of one batch entry; neither the scores nor the probabilities leave its shared
-// memory. Its 8 warps compute the scores of 8-key tiles w, w + 8, ..., run the softmax in place on 2 rows
+// A work item is 16 query rows of one batch entry; neither the scores nor the probabilities leave the block's
+// shared memory. Its 8 warps compute the scores of 8-key tiles w, w + 8, ..., run the softmax in place on 2 rows
 // each, then warp w chains the output's dims 8w..8w + 7. Keys and values come in exact_attention_layout.cuh's
 // fragment order (one coalesced load per fragment). A row is stored as rows1024_row reads it: lane L's 4-value
 // slot s of the first 1024 values at (s * 33 + L) * 4, of the rest at ea_part2 + (s * tail_lanes + L) * 4, so
 // softmax loads hit consecutive slots and, with a row pitch of 4 mod 64 halves, the output product's
-// fragment loads (8 rows, 2 slots) hit distinct banks.
+// fragment loads (8 rows, 2 slots) hit distinct banks. A block computes one item, or (persistent,
+// CT2_EA_BLOCKS=<blocks per SM>, cuda/persistent.h) the items it takes from the work counter.
 
-#include "softmax_kernels.cuh"
-#include "exact_attention_layout.cuh"
+#include "exact_attention_parts.cuh"
+#include "cuda/persistent.cuh"
 
 namespace at {
   namespace native {
 
-    constexpr int ea_warps = 8, ea_rows = 16, ea_depth = 64;
-    constexpr int ea_lanes0 = 33, ea_part2 = 8 * ea_lanes0 * 4;   // slot stride and size of the first 1024 values
-
-    __device__ __forceinline__ int ea_slot(int i, int tail_lanes) {   // key i -> its place in a stored row
-      const int part = i >= 1024, j = i - 1024 * part, lanes = part ? tail_lanes : ea_lanes0;
-      return ea_part2 * part + ((j % 32) / 4 * lanes + j / 32) * 4 + j % 4;
-    }
-
-    __device__ __forceinline__ void ea_mma(float* d, unsigned a0, unsigned a1, unsigned a2, unsigned a3, uint2 b) {
-#if __CUDA_ARCH__ >= 800
-      asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
-                   : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-                   : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b.x), "r"(b.y));
-#endif
-    }
-
-    // Whisper's encoder shape (m = n = 1500) as compile-time values, so the loops and places fold to constants.
     template <int N>
-    struct ea_shape {
-      static constexpr int tiles = (N + 7) / 8, groups = 2 + (N - N % 64) / 16, residue = N % 64;
-      static constexpr int tail_lanes = (N - 1024 + 31) / 32;
-      static constexpr int pitch = (ea_part2 + tail_lanes * 32 + 59) / 64 * 64 + 4;   // halves per row, 4 mod 64
-    };
-
-    template <int N>
-    __global__ void __launch_bounds__(ea_warps * C10_WARP_SIZE)
-    exact_attention_kernel(const __half* q, const uint2* kf, const uint2* vf, __half* o, int heads, float alpha) {
+    __device__ __forceinline__ void ea_item(const __half* q, const uint2* kf, const uint2* vf, __half* o,
+                                            int heads, float alpha, int row_tile, int entry, __half* s) {
       using S = ea_shape<N>;
       constexpr int m = N, n = N, tiles = S::tiles, groups = S::groups, tail_lanes = S::tail_lanes, pitch = S::pitch;
-      extern __shared__ __align__(16) unsigned char ea_smem[];
-      __half* s = reinterpret_cast<__half*>(ea_smem);           // [ea_rows][pitch] scores, then probabilities
       const int warp = threadIdx.x / C10_WARP_SIZE, lane = threadIdx.x % C10_WARP_SIZE, g = lane / 4, t = lane % 4;
-      const int j0 = blockIdx.x * ea_rows;
-      const __half* qb = q + (size_t)blockIdx.y * m * ea_depth;
-      const uint2* kb = kf + (size_t)blockIdx.y * tiles * 4 * C10_WARP_SIZE + lane;
-      const uint2* vb = vf + ((size_t)blockIdx.y * (ea_depth / 8) + warp) * groups * C10_WARP_SIZE + lane;
-      unsigned a[4][4];                                          // the block's 16 queries, 4 groups of 16 dims
+      const int j0 = row_tile * ea_rows;
+      const __half* qb = q + (size_t)entry * m * ea_depth;
+      const uint2* kb = kf + (size_t)entry * tiles * 4 * C10_WARP_SIZE + lane;
+      const uint2* vb = vf + ((size_t)entry * (ea_depth / 8) + warp) * groups * C10_WARP_SIZE + lane;
+      unsigned a[4][4];                                          // the item's 16 queries, 4 groups of 16 dims
       #pragma unroll
       for (int c = 0; c < 4; ++c)
         for (int e = 0; e < 4; ++e) {
@@ -122,34 +97,30 @@ namespace at {
           for (int h = 0; h < 2; ++h)
             off[p][h] = k + 1 == k_in[p][h] ? jump_to[p][h] : off[p][h] + 4;
       }
-      const int clip = blockIdx.y / heads, head = blockIdx.y % heads;  // o is [clip, query, head, dim]
+      const int clip = entry / heads, head = entry % heads;     // o is [clip, query, head, dim]
       for (int h = 0; h < 2; ++h)
         if (j0 + g + 8 * h < m)
           *reinterpret_cast<__half2*>(o + (((size_t)clip * m + j0 + g + 8 * h) * heads + head) * ea_depth
                                       + 8 * warp + 2 * t) = __floats2half2_rn(acc[2 * h], acc[2 * h + 1]);
     }
 
-    // Bytes of the kf and vf workspace for batch entries of n keys.
-    inline size_t exact_attention_workspace(int batch, int n) {
-      return sizeof (uint2) * batch * (eal_key_tiles(n) * 4 + (ea_depth / 8) * eal_groups(n)) * eal_lanes;
-    }
-
-    // o = SoftMax(q k^T * alpha) v for q [batch, m, 64], k and v [batch, n, 64] with batch = clips x heads, o
-    // [clips, m, heads, 64] (the heads combined, as MultiHeadAttention::combine_heads would lay them out; heads 1
-    // gives [batch, m, 64]); workspace: exact_attention_workspace(batch, n) bytes. m = n = 1500 (the kernel is
-    // compiled for that shape; exact_attention_applies checks it), all 4-byte aligned.
-    inline void exact_attention(const __half* q, const __half* k, const __half* v, void* workspace, __half* o,
-                                int batch, int heads, int m, int n, float alpha, cudaStream_t stream) {
-      constexpr int N = 1500;                                  // exact_attention_applies: m = n = 1500 only
-      static const bool configured = cudaFuncSetAttribute(exact_attention_kernel<N>,
-                                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                                          int(ea_rows * ea_shape<N>::pitch * sizeof (__half))) == cudaSuccess;
-      (void)configured;
-      uint2* kf = static_cast<uint2*>(workspace);
-      uint2* vf = kf + (size_t)batch * eal_key_tiles(n) * 4 * eal_lanes;
-      exact_attention_layout<<<1024, 256, 0, stream>>>(k, v, kf, vf, batch, n, ea_depth);
-      exact_attention_kernel<N><<<dim3((N + ea_rows - 1) / ea_rows, batch), ea_warps * C10_WARP_SIZE,
-                                  ea_rows * ea_shape<N>::pitch * sizeof (__half), stream>>>(q, kf, vf, o, heads, alpha);
+    // Without a counter, block (x, y) computes row tile x of entry y; with one, items row_tile + row_tiles * entry.
+    template <int N>
+    __global__ void __launch_bounds__(ea_warps * C10_WARP_SIZE)
+    exact_attention_kernel(const __half* q, const uint2* kf, const uint2* vf, __half* o, int heads, float alpha,
+                           unsigned* counter, int batch) {
+      extern __shared__ __align__(16) unsigned char ea_smem[];
+      __half* s = reinterpret_cast<__half*>(ea_smem);           // [ea_rows][pitch] scores, then probabilities
+      constexpr int row_tiles = ea_shape<N>::row_tiles;
+      if (!counter) {
+        ea_item<N>(q, kf, vf, o, heads, alpha, blockIdx.x, blockIdx.y, s);
+        return;
+      }
+      __shared__ int slot;
+      const int items = row_tiles * batch;
+      for (int item = ctranslate2::cuda::next_work_item(counter, items, slot); item < items;
+           item = ctranslate2::cuda::next_work_item(counter, items, slot))
+        ea_item<N>(q, kf, vf, o, heads, alpha, item % row_tiles, item / row_tiles, s);
     }
 
   }

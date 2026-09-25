@@ -2,7 +2,13 @@
 
 #include "ctranslate2/ops/bias_add.h"
 
+#include <cstdint>
+
 #include "dispatch.h"
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/encoder_gemm.h"
+#  include "cuda/utils.h"
+#endif
 
 namespace ctranslate2 {
   namespace ops {
@@ -49,6 +55,8 @@ namespace ctranslate2 {
                           const StorageView* bias,
                           const StorageView* residual) const {
       PROFILE("Gemm");
+      if (fused_bias_gelu(a, b, c, a_shift_compensation, bias, residual))
+        return;
 
       switch (a.dtype()) {
       case DataType::INT8:
@@ -74,6 +82,38 @@ namespace ctranslate2 {
       }
 
       apply_bias_and_activation(c, bias, _activation_type, residual);
+    }
+
+    // A Whisper encoder feed-forward layer (fp16, weight transposed, bias, GELU) as one kernel with the bias and
+    // GELU in its epilogue, the arithmetic of the product then BiasAdd (cuda/encoder_gemm.h).
+    bool Gemm::fused_bias_gelu(const StorageView& a,
+                               const StorageView& b,
+                               StorageView& c,
+                               const StorageView* a_shift_compensation,
+                               const StorageView* bias,
+                               const StorageView* residual) const {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      if (a.device() != Device::CUDA || a.dtype() != DataType::FLOAT16 || !bias || residual
+          || a_shift_compensation || !_activation_type || *_activation_type != ActivationType::GELU
+          || _alpha != 1 || _beta != 0 || _trans_a || !_trans_b || _a_is_packed || _b_is_packed
+          || cuda::use_true_fp16_gemm())
+        return false;
+      const dim_t k = a.dim(-1), n = b.dim(-2), m = a.size() / k;
+      if (b.dim(-1) != k || bias->size() != n || bias->dtype() != DataType::FLOAT16)
+        return false;
+      Shape output_shape(a.shape());
+      output_shape.back() = n;
+      c.resize(std::move(output_shape));
+      if (!cuda::encoder_gemm_applies(m, n, k, a.data<float16_t>(), b.data<float16_t>(), c.data<float16_t>())
+          || reinterpret_cast<uintptr_t>(bias->data<float16_t>()) % 16 != 0)
+        return false;
+      cuda::encoder_gemm(a.data<float16_t>(), b.data<float16_t>(), c.data<float16_t>(), m, n, k,
+                         bias->data<float16_t>());
+      return true;
+#else
+      (void)a; (void)b; (void)c; (void)a_shift_compensation; (void)bias; (void)residual;
+      return false;
+#endif
     }
 
     template <Device D, typename In, typename Out>
