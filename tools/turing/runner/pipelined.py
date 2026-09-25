@@ -4,8 +4,12 @@ Per profile, ~31% of wall time is the encoder and ~66% the beam-search decoder, 
 The decoder leaves the GPU partly idle (many small steps), so a background thread encodes the next
 batch on a second CTranslate2 worker (model needs num_workers=2) while the main thread decodes.
 Per-batch math is unchanged: same batches, same encoder call, same generate() call.
+PIPE_ORDER=desc decodes the batches last to first (the longest clips first: while their long decodes
+run, the encoder banks later batches, which then decode without waiting); the segments still come out
+in batch order. PIPE_AHEAD=<n>: encoded batches that may wait (default 1). PIPE_LOG=<file>: one line
+per batch with its encode and decode start and end (seconds).
 """
-import queue, threading
+import os, queue, threading, time
 from faster_whisper import BatchedInferencePipeline, WhisperModel
 from faster_whisper.transcribe import Segment, Word
 from tqdm import tqdm
@@ -13,25 +17,40 @@ from tqdm import tqdm
 
 class PipelinedBatchedInferencePipeline(BatchedInferencePipeline):
     def _batched_segments_generator(self, features, tokenizer, chunks_metadata, batch_size, options, log_progress):
-        ahead = queue.Queue(maxsize=1)                       # at most one pre-encoded batch waiting
+        starts = list(range(0, len(features), batch_size))
+        order = starts[::-1] if os.environ.get("PIPE_ORDER") == "desc" else starts
+        ahead = queue.Queue(maxsize=int(os.environ.get("PIPE_AHEAD", "1")))
+        times = {i: [] for i in starts}                      # encode start, end, decode start, end
 
         def encode_ahead():
             try:
-                for i in range(0, len(features), batch_size):
-                    ahead.put((i, WhisperModel.encode(self.model, features[i:i + batch_size])))
+                for i in order:
+                    times[i].append(time.perf_counter())
+                    enc = WhisperModel.encode(self.model, features[i:i + batch_size])
+                    times[i].append(time.perf_counter())
+                    ahead.put((i, enc))
             except Exception as e:                           # surface encoder errors in the caller
                 ahead.put((None, e))
 
         threading.Thread(target=encode_ahead, daemon=True).start()
         pbar = tqdm(total=len(features), disable=not log_progress, position=0)
-        seg_idx = 0
-        for i in range(0, len(features), batch_size):
+        done = {}
+        for i in order:
             j, enc = ahead.get()
             if j is None:
                 raise enc
             self._encoder_output = enc
-            results = self.forward(features[i:i + batch_size], tokenizer, chunks_metadata[i:i + batch_size], options)
-            for result in results:
+            times[i].append(time.perf_counter())
+            done[i] = self.forward(features[i:i + batch_size], tokenizer, chunks_metadata[i:i + batch_size], options)
+            times[i].append(time.perf_counter())
+        if os.environ.get("PIPE_LOG"):
+            with open(os.environ["PIPE_LOG"], "a") as f:
+                t0 = min(t[0] for t in times.values())
+                for i in order:
+                    f.write(" ".join([str(i)] + [f"{t - t0:.3f}" for t in times[i]]) + "\n")
+        seg_idx = 0
+        for i in starts:
+            for result in done[i]:
                 for segment in result:
                     seg_idx += 1
                     yield Segment(
