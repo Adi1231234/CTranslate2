@@ -32,7 +32,8 @@ namespace ctranslate2 {
       Allocator& allocator = get_allocator<Device::CUDA>();
       void* workspace = allocator.allocate(cuda::exact_attention_workspace_bytes(batch, keys.dim(2)));
       cuda::exact_attention(queries.data<float16_t>(), keys.data<float16_t>(), values.data<float16_t>(),
-                            workspace, output.data<float16_t>(), batch, queries.dim(2), keys.dim(2), scale);
+                            workspace, output.data<float16_t>(), batch, queries.dim(1), queries.dim(2),
+                            keys.dim(2), scale);
       allocator.free(workspace);                               // stream-ordered, after the kernels
 #else
       (void)queries; (void)keys; (void)values; (void)scale; (void)output;

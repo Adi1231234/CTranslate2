@@ -88,10 +88,13 @@ namespace ctranslate2 {
                                const Padder* padder = nullptr,
                                dim_t beam_size = 1);
 
+      // heads_combined: x already holds [batch, time, heads, head_dim] under its [batch, heads, time, head_dim]
+      // shape (the fused attention writes it so), so only the reshapes remain.
       static void combine_heads(StorageView& x,
                                  dim_t num_heads,
                                  const Padder* padder = nullptr,
-                                 dim_t beam_size = 1);
+                                 dim_t beam_size = 1,
+                                 bool heads_combined = false);
 
       void apply_k_norm(StorageView& keys_proj) const;
       void apply_v_norm(StorageView& values_proj) const;

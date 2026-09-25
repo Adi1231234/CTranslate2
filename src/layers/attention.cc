@@ -179,7 +179,8 @@ namespace ctranslate2 {
       }
     }
 
-    static void dot_product_attention(const StorageView& queries,
+    // True when output holds the heads combined ([batch, time, heads, depth] under the queries' shape).
+    static bool dot_product_attention(const StorageView& queries,
                                       const StorageView& keys,
                                       const StorageView& values,
                                       const StorageView* values_lengths,
@@ -220,7 +221,7 @@ namespace ctranslate2 {
       if (!relative_positions && !relative_attention_bias && !alibi && !values_lengths && !attention
           && attention_fusable(queries, keys, values)) {
         attention_fused(queries, keys, values, queries_scale, output);   // scores stay in shared memory
-        return;
+        return true;
       }
 
       const ops::MatMul keys_matmul(/*trans_a=*/false, /*trans_b=*/true, queries_scale);
@@ -294,6 +295,7 @@ namespace ctranslate2 {
 
       if (attention && return_normalized_attention)
         save_attention(*attention, std::move(attn), beam_size);
+      return false;
     }
 
 
@@ -613,7 +615,7 @@ namespace ctranslate2 {
       }
 
       StorageView& context = fused_proj;  // Reuse storage.
-      dot_product_attention(queries_proj,
+      const bool heads_combined = dot_product_attention(queries_proj,
                             keys_proj,
                             values_proj,
                             values_lengths,
@@ -649,7 +651,7 @@ namespace ctranslate2 {
         if (queries_padder)
           queries_padder->remove_padding(context);
       } else {
-        combine_heads(context, _num_heads, queries_padder, beam_size);
+        combine_heads(context, _num_heads, queries_padder, beam_size, heads_combined);
       }
       _linear.back()(context, output, _layer_norm ? &queries : nullptr);
 
@@ -873,13 +875,14 @@ namespace ctranslate2 {
     void MultiHeadAttention::combine_heads(StorageView& x,
                                          dim_t num_heads,
                                          const Padder* padder,
-                                         dim_t beam_size) {
+                                         dim_t beam_size,
+                                         bool heads_combined) {
       // x has shape [batch_size, num_heads, time, head_dim]
       const dim_t batch_size = x.dim(0);
       const dim_t time = x.dim(2);
       const dim_t depth = x.dim(3) * num_heads;
 
-      if (time > 1) {
+      if (time > 1 && !heads_combined) {
         StorageView y(x.device(), x.dtype());
         transpose_op(x, y);
         x = std::move(y);

@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
                                     p.dC, CUDA_R_16F, n, (long long)m * n, &zero, O, CUDA_R_16F, d, (long long)m * d,
                                     batch, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
     };
-    auto fused = [&] { at::native::exact_attention(p.dQ, p.dK, V, W, F, batch, m, n, alpha, 0); };
+    auto fused = [&] { at::native::exact_attention(p.dQ, p.dK, V, W, F, batch, 1, m, n, alpha, 0); };
     unsigned long long bad = 0;
     for (int f = 0; f < 3; ++f) {
       fill<<<1024, 256>>>(p.dQ, (size_t)batch * m * d, 23u * f + batch, -6 + f, 1 + f);

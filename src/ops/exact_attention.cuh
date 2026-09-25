@@ -38,7 +38,7 @@ namespace at {
     }
 
     static __global__ void __launch_bounds__(ea_warps * C10_WARP_SIZE)
-    exact_attention_kernel(const __half* q, const uint2* kf, const uint2* vf, __half* o, int m, int n,
+    exact_attention_kernel(const __half* q, const uint2* kf, const uint2* vf, __half* o, int m, int n, int heads,
                            int pitch, int tail_lanes, float alpha) {
       extern __shared__ __align__(16) unsigned char ea_smem[];
       __half* s = reinterpret_cast<__half*>(ea_smem);           // [ea_rows][pitch] scores, then probabilities
@@ -82,10 +82,11 @@ namespace at {
         const int i = (G < 2 ? 16 * G : residue + 16 * (G - 2)) + 2 * t;
         ea_mma(acc, p_at(g, i), p_at(g + 8, i), p_at(g, i + 8), p_at(g + 8, i + 8), vb[G * C10_WARP_SIZE]);
       }
+      const int clip = blockIdx.y / heads, head = blockIdx.y % heads;  // o is [clip, query, head, dim]
       for (int h = 0; h < 2; ++h)
         if (j0 + g + 8 * h < m)
-          *reinterpret_cast<__half2*>(o + ((size_t)blockIdx.y * m + j0 + g + 8 * h) * ea_depth + 8 * warp + 2 * t) =
-            __floats2half2_rn(acc[2 * h], acc[2 * h + 1]);
+          *reinterpret_cast<__half2*>(o + (((size_t)clip * m + j0 + g + 8 * h) * heads + head) * ea_depth
+                                      + 8 * warp + 2 * t) = __floats2half2_rn(acc[2 * h], acc[2 * h + 1]);
     }
 
     // Bytes of the kf and vf workspace for batch entries of n keys.
@@ -93,10 +94,12 @@ namespace at {
       return sizeof (uint2) * batch * (eal_key_tiles(n) * 4 + (ea_depth / 8) * eal_groups(n)) * eal_lanes;
     }
 
-    // o = SoftMax(q k^T * alpha) v for q [batch, m, 64], k and v [batch, n, 64], o [batch, m, 64]; workspace:
-    // exact_attention_workspace(batch, n) bytes. 1024 < n <= 2048, 16 < n % 64 < 32, all 4-byte aligned.
+    // o = SoftMax(q k^T * alpha) v for q [batch, m, 64], k and v [batch, n, 64] with batch = clips x heads, o
+    // [clips, m, heads, 64] (the heads combined, as MultiHeadAttention::combine_heads would lay them out; heads 1
+    // gives [batch, m, 64]); workspace: exact_attention_workspace(batch, n) bytes. 1024 < n <= 2048,
+    // 16 < n % 64 < 32, all 4-byte aligned.
     inline void exact_attention(const __half* q, const __half* k, const __half* v, void* workspace, __half* o,
-                                int batch, int m, int n, float alpha, cudaStream_t stream) {
+                                int batch, int heads, int m, int n, float alpha, cudaStream_t stream) {
       static const bool configured = cudaFuncSetAttribute(exact_attention_kernel,
                                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
                                                           int(ea_rows * (ea_max_cols + 128) * sizeof (__half))) == cudaSuccess;
@@ -107,7 +110,8 @@ namespace at {
       const int tail_lanes = (n - 1024 + C10_WARP_SIZE - 1) / C10_WARP_SIZE;
       const int pitch = (ea_part2 + tail_lanes * C10_WARP_SIZE + 59) / 64 * 64 + 4;   // halves per row, 4 mod 64
       exact_attention_kernel<<<dim3((m + ea_rows - 1) / ea_rows, batch), ea_warps * C10_WARP_SIZE,
-                               ea_rows * pitch * sizeof (__half), stream>>>(q, kf, vf, o, m, n, pitch, tail_lanes, alpha);
+                               ea_rows * pitch * sizeof (__half), stream>>>(q, kf, vf, o, m, n, heads, pitch,
+                                                                            tail_lanes, alpha);
     }
 
   }

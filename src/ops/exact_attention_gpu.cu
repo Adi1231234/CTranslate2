@@ -24,11 +24,11 @@ namespace ctranslate2 {
     }
 
     void exact_attention(const float16_t* q, const float16_t* k, const float16_t* v, void* workspace,
-                         float16_t* o, dim_t batch, dim_t m, dim_t n, float alpha) {
+                         float16_t* o, dim_t batch, dim_t heads, dim_t m, dim_t n, float alpha) {
       at::native::exact_attention(reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
                                   reinterpret_cast<const __half*>(v), workspace,
-                                  reinterpret_cast<__half*>(o), static_cast<int>(batch), static_cast<int>(m),
-                                  static_cast<int>(n), alpha, get_cuda_stream());
+                                  reinterpret_cast<__half*>(o), static_cast<int>(batch), static_cast<int>(heads),
+                                  static_cast<int>(m), static_cast<int>(n), alpha, get_cuda_stream());
     }
 
   }
