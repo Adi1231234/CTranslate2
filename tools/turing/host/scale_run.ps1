@@ -29,11 +29,17 @@ $probe = "while (`$true) { `$m = (Get-Counter '\GPU Adapter Memory(*)\Shared Usa
          "Measure-Object CookedValue -Maximum; Add-Content '$R\verify\$Label.gpu' ([int](`$m.Maximum / 1MB)); Start-Sleep 5 }"
 [IO.File]::WriteAllText("$Run\progress.log", '')           # this run's log only (kept as <Label>.log)
 $sampler = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', $probe
+$smi = Start-Process nvidia-smi -PassThru -WindowStyle Hidden -ArgumentList ('--query-gpu=utilization.gpu,memory.used,' +
+  "power.draw --format=csv,noheader,nounits -lms 1000 -f $R\verify\$Label.smi")
 $p = Start-Process -FilePath $Py -ArgumentList "$Run\transcribe_run.py", 'front', $Mode -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput "$R\verify\$Label.out" -RedirectStandardError "$R\verify\$Label.err"
 $null = $p.Handle                                          # keeps ExitCode readable after the exit
 $p.WaitForExit()
-Stop-Process -Id $sampler.Id -Force -ErrorAction SilentlyContinue
+Stop-Process -Id $sampler.Id, $smi.Id -Force -ErrorAction SilentlyContinue
 Copy-Item "$Run\progress.log" "$R\verify\$Label.log" -Force
 $shared = Get-Content "$R\verify\$Label.gpu" -ErrorAction SilentlyContinue | ForEach-Object { [int]$_ } | Measure-Object -Maximum
-Log "---- scale_run $Label exit $($p.ExitCode), GPU shared memory peak $($shared.Maximum) MB"
+$s = @(Get-Content "$R\verify\$Label.smi" -ErrorAction SilentlyContinue | ForEach-Object { , [double[]]($_ -split ',\s*') })
+$util = ($s | ForEach-Object { $_[0] } | Measure-Object -Average).Average
+$power = ($s | ForEach-Object { $_[2] } | Measure-Object -Average).Average
+Log ("---- scale_run {0} exit {1}, GPU shared memory peak {2} MB, mean util {3:N0}%, mean power {4:N0} W" -f $Label,
+     $p.ExitCode, $shared.Maximum, $util, $power)

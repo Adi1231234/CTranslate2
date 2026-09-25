@@ -65,7 +65,17 @@ workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith("pipe")) + 1   # +1
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers, cpu_threads=1,   # the OpenMP threads of the default only spin
                      flash_attention=MODE.endswith("-fa"))
-pool = ThreadPoolExecutor(max_workers=1) if BATCHED else None   # fallback clips off the critical path
+class LoggedPool(ThreadPoolExecutor):
+    """The fallback clips' pool; logs each clip's ladder time (on real data the fallback is the slow path)."""
+    def submit(self, fn, model, uuid, wav):
+        def timed():
+            t = time.time(); r = fn(model, uuid, wav)
+            top = max((s["temperature"] for s in r["segments"]), default=None)
+            log(f"fallback {len(wav) / 16000:.1f}s audio took {time.time() - t:.1f}s, final T {top}")
+            return r
+        return super().submit(timed)
+
+pool = LoggedPool(max_workers=1) if BATCHED else None   # fallback clips off the critical path
 done = queue.Queue()
 stats = {"units": 0, "audio": 0.0, "t0": time.time()}
 
@@ -101,6 +111,7 @@ try:
         done.put((uid, transcribe_unit(model, clips, MODE, pool)))
 except Exception as e:                          # write what finished, then exit non-zero for a restart
     log(f"MAIN CRASHED: {type(e).__name__}: {e}"); done.put(None); wt.join(); os._exit(5)
+log("MAIN DONE: every unit decoded, waiting for the writer (pending fallback clips)")
 done.put(None); wt.join()                       # drain: every processed unit is written before exit
 log("FINISHED" if not producer_failed else "EXITING AFTER PRODUCER CRASH")
 os._exit(3 if producer_failed else 0)  # non-zero -> supervisor restarts; resume skips done units
