@@ -36,9 +36,17 @@ namespace ctranslate2 {
                                   per_sm > 0 ? work_counter(stream) : nullptr, per_sm * sm_count());
     }
 
+    static bool aligned16(const void* p) {
+      return reinterpret_cast<uintptr_t>(p) % 16 == 0;
+    }
+
     bool exact_attention_qkv_applies(dim_t n, dim_t depth, const void* x, const void* bias) {
-      return depth == at::native::ea_depth && n == 1500 && aligned4(x) && (!bias || aligned4(bias))
+      return depth == at::native::ea_depth && n == 1500 && aligned16(x) && (!bias || aligned16(bias))
         && hmma_replicas_verified();
+    }
+
+    size_t exact_attention_qkv_workspace_bytes(dim_t batch, dim_t n) {
+      return at::native::exact_attention_workspace(static_cast<int>(batch), static_cast<int>(n), true);
     }
 
     void exact_attention_qkv(const float16_t* x, const float16_t* bias, void* workspace, float16_t* o,

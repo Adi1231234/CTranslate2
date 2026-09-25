@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
   __half *V, *O, *F; void* W;
   const size_t vs = 160ull * n * d;
   CK(cudaMalloc(&V, 2 * vs)); CK(cudaMalloc(&O, 2 * vs)); CK(cudaMalloc(&F, 2 * vs));
-  CK(cudaMalloc(&W, at::native::exact_attention_workspace(160, n)));
+  CK(cudaMalloc(&W, at::native::exact_attention_workspace(160, n, true)));
   unsigned long long* dc; CK(cudaMalloc(&dc, 8));
   unsigned long long total = 0;
   for (int batch = 20; batch <= 160; batch += 20) {

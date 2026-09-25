@@ -17,9 +17,10 @@ namespace ctranslate2 {
 
     // The same from the fused projection x [clips, n, 3 * heads * 64] (Dense::compute_without_bias) and its bias
     // (or null): q, k and v are x's parts plus their bias with Dense's fp16 bias add, head split, so o is bit for
-    // bit Dense + split_heads + Split + the three ops, and q, k, v are never written out. workspace holds
-    // exact_attention_workspace_bytes(clips * heads, n).
+    // bit Dense + split_heads + Split + the three ops; the layout kernel writes the queries head-split into the
+    // workspace (exact_attention_qkv_workspace_bytes(clips * heads, n)), the keys and values only in fragment order.
     bool exact_attention_qkv_applies(dim_t n, dim_t depth, const void* x, const void* bias);
+    size_t exact_attention_qkv_workspace_bytes(dim_t batch, dim_t n);
     void exact_attention_qkv(const float16_t* x, const float16_t* bias, void* workspace, float16_t* o,
                              dim_t clips, dim_t heads, dim_t n, float alpha);
 

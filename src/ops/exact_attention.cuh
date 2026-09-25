@@ -10,8 +10,7 @@
 // A work item is 16 query rows of one batch entry; neither the scores nor the probabilities leave the block's
 // shared memory. Its 8 warps compute the scores of 8-key tiles w, w + 8, ..., run the softmax in place on 2 rows
 // each, then warp w chains the output's dims 8w..8w + 7. Keys and values come in exact_attention_layout.cuh's
-// fragment order (one coalesced load per fragment); the queries are read where the EalSource says (the head-split
-// tensor, or the fused projection plus its bias). A row is stored as rows1024_row reads it: lane L's 4-value
+// fragment order (one coalesced load per fragment). A row is stored as rows1024_row reads it: lane L's 4-value
 // slot s of the first 1024 values at (s * 33 + L) * 4, of the rest at ea_part2 + (s * tail_lanes + L) * 4, so
 // softmax loads hit consecutive slots and, with a row pitch of 4 mod 64 halves, the output product's
 // fragment loads (8 rows, 2 slots) hit distinct banks. A block computes one item, or (persistent,
@@ -24,12 +23,13 @@ namespace at {
   namespace native {
 
     template <int N>
-    __device__ __forceinline__ void ea_item(const EalSource& q, const uint2* kf, const uint2* vf, __half* o,
+    __device__ __forceinline__ void ea_item(const __half* q, const uint2* kf, const uint2* vf, __half* o,
                                             int heads, float alpha, int row_tile, int entry, __half* s) {
       using S = ea_shape<N>;
       constexpr int m = N, n = N, tiles = S::tiles, groups = S::groups, tail_lanes = S::tail_lanes, pitch = S::pitch;
       const int warp = threadIdx.x / C10_WARP_SIZE, lane = threadIdx.x % C10_WARP_SIZE, g = lane / 4, t = lane % 4;
       const int j0 = row_tile * ea_rows;
+      const __half* qb = q + (size_t)entry * m * ea_depth;
       const uint2* kb = kf + (size_t)entry * tiles * 4 * C10_WARP_SIZE + lane;
       const uint2* vb = vf + ((size_t)entry * (ea_depth / 8) + warp) * groups * C10_WARP_SIZE + lane;
       unsigned a[4][4];                                          // the item's 16 queries, 4 groups of 16 dims
@@ -37,8 +37,7 @@ namespace at {
       for (int c = 0; c < 4; ++c)
         for (int e = 0; e < 4; ++e) {
           const int j = j0 + g + 8 * (e % 2);
-          a[c][e] = j < m ? eal_pair(q, eal_row(q, entry, heads, j), entry, heads, 16 * c + 8 * (e / 2) + 2 * t,
-                                     ea_depth) : 0u;
+          a[c][e] = j < m ? *reinterpret_cast<const unsigned*>(qb + (size_t)j * ea_depth + 16 * c + 8 * (e / 2) + 2 * t) : 0u;
         }
       // The warp's tiles are 8 apart, so its keys i are 64 apart: 8 halves further within a part of the row
       // (ea_slot), and at the one step where i enters the second part (kc) the place is that part's (no branch).
@@ -108,7 +107,7 @@ namespace at {
     // Without a counter, block (x, y) computes row tile x of entry y; with one, items row_tile + row_tiles * entry.
     template <int N>
     __global__ void __launch_bounds__(ea_warps * C10_WARP_SIZE)
-    exact_attention_kernel(const EalSource q, const uint2* kf, const uint2* vf, __half* o, int heads, float alpha,
+    exact_attention_kernel(const __half* q, const uint2* kf, const uint2* vf, __half* o, int heads, float alpha,
                            unsigned* counter, int batch) {
       extern __shared__ __align__(16) unsigned char ea_smem[];
       __half* s = reinterpret_cast<__half*>(ea_smem);           // [ea_rows][pitch] scores, then probabilities

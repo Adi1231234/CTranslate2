@@ -13,9 +13,9 @@ namespace ctranslate2 {
                          float scale, StorageView& output);
 
     // The same straight from the self-attention's fused projection proj [batch, time, 3 * heads * depth] without
-    // its bias, and that bias (split_heads_fused.h's inputs): the bias add and head split happen as the kernels
-    // read, so queries, keys and values are never written out. output: [batch, heads, time, depth] holding the
-    // heads combined.
+    // its bias, and that bias (split_heads_fused.h's inputs): the bias add and head split happen in the kernel that
+    // lays out the keys and values, so they are never written out in the split layout. output: [batch, heads,
+    // time, depth] holding the heads combined.
     bool attention_qkv_fusable(const StorageView& proj, const StorageView* bias, dim_t heads, dim_t depth);
     void attention_qkv_fused(const StorageView& proj, const StorageView* bias, dim_t heads, float scale,
                              StorageView& output);

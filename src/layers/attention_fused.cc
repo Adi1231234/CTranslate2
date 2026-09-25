@@ -59,7 +59,7 @@ namespace ctranslate2 {
       const dim_t batch = proj.dim(0), time = proj.dim(1), depth = proj.dim(2) / (3 * heads);
       output.resize({batch, heads, time, depth});
       Allocator& allocator = get_allocator<Device::CUDA>();
-      void* workspace = allocator.allocate(cuda::exact_attention_workspace_bytes(batch * heads, time));
+      void* workspace = allocator.allocate(cuda::exact_attention_qkv_workspace_bytes(batch * heads, time));
       cuda::exact_attention_qkv(proj.data<float16_t>(), bias ? bias->data<float16_t>() : nullptr, workspace,
                                 output.data<float16_t>(), batch, heads, time, scale);
       allocator.free(workspace);                               // stream-ordered, after the kernels

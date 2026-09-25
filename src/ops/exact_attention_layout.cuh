@@ -1,7 +1,7 @@
 #pragma once
 
-// Operand layouts of exact_attention.cuh: keys and values rearranged (data movement, and where the operands come
-// from the fused projection, its bias add) so that each warp's
+// Operand layouts of exact_attention.cuh (data movement, plus the bias add where the operands come from the fused
+// projection; the queries are then written head-split too): keys and values rearranged so that each warp's
 // mma.sync m16n8k16 B fragments are one coalesced 8-byte load per lane (a plain [key][dim] layout spreads a
 // fragment over 8 rows, i.e. 8 cache lines per load instruction). Word w of lane L = 4g + t is a pair of halves:
 //   kf[b][tile][c][L] = (k[b][8 tile + g][16 c + 2t .. + 1], k[b][8 tile + g][16 c + 8 + 2t .. + 1]),
@@ -54,15 +54,41 @@ namespace at {
       return *reinterpret_cast<const unsigned*>(&x);
     }
 
-    // One thread per (batch entry, fragment, lane) of kf, then of vf.
-    static __global__ void exact_attention_layout(EalSource k, EalSource v, int heads, uint2* kf, uint2* vf,
-                                                  int batch, int n, int depth) {
+    // The queries head-split, [batch, n, depth], with their bias: 16-byte vector i of qs's rows in source order
+    // (clip, row, head, vector), so the reads are coalesced.
+    __device__ __forceinline__ void eal_query_vector(const EalSource& qs, __half* q, int heads, int n, int depth,
+                                                     size_t i) {
+      const int vecs = depth / 8, chunk = int(i % vecs);
+      const size_t rest = i / vecs;
+      const int head = int(rest % heads), j = int((rest / heads) % n), b = int(rest / ((size_t)heads * n)) * heads + head;
+      uint4 x = *reinterpret_cast<const uint4*>(eal_row(qs, b, heads, j) + 8 * chunk);
+      if (qs.bias) {
+        const uint4 bv = *reinterpret_cast<const uint4*>(qs.bias + head * depth + 8 * chunk);
+        __half2* xs = reinterpret_cast<__half2*>(&x);
+        const __half2* bs = reinterpret_cast<const __half2*>(&bv);
+        #pragma unroll
+        for (int e = 0; e < 4; ++e)
+          xs[e] = __hadd2(bs[e], xs[e]);
+      }
+      *reinterpret_cast<uint4*>(q + ((size_t)b * n + j) * depth + 8 * chunk) = x;
+    }
+
+    // One thread per 16-byte vector of the head-split queries (when q is given), then per (batch entry,
+    // fragment, lane) of kf, then of vf.
+    static __global__ void exact_attention_layout(EalSource qs, __half* q, EalSource k, EalSource v, int heads,
+                                                  uint2* kf, uint2* vf, int batch, int n, int depth) {
       const int tiles = eal_key_tiles(n), groups = eal_groups(n), residue = n % 64;
+      const size_t q_count = q ? (size_t)batch * n * (depth / 8) : 0;
       const size_t kf_count = (size_t)batch * tiles * 4 * eal_lanes;
       const size_t vf_count = (size_t)batch * (depth / 8) * groups * eal_lanes;
       const __half zero = __float2half(0.f);
-      for (size_t o = blockIdx.x * (size_t)blockDim.x + threadIdx.x; o < kf_count + vf_count;
-           o += (size_t)gridDim.x * blockDim.x) {
+      for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < q_count + kf_count + vf_count;
+           i += (size_t)gridDim.x * blockDim.x) {
+        if (i < q_count) {
+          eal_query_vector(qs, q, heads, n, depth, i);
+          continue;
+        }
+        const size_t o = i - q_count;
         if (o < kf_count) {
           const int lane = o % eal_lanes, c = (o / eal_lanes) % 4, tile = (o / (4 * eal_lanes)) % tiles;
           const int b = int(o / ((size_t)4 * eal_lanes * tiles));
