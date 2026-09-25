@@ -41,5 +41,33 @@ namespace ctranslate2 {
 #endif
     }
 
+    bool attention_qkv_fusable(const StorageView& proj, const StorageView* bias, dim_t heads, dim_t depth) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      return proj.device() == Device::CUDA && proj.dtype() == DataType::FLOAT16 && proj.rank() == 3
+        && proj.dim(2) == 3 * heads * depth
+        && (!bias || (bias->dtype() == DataType::FLOAT16 && bias->size() == proj.dim(2)))
+        && cuda::exact_attention_qkv_applies(proj.dim(1), depth, proj.buffer(), bias ? bias->buffer() : nullptr);
+#else
+      (void)proj; (void)bias; (void)heads; (void)depth;
+      return false;
+#endif
+    }
+
+    void attention_qkv_fused(const StorageView& proj, const StorageView* bias, dim_t heads, float scale,
+                             StorageView& output) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      const dim_t batch = proj.dim(0), time = proj.dim(1), depth = proj.dim(2) / (3 * heads);
+      output.resize({batch, heads, time, depth});
+      Allocator& allocator = get_allocator<Device::CUDA>();
+      void* workspace = allocator.allocate(cuda::exact_attention_workspace_bytes(batch * heads, time));
+      cuda::exact_attention_qkv(proj.data<float16_t>(), bias ? bias->data<float16_t>() : nullptr, workspace,
+                                output.data<float16_t>(), batch, heads, time, scale);
+      allocator.free(workspace);                               // stream-ordered, after the kernels
+#else
+      (void)proj; (void)bias; (void)heads; (void)scale; (void)output;
+      throw std::logic_error("attention_qkv_fused requires CUDA");
+#endif
+    }
+
   }
 }

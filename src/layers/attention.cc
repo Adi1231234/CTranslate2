@@ -539,6 +539,19 @@ namespace ctranslate2 {
       else
         _linear[0](*q, fused_proj);
 
+      // Whisper's encoder self-attention straight from the projection: the bias add and head split happen as the
+      // attention kernels read it (attention_fused.h), bit for bit the split, cache-free path below.
+      if (_self_attention && fused_q && !cached_keys && !values_lengths && !attention && !position_bias
+          && !_relative_position_keys && !_relative_asymmetric_position_keys && !_relative_position_values
+          && !_relative_attention_bias && !_alibi
+          && attention_qkv_fusable(fused_proj, _linear[0].bias(), _num_heads, _d_head)) {
+        StorageView context(dtype, device);
+        attention_qkv_fused(fused_proj, _linear[0].bias(), _num_heads, _queries_scale, context);
+        combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/true);
+        output_projection(queries, context, output, next);
+        return;
+      }
+
       dim_t beam_size = 1;
 
       bool prefilling = (_sliding_window > 0 && values_lengths);

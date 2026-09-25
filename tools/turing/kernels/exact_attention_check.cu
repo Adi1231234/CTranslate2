@@ -2,12 +2,25 @@
 // steps it replaces, exactly as production runs them: the cuBLAS MatMul(trans_b, alpha 1/8) of
 // Probe::cublas_run, the library's softmax_rows dispatcher (in place, no lengths), then the cuBLAS MatMul of
 // the probabilities and the values. Every batch size of an encoder call (20..160 = 1..8 clips x 20 heads),
-// 1500 x 1500 x 64, three fills each; must end with TOTAL 0.
+// 1500 x 1500 x 64, three fills each. Then exact_attention_qkv (from the fused projection and its bias) against
+// that path after Dense's bias add and head split, 1..8 clips of 20 heads; must end with TOTAL 0.
 // usage: exact_attention_check [timing repetitions, default 10]
 #include <cstdio>
 #include "probe_common.h"
 #include "probe_data.cuh"
 #include "ops/exact_attention_launch.cuh"
+
+// Dense's bias add and the head split of the fused projection x [clips, n, 3 * heads * 64] (split_heads.cu).
+__global__ void split_bias(const __half* x, const __half* bias, __half* q, __half* k, __half* v, int clips,
+                           int heads, int n) {
+  const int d = 64, row = 3 * heads * d;
+  GRID_STRIDE(t, (size_t)clips * n * row) {
+    const int c = int(t % row), part = c / (heads * d), h = (c / d) % heads, i = c % d;
+    const size_t r = t / row, clip = r / n, key = r % n;
+    __half* out = part == 0 ? q : part == 1 ? k : v;
+    out[((clip * heads + h) * n + key) * d + i] = __hadd(bias[c], x[t]);
+  }
+}
 
 template <typename F> float time_us(F run, int reps) {
   cudaEvent_t a, b; CK(cudaEventCreate(&a)); CK(cudaEventCreate(&b));
@@ -51,6 +64,29 @@ int main(int argc, char** argv) {
     const float tt = time_us(three_steps, reps), tf = time_us(fused, reps);
     printf("batch %3d: %llu of %llu mismatched, MatMul + SoftMax + MatMul %8.1f us, fused %8.1f us (%.2fx)\n",
            batch, bad, 3ull * batch * m * d, tt, tf, tt / tf);
+  }
+  // exact_attention_qkv against the path above on the same projection: 20 heads, 1..8 clips, a bias whose key
+  // part is zero (as Whisper's; the add still turns -0 into +0).
+  const int heads = 20, row = 3 * heads * d;
+  __half *X, *B;
+  CK(cudaMalloc(&X, 2ull * 8 * n * row)); CK(cudaMalloc(&B, 2ull * row));
+  for (int clips = 1; clips <= 8; ++clips) {
+    fill<<<1024, 256>>>(X, (size_t)clips * n * row, 97u * clips, -6, 2);
+    fill<<<16, 256>>>(B, (size_t)row, 131u * clips, -8, 0);
+    set_bits<<<4, 256>>>(B + heads * d, (size_t)heads * d, 0);
+    auto split_path = [&] {
+      split_bias<<<1024, 256>>>(X, B, p.dQ, p.dK, V, clips, heads, n);
+      at::native::exact_attention(p.dQ, p.dK, V, W, O, clips * heads, heads, m, n, alpha, 0);
+    };
+    auto qkv_path = [&] { at::native::exact_attention_qkv(X, B, W, F, clips, heads, n, alpha, 0); };
+    split_path(); qkv_path();
+    CK(cudaGetLastError());
+    CK(cudaMemset(dc, 0, 8)); count_diff<<<1024, 256>>>(O, F, (size_t)clips * heads * m * d, dc);
+    unsigned long long x; CK(cudaMemcpy(&x, dc, 8, cudaMemcpyDeviceToHost));
+    total += x;
+    const float ts = time_us(split_path, reps), tq = time_us(qkv_path, reps);
+    printf("qkv %d clips: %llu of %llu mismatched, split + fused %8.1f us, from the projection %8.1f us\n",
+           clips, x, (unsigned long long)clips * heads * m * d, ts, tq);
   }
   printf("TOTAL %llu mismatches\n", total);
   return 0;

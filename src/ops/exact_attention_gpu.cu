@@ -36,6 +36,21 @@ namespace ctranslate2 {
                                   per_sm > 0 ? work_counter(stream) : nullptr, per_sm * sm_count());
     }
 
+    bool exact_attention_qkv_applies(dim_t n, dim_t depth, const void* x, const void* bias) {
+      return depth == at::native::ea_depth && n == 1500 && aligned4(x) && (!bias || aligned4(bias))
+        && hmma_replicas_verified();
+    }
+
+    void exact_attention_qkv(const float16_t* x, const float16_t* bias, void* workspace, float16_t* o,
+                             dim_t clips, dim_t heads, dim_t n, float alpha) {
+      static const int per_sm = persistent_blocks_per_sm("CT2_EA_BLOCKS");
+      cudaStream_t stream = get_cuda_stream();
+      at::native::exact_attention_qkv(reinterpret_cast<const __half*>(x), reinterpret_cast<const __half*>(bias),
+                                      workspace, reinterpret_cast<__half*>(o), static_cast<int>(clips),
+                                      static_cast<int>(heads), static_cast<int>(n), alpha, stream,
+                                      per_sm > 0 ? work_counter(stream) : nullptr, per_sm * sm_count());
+    }
+
   }
 }
 
