@@ -689,8 +689,9 @@ if (WITH_CUDA)
       PROPERTIES COMPILE_FLAGS "--use_fast_math")
   endif()
   # CUTLASS's device-level templates need constexpr host functions in device code and, with MSVC, the
-  # real __cplusplus (C++17 checks); only this file gets those options (FindCUDA has no per-source flags).
-  set(CUTLASS_NVCC_OPTIONS "--expt-relaxed-constexpr")
+  # real __cplusplus (C++17 checks); only this file gets those options (FindCUDA has no per-source flags),
+  # and cutlass_overrides/ first on its include path (cp.async without the L2 prefetch hint, see there).
+  set(CUTLASS_NVCC_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/cutlass_overrides" "--expt-relaxed-constexpr")
   if(MSVC)
     list(APPEND CUTLASS_NVCC_OPTIONS "-Xcompiler=/Zc:__cplusplus")
   endif()

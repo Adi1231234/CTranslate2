@@ -24,15 +24,15 @@ namespace ctranslate2 {
         && aligned16(a) && aligned16(w) && aligned16(c) && hmma_replicas_verified();
     }
 
-    template <int Stages, typename Op>
+    template <int Tile, int Stages, typename Op>
     static void enc_gemm_launch(const float16_t* a, const float16_t* w, float16_t* c, int m, int n, int k,
                                 const float16_t* bias) {
-      using K = EncGemmKernel<Stages, Op>;
+      using K = EncGemmKernel<Tile, Stages, Op>;
       using RefA = typename K::Mma::IteratorA::TensorRef;
       using RefB = typename K::Mma::IteratorB::TensorRef;
       using RefC = typename K::Epilogue::OutputTileIterator::TensorRef;
       auto half_ptr = [](const float16_t* p) { return reinterpret_cast<EncHalf*>(const_cast<float16_t*>(p)); };
-      const cutlass::gemm::GemmCoord problem(m, n, k), tiles((m + 63) / 64, (n + 63) / 64, 1);
+      const cutlass::gemm::GemmCoord problem(m, n, k), tiles((m + Tile - 1) / Tile, (n + Tile - 1) / Tile, 1);
       const typename K::Params params(problem, tiles,
                                       RefA(half_ptr(a), cutlass::layout::RowMajor(k)),
                                       RefB(half_ptr(w), cutlass::layout::ColumnMajor(k)),
@@ -53,24 +53,35 @@ namespace ctranslate2 {
         enc_gemm_kernel<K><<<items, K::kThreadCount, smem, stream>>>(params, nullptr, items);
     }
 
-    template <typename Op>
+    template <int Tile, typename Op>
     static void enc_gemm_stages(const float16_t* a, const float16_t* w, float16_t* c, int m, int n, int k,
                                 const float16_t* bias) {
       static const int stages = read_int_from_env("CT2_ENC_GEMM_STAGES", 6);
       if (stages == 3)
-        enc_gemm_launch<3, Op>(a, w, c, m, n, k, bias);
+        enc_gemm_launch<Tile, 3, Op>(a, w, c, m, n, k, bias);
       else if (stages == 4)
-        enc_gemm_launch<4, Op>(a, w, c, m, n, k, bias);
+        enc_gemm_launch<Tile, 4, Op>(a, w, c, m, n, k, bias);
       else
-        enc_gemm_launch<6, Op>(a, w, c, m, n, k, bias);
+        enc_gemm_launch<Tile, 6, Op>(a, w, c, m, n, k, bias);
+    }
+
+    // CT2_ENC_GEMM_TILE=128: 128 x 128 output tiles (half the operand traffic of 64 x 64).
+    template <typename Op>
+    static void enc_gemm_tiles(const float16_t* a, const float16_t* w, float16_t* c, int m, int n, int k,
+                               const float16_t* bias) {
+      static const int tile = read_int_from_env("CT2_ENC_GEMM_TILE", 64);
+      if (tile == 128)
+        enc_gemm_stages<128, Op>(a, w, c, m, n, k, bias);
+      else
+        enc_gemm_stages<64, Op>(a, w, c, m, n, k, bias);
     }
 
     void encoder_gemm(const float16_t* a, const float16_t* w, float16_t* c, dim_t m, dim_t n, dim_t k,
                       const float16_t* gelu_bias) {
       if (gelu_bias)
-        enc_gemm_stages<EncBiasGeluOp>(a, w, c, int(m), int(n), int(k), gelu_bias);
+        enc_gemm_tiles<EncBiasGeluOp>(a, w, c, int(m), int(n), int(k), gelu_bias);
       else
-        enc_gemm_stages<EncPlainOp>(a, w, c, int(m), int(n), int(k), nullptr);
+        enc_gemm_tiles<EncPlainOp>(a, w, c, int(m), int(n), int(k), nullptr);
     }
 
   }

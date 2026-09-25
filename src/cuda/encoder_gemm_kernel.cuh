@@ -42,13 +42,14 @@ namespace ctranslate2 {
       }
     };
 
-    template <int Stages, typename Op>
+    // Tile x Tile outputs per block, 4 warps of Tile/2 x Tile/2 (any tile keeps each output's chain over k).
+    template <int Tile, int Stages, typename Op>
     using EncGemmKernel = typename cutlass::gemm::kernel::DefaultGemm<
       EncHalf, cutlass::layout::RowMajor, 8, EncHalf, cutlass::layout::ColumnMajor, 8,
       EncHalf, cutlass::layout::RowMajor, float, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-      cutlass::gemm::GemmShape<64, 64, 32>, cutlass::gemm::GemmShape<32, 32, 32>, cutlass::gemm::GemmShape<16, 8, 16>,
-      Op, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>, Stages, false,
-      cutlass::arch::OpMultiplyAdd>::GemmKernel;
+      cutlass::gemm::GemmShape<Tile, Tile, 32>, cutlass::gemm::GemmShape<Tile / 2, Tile / 2, 32>,
+      cutlass::gemm::GemmShape<16, 8, 16>, Op, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>,
+      Stages, false, cutlass::arch::OpMultiplyAdd>::GemmKernel;
 
     template <typename K>
     __device__ __forceinline__ void enc_gemm_tile(typename K::Params const& params,

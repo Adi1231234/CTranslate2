@@ -11,7 +11,8 @@ namespace ctranslate2 {
     // over k from zero, activations as the A operand, then rounded to fp16. The kernel is CUTLASS's own 64x64x32
     // tile of that configuration, so every output is computed as cuBLAS computes it, whatever the grid.
     // CT2_ENC_GEMM=cublas keeps cuBLAS; CT2_ENC_GEMM_BLOCKS=<n> runs it persistent with n blocks per SM
-    // (cuda/persistent.h); CT2_ENC_GEMM_STAGES=3|4|6 (default 6, cuBLAS's) sets the shared-memory pipeline.
+    // (cuda/persistent.h); CT2_ENC_GEMM_STAGES=3|4|6 (default 6, cuBLAS's) sets the shared-memory pipeline and
+    // CT2_ENC_GEMM_TILE=64|128 the output tile (4 warps either way).
     bool encoder_gemm_applies(dim_t m, dim_t n, dim_t k, const void* a, const void* w, const void* c);
 
     // With gelu_bias, c = gelu(bias + c) as BiasAdd's fp16 GELU mode computes it from the rounded product
