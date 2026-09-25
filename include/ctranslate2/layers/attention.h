@@ -83,6 +83,8 @@ namespace ctranslate2 {
                                 dim_t& beam_size,
                                 bool fused_queries) const;
       bool fused_split_applies(const StorageView& x, const Dense& linear, const Padder* padder) const;
+      void output_projection(const StorageView& queries, StorageView& context, StorageView& output,
+                             const NormHandoff* next) const;
 
     private:
       static void split_heads(StorageView& x,

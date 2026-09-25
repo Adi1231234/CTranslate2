@@ -517,6 +517,21 @@ namespace ctranslate2 {
         }
       }
 
+      // A decoding step of Whisper's cross-attention: the queries' Dense layer, head split and attention in one
+      // kernel (cross_attention_fused.h), bit for bit these ops.
+      dim_t cross_m = 0;
+      int cross_residue = -1;
+      if (!_self_attention && cached_keys && !cached_keys->empty() && !attention && !values_lengths
+          && !queries_padder && !_q_norm && !_merge_time_and_head_dims && !_tensor_parallel
+          && cross_attention_q_fusable(*q, _linear[0], *cached_keys, *cached_values, cross_m, cross_residue)) {
+        StorageView& context = fused_proj;  // Reuse storage.
+        cross_attention_fused_q(*q, _linear[0], *cached_keys, *cached_values, _queries_scale, cross_m,
+                                cross_residue, context);
+        combine_heads(context, _num_heads, nullptr, cross_m, /*heads_combined=*/true);
+        output_projection(queries, context, output, next);
+        return;
+      }
+
       // Dense bias, head split and Q/K/V split in one kernel where it applies (split_heads_fused.h).
       const bool fused_q = fused_split_applies(*q, _linear[0], queries_padder);
       if (fused_q)
@@ -648,8 +663,10 @@ namespace ctranslate2 {
                             beam_size,
                             _alibi,
                             position_bias);
-      if (!_self_attention && cached_keys && !heads_combined && !attention && !values_lengths && cross_check_enabled())
+      if (!_self_attention && cached_keys && !heads_combined && !attention && !values_lengths && cross_check_enabled()) {
         cross_check(queries_proj, keys_proj, values_proj, _queries_scale, context);
+        cross_check_q(*q, _linear[0], keys_proj, values_proj, _queries_scale, context);
+      }
 
       if (prefilling && cached_keys && cached_keys->shape()[2] > _sliding_window) {
         // set only last sliding_window tokens to cached_keys and cached_values after computing attention
@@ -668,6 +685,13 @@ namespace ctranslate2 {
       } else {
         combine_heads(context, _num_heads, queries_padder, beam_size, heads_combined);
       }
+      output_projection(queries, context, output, next);
+    }
+
+    void MultiHeadAttention::output_projection(const StorageView& queries,
+                                               StorageView& context,
+                                               StorageView& output,
+                                               const NormHandoff* next) const {
       // With a pre-norm and one device, the output is final after the residual add: the next norm joins it.
       const bool hands_off = next && _layer_norm && _pre_norm && !_tensor_parallel;
       _linear.back()(context, output, _layer_norm ? &queries : nullptr, hands_off ? next : nullptr);

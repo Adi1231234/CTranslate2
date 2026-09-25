@@ -32,16 +32,26 @@ namespace ctranslate2 {
       return residues[m - 2][batch / 20 - 1];
     }
 
+    // hmma_gemm_recipe.h: cuBLAS 12.9.2 runs the 1280 x 1280 Dense layer at 2..48 rows as one chain over k.
+    bool cross_attention_projects(dim_t rows, dim_t n, dim_t k) {
+      static const bool enabled = read_bool_from_env("CT2_CROSS_Q", true);
+      return enabled && rows >= 2 && rows <= 48 && n == 1280 && k == 1280 && hmma_replicas_verified();
+    }
+
     void cross_attention(const float16_t* q, const float16_t* k, const float16_t* v, float16_t* o,
-                         dim_t clips, dim_t heads, dim_t m, float alpha, int residue) {
+                         dim_t clips, dim_t heads, dim_t m, float alpha, int residue,
+                         const float16_t* x, const float16_t* w, const float16_t* bias, dim_t k_inputs) {
       const int rows = static_cast<int>(std::min<dim_t>(m, 8));   // queries per pass (the mma's n)
-      const int smem = rows * at::native::ca_pitch * static_cast<int>(sizeof (__half));
+      const int smem = rows * (at::native::ca_pitch + (x ? at::native::ca_qpitch : 0))
+        * static_cast<int>(sizeof (__half));
+      auto h = [](const float16_t* p) { return reinterpret_cast<const __half*>(p); };
+      const at::native::CaQueries queries{h(q), h(x), h(w), h(bias), static_cast<int>(k_inputs)};
       // L2 prefetch distance in steps (0 none): 2-4 were 0.3 s faster on the store PC's 150 clips than 0.
       static const int ahead = read_int_from_env("CT2_CROSS_AHEAD", 4);
       at::native::cross_attention_kernel<<<static_cast<unsigned>(clips * heads), at::native::ca_warps * 32, smem,
                                            get_cuda_stream()>>>(
-        reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k), reinterpret_cast<const __half*>(v),
-        reinterpret_cast<__half*>(o), static_cast<int>(heads), static_cast<int>(m), rows, residue, alpha, ahead);
+        queries, h(k), h(v), reinterpret_cast<__half*>(o), static_cast<int>(heads), static_cast<int>(m), rows,
+        residue, alpha, ahead);
     }
 
   }

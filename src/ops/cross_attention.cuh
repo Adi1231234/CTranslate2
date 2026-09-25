@@ -14,39 +14,52 @@
 // the output's dims 16w..16w + 15 over all keys. Its fragment row g holds dim 16w + 2g and row g + 8 dim
 // 16w + 2g + 1 (an output's arithmetic does not depend on its row), so the value loads are 32-bit pairs of dims.
 
-#include "exact_attention_parts.cuh"
+#include "cross_attention_q.cuh"
 
 namespace at {
   namespace native {
 
     constexpr int ca_keys = 1500, ca_depth = 64, ca_tiles = (ca_keys + 15) / 16, ca_warps = 4;
     constexpr int ca_pitch = 1544;                           // halves per score row: 772 words, 4 mod 32 banks
+    constexpr int ca_qpitch = 72;                            // halves per projected query row (phase 0)
 
-    __device__ __forceinline__ unsigned ca_word(const __half* p) {
-      return *reinterpret_cast<const unsigned*>(p);
-    }
+    // The queries: q [entries][m][64], or (x non-null) projected by the block from x, w, bias with K inputs
+    // (cross_attention_q.cuh).
+    struct CaQueries {
+      const __half* q;
+      const __half* x;
+      const __half* w;
+      const __half* bias;
+      int K;
+    };
 
-    // q: [entries][m][64] (entry = clip * heads + head); k, v: [entries][1500][64]; o: [clips][m][heads][64].
+    // entry = clip * heads + head; k, v: [entries][1500][64]; o: [clips][m][heads][64].
     // 5 blocks per SM (registers for it): 8 clips x 20 heads = 160 blocks then fit the RTX 5060 Ti's 36 SMs at
     // once; at 4 (128 registers) a tail of 16 blocks ran after the rest.
     static __global__ void __launch_bounds__(ca_warps * 32, 5)
-    cross_attention_kernel(const __half* q, const __half* k, const __half* v, __half* o, int heads, int m,
+    cross_attention_kernel(CaQueries queries, const __half* k, const __half* v, __half* o, int heads, int m,
                            int rows_per_pass, int residue, float alpha, int ahead) {
       extern __shared__ __align__(16) unsigned char ca_smem[];
       __half* p = reinterpret_cast<__half*>(ca_smem);        // [rows_per_pass][ca_pitch] scores, probabilities
+      __half* qs = p + rows_per_pass * ca_pitch;             // [rows_per_pass][ca_qpitch] projected queries
       const int entry = blockIdx.x, clip = entry / heads, head = entry % heads;
       const int warp = threadIdx.x / 32, lane = threadIdx.x % 32, g = lane / 4, t = lane % 4;
-      const __half* qe = q + (size_t)entry * m * ca_depth;
       const __half* ke = k + (size_t)entry * ca_keys * ca_depth;
       const __half* ve = v + (size_t)entry * ca_keys * ca_depth + 16 * warp + 2 * g;
       for (int j0 = 0; j0 < m; j0 += rows_per_pass) {
         const int rows = min(rows_per_pass, m - j0);
+        if (queries.x) {
+          ca_project_queries(queries.x, queries.w, queries.bias, qs, ca_qpitch, clip, head, m, j0, rows,
+                             queries.K);
+          __syncthreads();
+        }
+        const __half* qr0 = queries.x ? qs + g * ca_qpitch                               // query g's row
+                                      : queries.q + ((size_t)entry * m + j0 + g) * ca_depth;
         unsigned b[4][2];                                    // query g's dims 16c + 2t.. (zero past the rows)
         #pragma unroll
         for (int c = 0; c < 4; ++c) {
-          const __half* qr = qe + (size_t)(j0 + g) * ca_depth + 16 * c + 2 * t;
-          b[c][0] = g < rows ? ca_word(qr) : 0u;
-          b[c][1] = g < rows ? ca_word(qr + 8) : 0u;
+          b[c][0] = g < rows ? ca_word(qr0 + 16 * c + 2 * t) : 0u;
+          b[c][1] = g < rows ? ca_word(qr0 + 16 * c + 2 * t + 8) : 0u;
         }
         #pragma unroll 4
         for (int T = warp; T < ca_tiles; T += ca_warps) {    // scores of keys 16T .. 16T + 15

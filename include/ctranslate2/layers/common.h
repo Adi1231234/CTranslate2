@@ -153,6 +153,9 @@ namespace ctranslate2 {
       const StorageView* bias() const {
         return _bias;
       }
+      const StorageView& weight() const {
+        return _weight;
+      }
     private:
       void forward(const StorageView& input, StorageView& output, const StorageView* residual) const;
       bool _packed_weight;

@@ -135,6 +135,7 @@ set(SOURCES
   src/layers/flash_attention.cc
   src/layers/common.cc
   src/layers/attention_fused.cc
+  src/layers/cross_attention_check.cc
   src/layers/cross_attention_fused.cc
   src/layers/split_heads_fused.cc
   src/layers/decoder.cc
