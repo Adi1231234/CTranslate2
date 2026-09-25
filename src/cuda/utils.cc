@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ctranslate2/utils.h"
+#include "cuda/graph.h"
 
 #include "env.h"
 
@@ -89,7 +90,7 @@ namespace ctranslate2 {
     class CudaStream {
     public:
       CudaStream(bool low = false) {
-        if (is_main_thread && !low) {
+        if (is_main_thread && !low && !graphs_enabled()) {   // graphs capture created streams only (graph.h)
           is_main_thread = false;
           _stream = cudaStreamDefault;
         } else {

@@ -7,6 +7,9 @@
 
 #include "ctranslate2/ops/ops.h"
 #include "dispatch.h"
+#ifdef CT2_WITH_CUDA
+#  include "cuda/graph.h"
+#endif
 
 namespace ctranslate2 {
 
@@ -78,6 +81,23 @@ namespace ctranslate2 {
       ids_data[i] = decoder.to_original_word_id(ids_data[i]);
     if (ids.device() != device)
       ids = ids.to(device);
+  }
+
+  // A decoding step's decoder work, from the second step on (the first makes the caches) as one CUDA graph where
+  // cuda::graphs_enabled() (cuda/graph.h); `capturable` is false where the step also returns attention.
+  template <typename Run>
+  static void run_decoder_step(Device device, dim_t step, bool capturable, Run&& run) {
+#ifdef CT2_WITH_CUDA
+    if (device == Device::CUDA && step > 0 && capturable) {
+      cuda::StepGraph graph(true);
+      run();
+      graph.launch();
+      return;
+    }
+#else
+    (void)device; (void)step; (void)capturable;
+#endif
+    run();
   }
 
   template <typename T>
@@ -496,11 +516,15 @@ namespace ctranslate2 {
       // Compute log probs for the current step.
       StorageView attention_step(dtype, device);
       convert_to_original_word_ids(decoder, topk_ids);
-      decoder(start_step + step,
-              topk_ids.to(device),
-              state,
-              &logits,  // output shape: (cur_batch_size*beam_size x vocab_size), if not expanded beam_size is 1
-              (return_attention || _coverage_penalty != 0) ? &attention_step : nullptr);
+      const StorageView step_ids = topk_ids.to(device);
+      const bool with_attention = return_attention || _coverage_penalty != 0;
+      run_decoder_step(device, step, !with_attention, [&] {
+        decoder(start_step + step,
+                step_ids,
+                state,
+                &logits,  // output shape: (cur_batch_size*beam_size x vocab_size), if not expanded beam_size is 1
+                with_attention ? &attention_step : nullptr);
+      });
 
       const dim_t cur_batch_size = is_expanded ? logits.dim(0) / _beam_size : logits.dim(0);
 
@@ -843,11 +867,14 @@ namespace ctranslate2 {
 
     for (dim_t step = 0; step < max_step; ++step) {
       convert_to_original_word_ids(decoder, sample_from);
-      decoder(start_step + step,
-              sample_from.to(device),
-              state,
-              &logits,
-              gather_attention ? &attention_step_device : nullptr);
+      const StorageView step_ids = sample_from.to(device);
+      run_decoder_step(device, step, !gather_attention, [&] {
+        decoder(start_step + step,
+                step_ids,
+                state,
+                &logits,
+                gather_attention ? &attention_step_device : nullptr);
+      });
 
       DisableTokens disable_tokens(logits);
 
