@@ -8,7 +8,7 @@ rows the stock wheel wrote in the production run.
   with the final engine (`batch8`, sorted batches, fallback on a side thread): all 180 units with a fallback row
   plus every third of the others. Earlier units ran other modes and cannot be compared row for row.
 - `../host/scale_run.ps1 -Label <name> -Units <list> [-Mode pipe8] [-Pkg <build> | stock] [-Deadline ...]`:
-  runs `runner/transcribe_run.py` on the list into `$R\verify\<name>` (the runner folder needs `hf_token.txt`).
+  runs `runner/transcribe_run.py` (a fresh copy in `$R\verify\runner`, which needs `hf_token.txt`) on the list into `$R\verify\<name>`.
 - `compare.py <ref_dir> <new_dir> [--sampled <list>]`: equal only if the JSON line is byte-identical. Rows
   decoded at a sampling temperature (fallback ladder past T=0, unseeded in production) differ between any
   two runs, so they are listed apart.

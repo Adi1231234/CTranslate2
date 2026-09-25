@@ -1,15 +1,19 @@
 # One pass of the production runner (tools/turing/runner, transcribe_run.py) over a unit list for the scale
 # check (tools/turing/scale/README.md): a build or the stock wheel, outputs in $R\verify\<Label>, a deadline
-# for a clean stop between units. The runner folder must hold hf_token.txt; units.json comes from the
-# production run. Start it detached so it survives the remote session.
+# for a clean stop between units. The runner runs from a fresh copy in $R\verify\runner, with the production
+# run's units.json and its hf cache (a junction: the model is already there); that folder must hold
+# hf_token.txt. Start it detached so it survives the remote session.
 # usage: scale_run.ps1 -Label <name> -Units <list file> [-Mode pipe8] [-Pkg <build parent dir> | stock]
 #                      [-Deadline 'yyyy-MM-dd HH:mm']
 param([string]$Label, [string]$Units, [string]$Mode = 'pipe8', [string]$Pkg = 'stock', [string]$Deadline = '')
 . "$PSScriptRoot\prod.ps1"
 Sync-Checkout $PSCommandPath $PSBoundParameters
-$Run = "$Src\tools\turing\runner"
-Copy-Item "$W\units.json" "$Run\units.json" -Force
-$stop = @{ only_units = @(Get-Content $Units | Where-Object { $_ }) }
+$Run = "$R\verify\runner"
+New-Item -ItemType Directory -Force $Run | Out-Null
+Copy-Item "$Src\tools\turing\runner\*.py", "$W\units.json" $Run -Force
+if (-not (Test-Path "$Run\hf")) { New-Item -ItemType Junction -Path "$Run\hf" -Target "$W\hf" | Out-Null }
+# ReadAllLines: plain strings (Get-Content's carry properties that ConvertTo-Json writes out as objects)
+$stop = @{ only_units = @([IO.File]::ReadAllLines($Units) | Where-Object { $_ }) }
 if ($Deadline) { $stop.deadline = $Deadline }
 [IO.File]::WriteAllText("$Run\stop.json", ($stop | ConvertTo-Json -Compress))   # no BOM: json.load fails on one
 New-Item -ItemType Directory -Force "$R\verify" | Out-Null
