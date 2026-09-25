@@ -21,9 +21,10 @@ int main(int argc, char** argv) {
   const int reps = argc > 1 ? atoi(argv[1]) : 10, m = 1500, n = 1500, d = 64;
   const float alpha = 0.125f;
   Probe p(160, m, n, d);                                   // dQ, dK, and dC for the scores
-  __half *V, *VT, *O, *F;
+  __half *V, *O, *F; void* W;
   const size_t vs = 160ull * n * d;
-  CK(cudaMalloc(&V, 2 * vs)); CK(cudaMalloc(&VT, 2 * vs)); CK(cudaMalloc(&O, 2 * vs)); CK(cudaMalloc(&F, 2 * vs));
+  CK(cudaMalloc(&V, 2 * vs)); CK(cudaMalloc(&O, 2 * vs)); CK(cudaMalloc(&F, 2 * vs));
+  CK(cudaMalloc(&W, at::native::exact_attention_workspace(160, n)));
   unsigned long long* dc; CK(cudaMalloc(&dc, 8));
   unsigned long long total = 0;
   for (int batch = 20; batch <= 160; batch += 20) {
@@ -35,7 +36,7 @@ int main(int argc, char** argv) {
                                     p.dC, CUDA_R_16F, n, (long long)m * n, &zero, O, CUDA_R_16F, d, (long long)m * d,
                                     batch, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
     };
-    auto fused = [&] { at::native::exact_attention(p.dQ, p.dK, V, VT, F, batch, m, n, alpha, 0); };
+    auto fused = [&] { at::native::exact_attention(p.dQ, p.dK, V, W, F, batch, m, n, alpha, 0); };
     unsigned long long bad = 0;
     for (int f = 0; f < 3; ++f) {
       fill<<<1024, 256>>>(p.dQ, (size_t)batch * m * d, 23u * f + batch, -6 + f, 1 + f);
