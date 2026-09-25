@@ -692,6 +692,10 @@ if (WITH_CUDA)
   # real __cplusplus (C++17 checks); only this file gets those options (FindCUDA has no per-source flags),
   # and cutlass_overrides/ first on its include path (cp.async without the L2 prefetch hint, see there).
   set(CUTLASS_NVCC_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/cutlass_overrides" "--expt-relaxed-constexpr")
+  if(CUDA_VERSION VERSION_GREATER_EQUAL "12.8")
+    # Native sm_120 code for these kernels too (the driver prefers it to JIT-compiling the compute_86 PTX).
+    list(APPEND CUTLASS_NVCC_OPTIONS "-gencode=arch=compute_120,code=sm_120")
+  endif()
   if(MSVC)
     list(APPEND CUTLASS_NVCC_OPTIONS "-Xcompiler=/Zc:__cplusplus")
   endif()
