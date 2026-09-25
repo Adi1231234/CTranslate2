@@ -87,6 +87,24 @@ clips, `cpu_threads=1`) stock 49.4 s (16.6x) -> fork 25.2 s (32.2x), GPU busy 35
 ccbbc32e in every run (also stock batch8's). `cpu_threads=1` alone gains little on that CPU (48.8 -> 48.0 s).
 GPU time there needs CUPTI 12.9 (12.6 and 12.8 answer CUPTI_ERROR_INVALID_DEVICE); `cupti.py` picks it by
 compute capability. The full gate still has the RTX 2080's stock hashes and sm_75 probes built in.
+
+Store PC, round 2 (25.9): 32.2x -> 35.4x (pipe8, 150 clips, 22.9 s), every hash equal to its stock wheel
+(digest; pipe8 rows_sha ccbbc32e; exact2 6d5d58a2, 10.1 -> 15.5x; bench 60/90/118). There cuBLAS 12.9.2 runs
+sm80 CUTLASS kernels with simple orders, recovered on the device's own cuBLAS (0 mismatches): decoder Dense
+= one m16n8k16 chain over k, at k 5120 and 19..48 rows 3 serial split-K slices of 1728 (hmma_probe.cu);
+attention scores = one chain, then half(alpha * acc) (qk_hmma_probe.cu); attention output = 16-key chain
+with the residue of the 64-key tiles first (av_hmma_probe.cu). Changes:
+- exact_attention.cuh: the encoder's self-attention in one kernel. Scores and probabilities stay in shared
+  memory, keys and values are pre-arranged in fragment order (exact_attention_layout.cuh), the output is
+  written heads-combined (combine_heads skips its transpose). exact_attention_check.cu: 0 mismatches at
+  batch 20..160, 1.56x the three ops; 32.2 -> 34.3x.
+- runner/features.py: the batched pipeline's log-mel on a thread pool (0.6 s of 150 clips with the GPU idle).
+- The decoder state compacted in place when clips finish (the memory keys and values of every layer were
+  copied whole into new buffers at each finish); Conv1D bias + GELU on 16-byte vectors. 35.0 -> 35.4x.
+Tried, not kept: hmma_gemm.cuh (decoder Dense replica, exact on every shape, no faster than cuBLAS with the
+weights coming from DRAM, slower in production); an encode-ahead queue of 2-3 batches (slower).
+prod_kernels.py lists kernel time by name and launch shape and the GPU idle between kernels;
+kernels/build_probe.ps1 -Gencode builds a probe for another target (compute_86 PTX for the store PC).
 Measure: `python tools/turing/bench_whisper.py <sample_dir> <package parent dir>`.
 Probes: `kernels/run_probe.ps1 <name> [args]` (nvcc sm_75, production's cuBLAS DLL): softmax_check,
 qk_check, ts_check (gate), softmax_bench, qk_probe, qk_diff. Profiles: `host/nsys.ps1` (Nsight
