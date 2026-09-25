@@ -56,6 +56,41 @@ namespace at {
       }
     }
 
+    // e / sum as the IEEE division rounds it, from y = RN(1 / sum) computed once per row: q = RN(e y), then two
+    // fma corrections q + (e - sum q) y (Markstein), exact whenever nothing underflows, i.e. for e >= 2^-60 with
+    // 1 <= sum <= 2048 (a softmax row's sum). tools/turing/kernels/quotient_check.c: every e in [2^-60, 1]
+    // against sums at and next to powers of two, and 2e9 random pairs, all equal to the division.
+    __device__ __forceinline__ float rows1024_quotient(float e, float sum, float y) {
+      float q = __fmul_rn(e, y);
+      q = __fmaf_rn(__fmaf_rn(-sum, q, e), y, q);
+      return __fmaf_rn(__fmaf_rn(-sum, q, e), y, q);
+    }
+
+    // rows1024_store with the quotients of rows1024_quotient; returns whether a value was outside its range
+    // (below 2^-60, or NaN), in which case the caller stores the lane's values again with rows1024_store.
+    __device__ __forceinline__ bool rows1024_store_fast(__half* p, unsigned n, const float* e, float sum, float y,
+                                                        unsigned slot_stride = 1) {
+      bool outside = !(sum >= 1.f && sum <= 2048.f);
+      #pragma unroll
+      for (unsigned q = 0; q < 8; ++q) {
+        if (4 * q < n) {
+          float v[4];
+          #pragma unroll
+          for (unsigned k = 0; k < 4; ++k) {
+            outside |= !(e[4 * q + k] >= 0x1p-60f);
+            v[k] = rows1024_quotient(e[4 * q + k], sum, y);
+          }
+          __half2 a = __halves2half2(static_cast<__half>(v[0]), static_cast<__half>(v[1]));
+          __half2 b = __halves2half2(static_cast<__half>(v[2]), static_cast<__half>(v[3]));
+          uint2 raw;
+          raw.x = *reinterpret_cast<unsigned*>(&a);
+          raw.y = *reinterpret_cast<unsigned*>(&b);
+          reinterpret_cast<uint2*>(p)[q * slot_stride] = raw;
+        }
+      }
+      return outside;
+    }
+
     // One row by one warp: the softmax of a row, 1024 < classes <= 2048. The lane's chunks of the row (values
     // 32L.. and 1024 + 32L..) are read at in0 and in1 and written at out0 and out1 (in place is fine), their
     // 8-byte slots stride0 and stride1 slots apart (rows1024_load): a contiguous row (strides 1), or
@@ -100,8 +135,13 @@ namespace at {
       for (unsigned g = 0; g < C10_WARP_SIZE; ++g)
         sum = Add<float>()(sum, __shfl_sync(0xffffffff, warp_sum, g));
 
-      rows1024_store(out0, C10_WARP_SIZE, e0, sum, stride0);
-      rows1024_store(out1, n1, e1, sum, stride1);
+      const float y = __frcp_rn(sum);                       // the divisions, as fma steps (rows1024_quotient)
+      bool outside = rows1024_store_fast(out0, C10_WARP_SIZE, e0, sum, y, stride0);
+      outside |= rows1024_store_fast(out1, n1, e1, sum, y, stride1);
+      if (__any_sync(0xffffffff, outside)) {                // rare: tiny values take the division itself
+        rows1024_store(out0, C10_WARP_SIZE, e0, sum, stride0);
+        rows1024_store(out1, n1, e1, sum, stride1);
+      }
     }
 
     static __global__ void __launch_bounds__(rows1024_per_block * C10_WARP_SIZE)

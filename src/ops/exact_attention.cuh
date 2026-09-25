@@ -21,7 +21,7 @@
 namespace at {
   namespace native {
 
-    constexpr int ea_warps = 8, ea_rows = 16, ea_depth = 64, ea_max_cols = 2048;
+    constexpr int ea_warps = 8, ea_rows = 16, ea_depth = 64;
     constexpr int ea_lanes0 = 33, ea_part2 = 8 * ea_lanes0 * 4;   // slot stride and size of the first 1024 values
 
     __device__ __forceinline__ int ea_slot(int i, int tail_lanes) {   // key i -> its place in a stored row
@@ -37,13 +37,23 @@ namespace at {
 #endif
     }
 
-    static __global__ void __launch_bounds__(ea_warps * C10_WARP_SIZE)
-    exact_attention_kernel(const __half* q, const uint2* kf, const uint2* vf, __half* o, int m, int n, int heads,
-                           int pitch, int tail_lanes, float alpha) {
+    // Whisper's encoder shape (m = n = 1500) as compile-time values, so the loops and places fold to constants.
+    template <int N>
+    struct ea_shape {
+      static constexpr int tiles = (N + 7) / 8, groups = 2 + (N - N % 64) / 16, residue = N % 64;
+      static constexpr int tail_lanes = (N - 1024 + 31) / 32;
+      static constexpr int pitch = (ea_part2 + tail_lanes * 32 + 59) / 64 * 64 + 4;   // halves per row, 4 mod 64
+    };
+
+    template <int N>
+    __global__ void __launch_bounds__(ea_warps * C10_WARP_SIZE)
+    exact_attention_kernel(const __half* q, const uint2* kf, const uint2* vf, __half* o, int heads, float alpha) {
+      using S = ea_shape<N>;
+      constexpr int m = N, n = N, tiles = S::tiles, groups = S::groups, tail_lanes = S::tail_lanes, pitch = S::pitch;
       extern __shared__ __align__(16) unsigned char ea_smem[];
       __half* s = reinterpret_cast<__half*>(ea_smem);           // [ea_rows][pitch] scores, then probabilities
       const int warp = threadIdx.x / C10_WARP_SIZE, lane = threadIdx.x % C10_WARP_SIZE, g = lane / 4, t = lane % 4;
-      const int j0 = blockIdx.x * ea_rows, tiles = eal_key_tiles(n), groups = eal_groups(n);
+      const int j0 = blockIdx.x * ea_rows;
       const __half* qb = q + (size_t)blockIdx.y * m * ea_depth;
       const uint2* kb = kf + (size_t)blockIdx.y * tiles * 4 * C10_WARP_SIZE + lane;
       const uint2* vb = vf + ((size_t)blockIdx.y * (ea_depth / 8) + warp) * groups * C10_WARP_SIZE + lane;
@@ -74,7 +84,7 @@ namespace at {
                      ea_lanes0, tail_lanes, n, lane);
       }
       __syncthreads();
-      const int residue = n % 64;
+      constexpr int residue = S::residue;
       const __half* s0 = s + g * pitch;                         // the fragment's rows g and g + 8
       const __half* s8 = s + (g + 8) * pitch;
       auto at = [](const __half* row, int off) { return *reinterpret_cast<const unsigned*>(row + off); };
@@ -122,22 +132,20 @@ namespace at {
 
     // o = SoftMax(q k^T * alpha) v for q [batch, m, 64], k and v [batch, n, 64] with batch = clips x heads, o
     // [clips, m, heads, 64] (the heads combined, as MultiHeadAttention::combine_heads would lay them out; heads 1
-    // gives [batch, m, 64]); workspace: exact_attention_workspace(batch, n) bytes. 1024 < n <= 2048,
-    // 16 < n % 64 < 32, all 4-byte aligned.
+    // gives [batch, m, 64]); workspace: exact_attention_workspace(batch, n) bytes. m = n = 1500 (the kernel is
+    // compiled for that shape; exact_attention_applies checks it), all 4-byte aligned.
     inline void exact_attention(const __half* q, const __half* k, const __half* v, void* workspace, __half* o,
                                 int batch, int heads, int m, int n, float alpha, cudaStream_t stream) {
-      static const bool configured = cudaFuncSetAttribute(exact_attention_kernel,
+      constexpr int N = 1500;                                  // exact_attention_applies: m = n = 1500 only
+      static const bool configured = cudaFuncSetAttribute(exact_attention_kernel<N>,
                                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                                          int(ea_rows * (ea_max_cols + 128) * sizeof (__half))) == cudaSuccess;
+                                                          int(ea_rows * ea_shape<N>::pitch * sizeof (__half))) == cudaSuccess;
       (void)configured;
       uint2* kf = static_cast<uint2*>(workspace);
       uint2* vf = kf + (size_t)batch * eal_key_tiles(n) * 4 * eal_lanes;
       exact_attention_layout<<<1024, 256, 0, stream>>>(k, v, kf, vf, batch, n, ea_depth);
-      const int tail_lanes = (n - 1024 + C10_WARP_SIZE - 1) / C10_WARP_SIZE;
-      const int pitch = (ea_part2 + tail_lanes * C10_WARP_SIZE + 59) / 64 * 64 + 4;   // halves per row, 4 mod 64
-      exact_attention_kernel<<<dim3((m + ea_rows - 1) / ea_rows, batch), ea_warps * C10_WARP_SIZE,
-                               ea_rows * pitch * sizeof (__half), stream>>>(q, kf, vf, o, m, n, heads, pitch,
-                                                                            tail_lanes, alpha);
+      exact_attention_kernel<N><<<dim3((N + ea_rows - 1) / ea_rows, batch), ea_warps * C10_WARP_SIZE,
+                                  ea_rows * ea_shape<N>::pitch * sizeof (__half), stream>>>(q, kf, vf, o, heads, alpha);
     }
 
   }
