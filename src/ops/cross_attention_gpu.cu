@@ -36,10 +36,11 @@ namespace ctranslate2 {
                          dim_t clips, dim_t heads, dim_t m, float alpha, int residue) {
       const int rows = static_cast<int>(std::min<dim_t>(m, 8));   // queries per pass (the mma's n)
       const int smem = rows * at::native::ca_pitch * static_cast<int>(sizeof (__half));
+      static const int ahead = read_int_from_env("CT2_CROSS_AHEAD", 0);   // L2 prefetch distance (steps), 0 none
       at::native::cross_attention_kernel<<<static_cast<unsigned>(clips * heads), at::native::ca_warps * 32, smem,
                                            get_cuda_stream()>>>(
         reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k), reinterpret_cast<const __half*>(v),
-        reinterpret_cast<__half*>(o), static_cast<int>(heads), static_cast<int>(m), rows, residue, alpha);
+        reinterpret_cast<__half*>(o), static_cast<int>(heads), static_cast<int>(m), rows, residue, alpha, ahead);
     }
 
   }
