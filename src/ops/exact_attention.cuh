@@ -11,7 +11,9 @@
 // memory. Its 8 warps compute the scores of 8-key tiles w, w + 8, ... (keys from k, queries from q), run the
 // softmax in place on 2 rows each, then warp w chains the output's dims 8w..8w + 7 (values from vt, the
 // transposed v). A row is stored as rows1024_row reads it: lane L's 4-value slot s of the first 1024 values
-// at (s * 32 + L) * 4, of the rest at 1024 + (s * tail_lanes + L) * 4 (softmax loads hit 32 consecutive slots).
+// at (s * 33 + L) * 4, of the rest at ea_part2 + (s * tail_lanes + L) * 4, so the 32 lanes of a softmax load
+// hit consecutive slots; the stride 33 and a row pitch of 4 mod 64 halves also keep the output product's
+// fragment loads (8 rows, 2 slots) on distinct banks.
 
 #include "softmax_kernels.cuh"
 
@@ -19,14 +21,15 @@ namespace at {
   namespace native {
 
     constexpr int ea_warps = 8, ea_rows = 16, ea_depth = 64, ea_max_cols = 2048;
+    constexpr int ea_lanes0 = 33, ea_part2 = 8 * ea_lanes0 * 4;   // slot stride and size of the first 1024 values
 
     __device__ __forceinline__ unsigned ea_pair(const __half* p, size_t stride, int rows, int r, int c) {
       return r < rows ? *reinterpret_cast<const unsigned*>(p + r * stride + c) : 0u;
     }
 
     __device__ __forceinline__ int ea_slot(int i, int tail_lanes) {   // key i -> its place in a stored row
-      const int part = i >= 1024, j = i - 1024 * part, lanes = part ? tail_lanes : C10_WARP_SIZE;
-      return 1024 * part + ((j % 32) / 4 * lanes + j / 32) * 4 + j % 4;
+      const int part = i >= 1024, j = i - 1024 * part, lanes = part ? tail_lanes : ea_lanes0;
+      return ea_part2 * part + ((j % 32) / 4 * lanes + j / 32) * 4 + j % 4;
     }
 
     __device__ __forceinline__ void ea_mma(float* d, unsigned a0, unsigned a1, unsigned a2, unsigned a3,
@@ -70,8 +73,8 @@ namespace at {
       __syncthreads();
       for (int r = warp; r < ea_rows; r += ea_warps) {         // softmax in place (rows past m are unused)
         __half* row = s + r * pitch;
-        rows1024_row(row + 4 * lane, row + 1024 + 4 * lane, row + 4 * lane, row + 1024 + 4 * lane,
-                     C10_WARP_SIZE, tail_lanes, n, lane);
+        rows1024_row(row + 4 * lane, row + ea_part2 + 4 * lane, row + 4 * lane, row + ea_part2 + 4 * lane,
+                     ea_lanes0, tail_lanes, n, lane);
       }
       __syncthreads();
       const int d0 = warp * 8, residue = n % 64;
@@ -90,8 +93,14 @@ namespace at {
           group(acc, 16, residue);
       }
       #pragma unroll 4
-      for (int i0 = residue; i0 < n; i0 += 16)
-        group(acc, i0, n);
+      for (int i0 = residue; i0 < n; i0 += 16) {               // every key present: plain loads, prefetchable
+        ea_mma(acc, *reinterpret_cast<const unsigned*>(s + g * pitch + ea_slot(i0 + 2 * t, tail_lanes)),
+               *reinterpret_cast<const unsigned*>(s + (g + 8) * pitch + ea_slot(i0 + 2 * t, tail_lanes)),
+               *reinterpret_cast<const unsigned*>(s + g * pitch + ea_slot(i0 + 8 + 2 * t, tail_lanes)),
+               *reinterpret_cast<const unsigned*>(s + (g + 8) * pitch + ea_slot(i0 + 8 + 2 * t, tail_lanes)),
+               *reinterpret_cast<const unsigned*>(vb + (size_t)(d0 + g) * n + i0 + 2 * t),
+               *reinterpret_cast<const unsigned*>(vb + (size_t)(d0 + g) * n + i0 + 8 + 2 * t));
+      }
       for (int h = 0; h < 2; ++h)
         if (j0 + g + 8 * h < m)
           *reinterpret_cast<__half2*>(o + ((size_t)blockIdx.y * m + j0 + g + 8 * h) * ea_depth + d0 + 2 * t) =
@@ -119,11 +128,11 @@ namespace at {
                                 int batch, int m, int n, float alpha, cudaStream_t stream) {
       static const bool configured = cudaFuncSetAttribute(exact_attention_kernel,
                                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                                          int(ea_rows * ea_max_cols * sizeof (__half))) == cudaSuccess;
+                                                          int(ea_rows * (ea_max_cols + 128) * sizeof (__half))) == cudaSuccess;
       (void)configured;
       ea_transpose_values<<<dim3((n + 31) / 32, ea_depth / 32, batch), dim3(32, 8), 0, stream>>>(v, vt, n);
       const int tail_lanes = (n - 1024 + C10_WARP_SIZE - 1) / C10_WARP_SIZE;
-      const int pitch = 1024 + tail_lanes * C10_WARP_SIZE;       // halves per stored row
+      const int pitch = (ea_part2 + tail_lanes * C10_WARP_SIZE + 59) / 64 * 64 + 4;   // halves per row, 4 mod 64
       exact_attention_kernel<<<dim3((m + ea_rows - 1) / ea_rows, batch), ea_warps * C10_WARP_SIZE,
                                ea_rows * pitch * sizeof (__half), stream>>>(q, k, vt, o, m, n, pitch, tail_lanes, alpha);
     }
