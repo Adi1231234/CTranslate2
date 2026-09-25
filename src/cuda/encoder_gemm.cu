@@ -3,6 +3,8 @@
 #include "cuda/encoder_gemm.h"
 
 #include <cstdint>
+#include <cstring>
+#include <string>
 
 #include "cuda/encoder_gemm_kernel.cuh"
 #include "cuda/persistent.h"
@@ -16,18 +18,19 @@ namespace ctranslate2 {
     }
 
     // CT2_ENC_GEMM_MIN_ROWS (default 1500, one 30 s window): smaller products keep cuBLAS, which may pick
-    // another kernel (and another arithmetic) for them.
+    // another kernel (and another arithmetic) for them. k a multiple of 64: no k tile has a residue, in any
+    // configuration below (a residue tile would change where the chain starts).
     bool encoder_gemm_applies(dim_t m, dim_t n, dim_t k, const void* a, const void* w, const void* c) {
       static const bool enabled = read_string_from_env("CT2_ENC_GEMM", "cutlass") != "cublas";
       static const dim_t min_rows = read_int_from_env("CT2_ENC_GEMM_MIN_ROWS", 1500);
-      return enabled && m >= min_rows && n % 8 == 0 && k % 8 == 0
+      return enabled && m >= min_rows && n % 8 == 0 && k % 64 == 0
         && aligned16(a) && aligned16(w) && aligned16(c) && hmma_replicas_verified();
     }
 
-    template <int Tile, int Stages, typename Op>
+    template <int Tile, int KTile, int Stages, typename Op>
     static void enc_gemm_launch(const float16_t* a, const float16_t* w, float16_t* c, int m, int n, int k,
                                 const float16_t* bias) {
-      using K = EncGemmKernel<Tile, Stages, Op>;
+      using K = EncGemmKernel<Tile, KTile, Stages, Op>;
       using RefA = typename K::Mma::IteratorA::TensorRef;
       using RefB = typename K::Mma::IteratorB::TensorRef;
       using RefC = typename K::Epilogue::OutputTileIterator::TensorRef;
@@ -53,35 +56,38 @@ namespace ctranslate2 {
         enc_gemm_kernel<K><<<items, K::kThreadCount, smem, stream>>>(params, nullptr, items);
     }
 
-    template <int Tile, typename Op>
-    static void enc_gemm_stages(const float16_t* a, const float16_t* w, float16_t* c, int m, int n, int k,
-                                const float16_t* bias) {
-      static const int stages = read_int_from_env("CT2_ENC_GEMM_STAGES", 6);
-      if (stages == 3)
-        enc_gemm_launch<Tile, 3, Op>(a, w, c, m, n, k, bias);
-      else if (stages == 4)
-        enc_gemm_launch<Tile, 4, Op>(a, w, c, m, n, k, bias);
-      else
-        enc_gemm_launch<Tile, 6, Op>(a, w, c, m, n, k, bias);
-    }
+    using EncLaunch = void (*)(const float16_t*, const float16_t*, float16_t*, int, int, int, const float16_t*);
+    struct EncConfig {
+      const char* name;                                  // <tile>x<k tile>s<stages>
+      EncLaunch plain, gelu;
+    };
 
-    // CT2_ENC_GEMM_TILE=128: 128 x 128 output tiles (half the operand traffic of 64 x 64).
-    template <typename Op>
-    static void enc_gemm_tiles(const float16_t* a, const float16_t* w, float16_t* c, int m, int n, int k,
-                               const float16_t* bias) {
-      static const int tile = read_int_from_env("CT2_ENC_GEMM_TILE", 64);
-      if (tile == 128)
-        enc_gemm_stages<128, Op>(a, w, c, m, n, k, bias);
-      else
-        enc_gemm_stages<64, Op>(a, w, c, m, n, k, bias);
+#define CT2_ENC_CONFIG(T, KT, S) \
+    {#T "x" #KT "s" #S, &enc_gemm_launch<T, KT, S, EncPlainOp>, &enc_gemm_launch<T, KT, S, EncBiasGeluOp>}
+
+    // Shared memory: Tile * KTile * 4 bytes per stage (at most 96 KB per block here).
+    static const EncConfig enc_configs[] = {
+      CT2_ENC_CONFIG(64, 32, 6), CT2_ENC_CONFIG(64, 32, 4), CT2_ENC_CONFIG(64, 32, 3),
+      CT2_ENC_CONFIG(64, 64, 4), CT2_ENC_CONFIG(64, 64, 3), CT2_ENC_CONFIG(64, 64, 6),
+      CT2_ENC_CONFIG(128, 32, 4), CT2_ENC_CONFIG(128, 32, 3), CT2_ENC_CONFIG(128, 64, 3),
+    };
+
+    // CT2_ENC_GEMM_CFG picks the configuration (default 64x32s6, cuBLAS's own); an unknown name keeps it.
+    static const EncConfig& enc_config() {
+      static const EncConfig& config = [] () -> const EncConfig& {
+        const std::string name = read_string_from_env("CT2_ENC_GEMM_CFG", "64x32s6");
+        for (const EncConfig& c : enc_configs)
+          if (name == c.name)
+            return c;
+        return enc_configs[0];
+      }();
+      return config;
     }
 
     void encoder_gemm(const float16_t* a, const float16_t* w, float16_t* c, dim_t m, dim_t n, dim_t k,
                       const float16_t* gelu_bias) {
-      if (gelu_bias)
-        enc_gemm_tiles<EncBiasGeluOp>(a, w, c, int(m), int(n), int(k), gelu_bias);
-      else
-        enc_gemm_tiles<EncPlainOp>(a, w, c, int(m), int(n), int(k), nullptr);
+      const EncConfig& config = enc_config();
+      (gelu_bias ? config.gelu : config.plain)(a, w, c, int(m), int(n), int(k), gelu_bias);
     }
 
   }
