@@ -16,6 +16,13 @@ __global__ void step(const float* in, float* out, const __half* big, int n, int 
   if (i < n) out[i] = in[i] * 0.5f + __half2float(big[(size_t)i * 8]);
 }
 
+// Holds the GPU (~ms) so that the host queues the whole chain first: the chain then runs at the GPU's own pace,
+// as in production (the host is ~2 ms ahead there), and the times are the kernels plus the GPU-side gaps.
+__global__ void spin(long long cycles) {
+  const long long start = clock64();
+  while (clock64() - start < cycles) {}
+}
+
 int main(int argc, char** argv) {
   const int chain = argc > 1 ? atoi(argv[1]) : 2000, n = 40 * 1280, blocks = (n + 255) / 256;
   float *a, *b; __half* big;
@@ -43,6 +50,7 @@ int main(int argc, char** argv) {
   for (int mode = 0; mode < 4; ++mode) {        // 0 plain, 1 PDL, 2 gemm + plain, 3 gemm + PDL
     const int pdl = mode % 2, with_gemm = mode / 2;
     for (int rep = 0; rep < 2; ++rep) {          // the first repetition warms up
+      spin<<<1, 1, 0, s>>>(3000000000ll);        // ~1 s at 2.8 GHz: the host queues the chain meanwhile
       CK(cudaEventRecord(e0, s));
       for (int i = 0; i < chain; ++i) {
         if (with_gemm) gemm();
