@@ -3,10 +3,11 @@
 usage: python transcribe_run.py <front|back> <mode: exact2|batch8>
 Producer thread streams row groups from HF and decodes audio; the GPU side never waits on I/O.
 RUN_CACHE=<dir>: row groups kept in a local folder (fetch.py), so a benchmark repeats on the same bytes.
+RUN_FALLBACK=inline: fallback clips run on the main thread, never beside a batch (fallback.py).
 Each finished unit is written atomically to out/<unit_id>.jsonl, so a restart skips it.
 """
 import os, sys, json, time, queue, threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import cudaenv  # noqa: F401
@@ -17,6 +18,7 @@ from units import list_units, unit_id, my_order, should_stop, should_skip
 from engine import transcribe_unit
 from audio import audio_format, decode
 from fetch import read_unit
+from fallback import make_pool
 
 DIRECTION, MODE = sys.argv[1], sys.argv[2]
 OUT = os.environ.get("RUN_OUT") or os.path.join(ROOT, "out"); os.makedirs(OUT, exist_ok=True)
@@ -61,21 +63,11 @@ def _produce():
 
 threading.Thread(target=producer, daemon=True).start()
 BATCHED = MODE != "exact2"
-workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith("pipe")) + 1   # +1 for async fallback
+pool, own = make_pool(os.environ.get("RUN_FALLBACK", "async"), log) if BATCHED else (None, 0)
+workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith("pipe")) + own   # own: the async fallback's worker
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers, cpu_threads=1,   # the OpenMP threads of the default only spin
                      flash_attention=MODE.endswith("-fa"))
-class LoggedPool(ThreadPoolExecutor):
-    """The fallback clips' pool; logs each clip's ladder time (on real data the fallback is the slow path)."""
-    def submit(self, fn, model, uuid, wav):
-        def timed():
-            t = time.time(); r = fn(model, uuid, wav)
-            top = max((s["temperature"] for s in r["segments"]), default=None)
-            log(f"fallback {len(wav) / 16000:.1f}s audio took {time.time() - t:.1f}s, final T {top}")
-            return r
-        return super().submit(timed)
-
-pool = LoggedPool(max_workers=1) if BATCHED else None   # fallback clips off the critical path
 done = queue.Queue()
 stats = {"units": 0, "audio": 0.0, "t0": time.time()}
 
