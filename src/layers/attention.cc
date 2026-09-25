@@ -224,6 +224,12 @@ namespace ctranslate2 {
         attention_fused(queries, keys, values, queries_scale, output);   // scores stay in shared memory
         return true;
       }
+      int residue = -1;
+      if (!relative_positions && !relative_attention_bias && !alibi && !values_lengths && !attention
+          && cross_attention_fusable(queries, keys, values, residue)) {
+        cross_attention_fused(queries, keys, values, queries_scale, residue, output);   // decoder cross-attention
+        return true;
+      }
 
       const ops::MatMul keys_matmul(/*trans_a=*/false, /*trans_b=*/true, queries_scale);
       keys_matmul(queries, keys, output);
@@ -393,8 +399,7 @@ namespace ctranslate2 {
         const Padder* queries_padder,
         const Padder* values_padder,
         dim_t& beam_size,
-        bool fused_queries,
-        bool fragments_ok) const {
+        bool fused_queries) const {
 
       // With fused_queries, fused_proj keeps the queries' projection (no bias yet) until the split.
       StorageView memory_proj(fused_proj.dtype(), fused_proj.device());
@@ -411,8 +416,6 @@ namespace ctranslate2 {
 
         if (fused_kv) {
           split_heads_with_bias(kv_proj, _linear[1].bias(), {&keys_proj, &values_proj}, _num_heads);
-          if (cached_keys != nullptr && fragments_ok && cross_fragments_apply(keys_proj))
-            to_cross_fragments(keys_proj, values_proj);          // every step then runs cross_attention_fused
         } else if (_num_heads_kv == 1) { // MQA (Multi-Query Attention)
           if (values_padder)
             values_padder->add_padding(kv_proj);
@@ -529,8 +532,7 @@ namespace ctranslate2 {
 
         process_cross_attention(queries, values, fused_proj, queries_proj, keys_proj,
                                 values_proj, cached_keys, cached_values,
-                                queries_padder, values_padder, beam_size, fused_q,
-                                /*fragments_ok=*/!attention && !values_lengths);
+                                queries_padder, values_padder, beam_size, fused_q);
       } else {
 
         if (_num_heads_kv < _num_heads) {// MQA or GQA: queries stay in merged time/head format
@@ -626,12 +628,7 @@ namespace ctranslate2 {
       }
 
       StorageView& context = fused_proj;  // Reuse storage.
-      const bool fragments = !_self_attention && cached_keys && are_cross_fragments(*cached_keys, values.dim(1));
-      if (fragments && (attention || values_lengths))
-        throw std::logic_error("Cross-attention weights or memory lengths with a fragment-order cache");
-      if (fragments)
-        cross_attention_fused(queries_proj, keys_proj, values_proj, _queries_scale, context);
-      const bool heads_combined = fragments || dot_product_attention(queries_proj,
+      const bool heads_combined = dot_product_attention(queries_proj,
                             keys_proj,
                             values_proj,
                             values_lengths,
@@ -651,8 +648,7 @@ namespace ctranslate2 {
                             beam_size,
                             _alibi,
                             position_bias);
-      if (!fragments && !_self_attention && cached_keys && !heads_combined && !attention && !values_lengths
-          && cross_check_enabled())
+      if (!_self_attention && cached_keys && !heads_combined && !attention && !values_lengths && cross_check_enabled())
         cross_check(queries_proj, keys_proj, values_proj, _queries_scale, context);
 
       if (prefilling && cached_keys && cached_keys->shape()[2] > _sliding_window) {
