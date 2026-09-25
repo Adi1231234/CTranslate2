@@ -27,7 +27,9 @@ namespace at {
     }
 
     // q: [entries][m][64] (entry = clip * heads + head); k, v: [entries][1500][64]; o: [clips][m][heads][64].
-    static __global__ void __launch_bounds__(ca_warps * 32)
+    // 5 blocks per SM (registers for it): 8 clips x 20 heads = 160 blocks then fit the RTX 5060 Ti's 36 SMs at
+    // once; at 4 (128 registers) a tail of 16 blocks ran after the rest.
+    static __global__ void __launch_bounds__(ca_warps * 32, 5)
     cross_attention_kernel(const __half* q, const __half* k, const __half* v, __half* o, int heads, int m,
                            int rows_per_pass, int residue, float alpha) {
       extern __shared__ __align__(16) unsigned char ca_smem[];
@@ -96,7 +98,7 @@ namespace at {
         };
         for (int s = 0; s < residue; s += 16)
           group(s, residue);
-        #pragma unroll 8
+        #pragma unroll 4
         for (int s = residue; s < ca_keys; s += 16)
           group(s, ca_keys);
         #pragma unroll
