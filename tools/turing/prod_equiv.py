@@ -41,7 +41,7 @@ if profile:
 tracer = None
 if os.environ.get("GPU_TIME") == "1":
     from cupti import Tracer, busy
-    tracer = Tracer(os.path.join(ENGINE, "cupti"), names=False)
+    tracer = Tracer(os.path.join(os.path.dirname(os.path.abspath(SAMPLE)), "cupti"), names=False)
     tracer.start()
 t = time.time()
 rows = run()

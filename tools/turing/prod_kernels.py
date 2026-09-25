@@ -19,7 +19,7 @@ model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_typ
 pool = ThreadPoolExecutor(max_workers=1)
 run = lambda: [r.result() if isinstance(r, Future) else r for r in transcribe_unit(model, clips, MODE, pool)]
 run()
-tracer = Tracer(os.path.join(ENGINE, "cupti"))
+tracer = Tracer(os.path.join(os.path.dirname(os.path.abspath(SAMPLE)), "cupti"))
 tracer.start(); t = time.time(); run(); wall = time.time() - t; tracer.stop()
 recs = tracer.records                              # (name, stream, start, end, grid, block, smem)
 total = sum(r[3] - r[2] for r in recs)

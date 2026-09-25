@@ -4,8 +4,8 @@
 # does not pause production. Log: D:\ct2build\ab.log. Start it detached (Start-Process) so it survives
 # the remote session, e.g.
 #   powershell -NoProfile -ExecutionPolicy Bypass -Command "& '<this file>' -Configs 'base=CPU_THREADS=1','retain=CPU_THREADS=1;POOL_RETAIN=1'"
-# A configuration's MODE (e.g. 'b8=MODE=batch8') and PKG (a build's parent dir) replace -Mode and -Pkg for its
-# runs. 'stock' = the venv's wheel.
+# A configuration's MODE (e.g. 'b8=MODE=batch8'), PKG (a build's parent dir) and ENGINE (a runner folder with
+# engine.py) replace -Mode, -Pkg and the production run's engine for its runs. 'stock' = the venv's wheel.
 param([string[]]$Configs = @('base=CPU_THREADS=1'), [string]$Pkg = 'D:\ct2build\pyct2-next',
       [string]$Mode = 'pipe8', [int]$Rounds = 2, [int]$Limit = 300)
 . "$PSScriptRoot\prod.ps1"
@@ -22,7 +22,8 @@ for ($i = 0; $i -lt $Rounds; $i++) {
       "power.draw,clocks.sm --format=csv,noheader,nounits -lms 500 -f $csv")
     $m = if ($env:MODE) { $env:MODE } else { $Mode }
     $pk = if ($env:PKG) { $env:PKG } else { $Pkg }
-    try { Invoke-Timed $label (@("$Src\tools\turing\prod_equiv.py", "$W\sample", $W, $m) + @(PkgArg $pk)) $Limit }
+    $en = if ($env:ENGINE) { $env:ENGINE } else { $W }
+    try { Invoke-Timed $label (@("$Src\tools\turing\prod_equiv.py", "$W\sample", $en, $m) + @(PkgArg $pk)) $Limit }
     finally {
       Stop-Process -Id $smi.Id -Force -ErrorAction SilentlyContinue
       foreach ($v in $set) { Remove-Item ("env:" + ($v -split '=', 2)[0]) -ErrorAction SilentlyContinue }

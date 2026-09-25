@@ -3,6 +3,7 @@ sequential). batch8 = cross-clip batched T=0 + sequential full-ladder fallback (
 import queue, threading
 import numpy as np
 from faster_whisper import BatchedInferencePipeline
+from features import feature_cache
 try:
     from faster_whisper.transcribe import get_compression_ratio as gcr
 except ImportError:
@@ -64,7 +65,10 @@ def _batch8_ordered(model, clips, bs, pipelined=False, pool=None):
     for _, w in clips:
         pieces += [w, np.zeros(GAP, "float32")]
         ts.append({"start": off / SR, "end": (off + len(w)) / SR}); off += len(w) + GAP
-    segs, _ = bp.transcribe(np.concatenate(pieces), batch_size=bs, clip_timestamps=ts, **EXACT)
+    audio = np.concatenate(pieces)
+    # transcribe's own slices of the clips (int(seconds * rate)), so it gets their precomputed features
+    feature_cache(model).prefetch([audio[int(t["start"] * SR):int(t["end"] * SR)] for t in ts])
+    segs, _ = bp.transcribe(audio, batch_size=bs, clip_timestamps=ts, **EXACT)
     per = [[] for _ in clips]
     for s in segs:
         per[max(j for j, t in enumerate(ts) if s.start >= t["start"] - 1e-3)].append(s)
