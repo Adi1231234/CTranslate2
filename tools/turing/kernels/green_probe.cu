@@ -39,6 +39,17 @@ static Side side(CUstream stream) {
   return s;
 }
 
+// A stream on a green context made of the given SM resources.
+static CUstream green_stream(CUdevice dev, const CUdevResource* sms, unsigned count, int priority) {
+  CUdevResourceDesc desc;
+  CU(cuDevResourceGenerateDesc(&desc, const_cast<CUdevResource*>(sms), count));
+  CUgreenCtx ctx;
+  CU(cuGreenCtxCreate(&ctx, desc, dev, CU_GREEN_CTX_DEFAULT_STREAM));
+  CUstream stream;
+  CU(cuGreenCtxStreamCreate(&stream, ctx, CU_STREAM_NON_BLOCKING, priority));
+  return stream;
+}
+
 static const int dec_weights = 64, dec_count = 3000, enc_count = 24;
 static __half *dA, *dW, *dC, *eA, *eW, *eC;
 
@@ -92,19 +103,29 @@ int main(int argc, char** argv) {
   unsigned groups = 1;
   CU(cuDevSmResourceSplitByCount(&part, &groups, &all, &rest, 0, dec_sms));
   printf("SMs: %u = decoder %u + encoder %u\n", all.sm.smCount, part.sm.smCount, rest.sm.smCount);
-  CUdevResourceDesc dd, ed;
-  CU(cuDevResourceGenerateDesc(&dd, &part, 1));
-  CU(cuDevResourceGenerateDesc(&ed, &rest, 1));
-  CUgreenCtx dg, eg;
-  CU(cuGreenCtxCreate(&dg, dd, dev, CU_GREEN_CTX_DEFAULT_STREAM));
-  CU(cuGreenCtxCreate(&eg, ed, dev, CU_GREEN_CTX_DEFAULT_STREAM));
-  CUstream dgs, egs;
-  CU(cuGreenCtxStreamCreate(&dgs, dg, CU_STREAM_NON_BLOCKING, hi));
-  CU(cuGreenCtxStreamCreate(&egs, eg, CU_STREAM_NON_BLOCKING, lo));
-  const Side dec_part = side(dgs), enc_part = side(egs);
+  const Side dec_part = side(green_stream(dev, &part, 1, hi)), enc_part = side(green_stream(dev, &rest, 1, lo));
   measure("partitions: warm-up", &dec_part, &enc_part);
   measure("partitions: decoder alone", &dec_part, nullptr);
   measure("partitions: encoder alone", nullptr, &enc_part);
   measure("partitions: together", &dec_part, &enc_part);
+
+  // Only the encoder confined, to 8-SM groups (and the 4 SMs left over): the decoder keeps the whole GPU.
+  CUdevResource eight[4], left;
+  unsigned n8 = 4;
+  CU(cuDevSmResourceSplitByCount(eight, &n8, &all, &left, 0, 8));
+  CUdevResource with_left[5] = {eight[0], eight[1], eight[2], eight[3], left};
+  for (unsigned g = 3; g <= n8; ++g) {
+    for (int extra = 0; extra <= 1; ++extra) {
+      CUdevResource set[5];
+      for (unsigned i = 0; i < g; ++i) set[i] = with_left[i];
+      if (extra) set[g] = left;
+      const Side enc = side(green_stream(dev, set, g + extra, lo));
+      char label[64];
+      snprintf(label, sizeof label, "encoder on %u SMs: alone", 8 * g + (extra ? left.sm.smCount : 0));
+      measure(label, nullptr, &enc);
+      snprintf(label, sizeof label, "  + decoder whole GPU");
+      measure(label, &dec_all, &enc);
+    }
+  }
   return 0;
 }
