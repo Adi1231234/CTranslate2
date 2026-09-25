@@ -81,7 +81,8 @@ namespace ctranslate2 {
                                 const Padder* queries_padder,
                                 const Padder* values_padder,
                                 dim_t& beam_size,
-                                bool fused_queries) const;
+                                bool fused_queries,
+                                bool fragments_ok) const;
       bool fused_split_applies(const StorageView& x, const Dense& linear, const Padder* padder) const;
 
     private:

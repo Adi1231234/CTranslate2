@@ -135,6 +135,7 @@ set(SOURCES
   src/layers/flash_attention.cc
   src/layers/common.cc
   src/layers/attention_fused.cc
+  src/layers/cross_attention_fused.cc
   src/layers/split_heads_fused.cc
   src/layers/decoder.cc
   src/layers/kv_cache.cc
@@ -257,6 +258,7 @@ set(CUDA_SOURCES
   src/ops/rms_norm_gpu.cu
   src/ops/rotary_gpu.cu
   src/ops/exact_attention_gpu.cu
+  src/ops/cross_attention_gpu.cu
   src/ops/softmax_gpu.cu
   src/ops/tile_gpu.cu
   src/ops/topk_gpu.cu
