@@ -47,19 +47,30 @@ int main(int argc, char** argv) {
                     &zero, C, CUDA_R_16F, 1280, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
   };
   cudaEvent_t e0, e1; CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1));
-  for (int mode = 0; mode < 4; ++mode) {        // 0 plain, 1 PDL, 2 gemm + plain, 3 gemm + PDL
-    const int pdl = mode % 2, with_gemm = mode / 2;
+  auto enqueue = [&](int pdl, int with_gemm) {
+    for (int i = 0; i < chain; ++i) {
+      if (with_gemm) gemm();
+      launch(i % 2 ? b : a, i % 2 ? a : b, pdl);
+    }
+  };
+  const char* names[6] = {"plain", "pdl", "gemm+plain", "gemm+pdl", "graph", "graph+gemm"};
+  for (int mode = 0; mode < 6; ++mode) {        // 0-3 streams (plain, PDL, each after a GEMM), 4-5 one graph
+    const int pdl = mode < 4 ? mode % 2 : 0, with_gemm = mode < 4 ? mode / 2 : mode - 4;
+    cudaGraphExec_t exec = nullptr;
+    if (mode >= 4) {
+      cudaGraph_t graph;
+      CK(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal));
+      enqueue(0, with_gemm);
+      CK(cudaStreamEndCapture(s, &graph));
+      CK(cudaGraphInstantiate(&exec, graph, 0));
+    }
     for (int rep = 0; rep < 2; ++rep) {          // the first repetition warms up
       spin<<<1, 1, 0, s>>>(3000000000ll);        // ~1 s at 2.8 GHz: the host queues the chain meanwhile
       CK(cudaEventRecord(e0, s));
-      for (int i = 0; i < chain; ++i) {
-        if (with_gemm) gemm();
-        launch(i % 2 ? b : a, i % 2 ? a : b, pdl);
-      }
+      if (exec) CK(cudaGraphLaunch(exec, s)); else enqueue(pdl, with_gemm);
       CK(cudaEventRecord(e1, s)); CK(cudaEventSynchronize(e1));
       float ms; CK(cudaEventElapsedTime(&ms, e0, e1));
-      if (rep) printf("%-14s %8.2f us per step\n", mode == 0 ? "plain" : mode == 1 ? "pdl" : mode == 2 ? "gemm+plain"
-                                                   : "gemm+pdl", 1000.f * ms / chain);
+      if (rep) printf("%-14s %8.2f us per step\n", names[mode], 1000.f * ms / chain);
     }
   }
   return 0;
