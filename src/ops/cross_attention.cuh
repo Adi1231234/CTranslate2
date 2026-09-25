@@ -49,6 +49,10 @@ namespace at {
       for (int j0 = 0; j0 < m; j0 += rows_per_pass) {
         const int rows = min(rows_per_pass, m - j0);
         if (queries.x) {
+          // The projection waits on L2 more than it reads: the first half of the keys goes to L2 meanwhile.
+          if (j0 == 0)
+            for (int key = threadIdx.x; key < ca_keys / 2; key += ca_warps * 32)
+              asm volatile("prefetch.global.L2 [%0];" :: "l"(ke + (size_t)key * ca_depth));
           ca_project_queries(queries.x, queries.w, queries.bias, qs, ca_qpitch, clip, head, m, j0, rows,
                              queries.K);
           __syncthreads();
