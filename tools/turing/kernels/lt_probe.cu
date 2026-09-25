@@ -11,7 +11,7 @@
 #include <utility>
 #include "probe_common.h"
 
-static const int M = 12000, dec_weights = 64, dec_count = 2000, enc_count = 16;
+static const int M = 12000, dec_weights = 64, dec_count = 2000, enc_count = 40;
 
 static __half* upload(size_t count, uint32_t seed) {
   std::vector<__half> h(count);
@@ -69,46 +69,73 @@ int main(int argc, char** argv) {
   int count = 0;
   CK(cublasLtMatmulAlgoGetHeuristic(lt, op, la, lb, lc, lc, pref, 32, found, &count));
 
-  cudaEvent_t e0, e1, d1;
-  CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1)); CK(cudaEventCreate(&d1));
+  cudaEvent_t d0, d1, marks[enc_count + 1];
+  CK(cudaEventCreate(&d0)); CK(cudaEventCreate(&d1));
+  for (auto& e : marks) CK(cudaEventCreate(&e));
   auto decoder = [&] { for (int i = 0; i < dec_count; ++i)
     CK(cublasGemmEx(dh, CUBLAS_OP_T, CUBLAS_OP_N, 1280, 40, 1280, &one, dW + (size_t)(i % dec_weights) * 1280 * 1280,
                     CUDA_R_16F, 1280, dA, CUDA_R_16F, 1280, &zero, dC, CUDA_R_16F, 1280, CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT)); };
-  // Returns {encoder ms per GEMM, decoder us per GEMM (0 without it)}.
-  auto time = [&](const cublasLtMatmulAlgo_t& algo, bool with_decoder) {
-    CK(cudaEventRecord(e0, es));
-    if (with_decoder) { CK(cudaStreamWaitEvent(ds, e0, 0)); decoder(); CK(cudaEventRecord(d1, ds)); }
-    for (int i = 0; i < enc_count; ++i)
+  auto elapsed = [](cudaEvent_t a, cudaEvent_t b) { float ms = 0; CK(cudaEventElapsedTime(&ms, a, b)); return ms; };
+  CK(cudaEventRecord(d0, ds)); decoder(); CK(cudaEventRecord(d1, ds)); CK(cudaDeviceSynchronize());
+  CK(cudaEventRecord(d0, ds)); decoder(); CK(cudaEventRecord(d1, ds)); CK(cudaDeviceSynchronize());
+  const float dec_solo = elapsed(d0, d1) / dec_count;
+  // Encoder ms per GEMM alone, and both sides' speed (fraction of alone) while they overlap: the decoder's
+  // chain starts with the encoder's GEMMs, which outlast it; the encoder's rate is its GEMMs done by then.
+  auto time = [&](const cublasLtMatmulAlgo_t& algo, float* enc_share, float* dec_share) {
+    CK(cudaEventRecord(marks[0], es));
+    for (int i = 1; i <= enc_count; ++i) {
       CK(cublasLtMatmul(lt, op, &one, W, la, A, lb, &zero, C, lc, C, lc, &algo, ws, ws_bytes, es));
-    CK(cudaEventRecord(e1, es));
+      CK(cudaEventRecord(marks[i], es));
+    }
     CK(cudaDeviceSynchronize());
-    float e = 0, d = 0;
-    CK(cudaEventElapsedTime(&e, e0, e1));
-    if (with_decoder) CK(cudaEventElapsedTime(&d, e0, d1));
-    return std::make_pair(e / enc_count, with_decoder ? 1000 * d / dec_count : 0.f);
+    const float solo = elapsed(marks[0], marks[enc_count]) / enc_count;
+    CK(cudaEventRecord(marks[0], es));
+    CK(cudaStreamWaitEvent(ds, marks[0], 0));
+    for (int i = 1; i <= enc_count; ++i) {
+      CK(cublasLtMatmul(lt, op, &one, W, la, A, lb, &zero, C, lc, C, lc, &algo, ws, ws_bytes, es));
+      CK(cudaEventRecord(marks[i], es));
+    }
+    CK(cudaEventRecord(d0, ds)); decoder(); CK(cudaEventRecord(d1, ds));
+    CK(cudaDeviceSynchronize());
+    const float span = elapsed(marks[0], d1);
+    int done = 0;
+    while (done < enc_count && elapsed(marks[0], marks[done + 1]) <= span) ++done;
+    *enc_share = done * solo / span;
+    *dec_share = dec_count * dec_solo / span;
+    return done < enc_count ? solo : -solo;                     // negative: the encoder ended first
   };
-  CK(cudaEventRecord(e0, ds)); decoder(); CK(cudaEventRecord(d1, ds)); CK(cudaDeviceSynchronize());
-  CK(cudaEventRecord(e0, ds)); decoder(); CK(cudaEventRecord(d1, ds)); CK(cudaDeviceSynchronize());
-  float dsolo = 0; CK(cudaEventElapsedTime(&dsolo, e0, d1));
-  printf("%dx%dx%d: %d candidates; decoder chain alone %.1f us/GEMM\n", M, N, K, count, 1000 * dsolo / dec_count);
-  for (int i = 0; i < count; ++i) {
-    const cublasLtMatmulAlgo_t& algo = found[i].algo;
-    if (cublasLtMatmul(lt, op, &one, W, la, A, lb, &zero, C, lc, C, lc, &algo, ws, ws_bytes, es) != 0) continue;
+  printf("%dx%dx%d: %d candidates; decoder chain alone %.1f us/GEMM\n", M, N, K, count, 1000 * dec_solo);
+  auto report = [&](const char* from, const cublasLtMatmulAlgo_t& algo) {
+    if (cublasLtMatmul(lt, op, &one, W, la, A, lb, &zero, C, lc, C, lc, &algo, ws, ws_bytes, es) != 0) return;
     CK(cudaStreamSynchronize(es));
     std::vector<__half> out((size_t)M * N);
     CK(cudaMemcpy(out.data(), C, sizeof(__half) * out.size(), cudaMemcpyDeviceToHost));
     size_t diff = 0;
     for (size_t j = 0; j < out.size(); ++j) diff += half_bits(out[j]) != half_bits(ref[j]);
-    time(algo, false);
-    const auto solo = time(algo, false), both = time(algo, true);
-    // Work done per ms beside each other, in units of each side's time alone.
-    const double eff = (1.0 / both.first * solo.first + 1.0 / both.second * (1000 * dsolo / dec_count)) / 2;
-    printf("#%2d algo %3d tile %3d stages %3d splitK %2d swizzle %d ws %7zu: %s  alone %.3f ms | beside: enc %.3f ms"
-           " dec %5.1f us | combined %.2fx\n", i, attr(algo, CUBLASLT_ALGO_CONFIG_ID), attr(algo, CUBLASLT_ALGO_CONFIG_TILE_ID),
+    float es_, ds_;
+    time(algo, &es_, &ds_);
+    const float solo = time(algo, &es_, &ds_);
+    printf("%s algo %2d tile %2d stages %2d splitK %d: %-9s alone %.3f ms | beside: encoder %.2f + decoder %.2f"
+           " = %.2f%s\n", from, attr(algo, CUBLASLT_ALGO_CONFIG_ID), attr(algo, CUBLASLT_ALGO_CONFIG_TILE_ID),
            attr(algo, CUBLASLT_ALGO_CONFIG_STAGES_ID), attr(algo, CUBLASLT_ALGO_CONFIG_SPLITK_NUM),
-           attr(algo, CUBLASLT_ALGO_CONFIG_CTA_SWIZZLING), found[i].workspaceSize,
-           diff ? "DIFFERS" : "same bits", solo.first, both.first, both.second, 2 * eff);
-  }
+           diff ? "DIFFERS" : "same bits", solo < 0 ? -solo : solo, es_, ds_, es_ + ds_,
+           solo < 0 ? " (encoder ended first)" : "");
+  };
+  for (int i = 0; i < count; ++i) report("heuristic", found[i].algo);
+  // Configurations of the default's algorithm the heuristic does not offer: tiles by stages.
+  const int algo_id = attr(found[0].algo, CUBLASLT_ALGO_CONFIG_ID);
+  for (int tile : {11, 12, 13, 15, 18, 20})
+    for (int stages : {8, 9, 10, 11, 12, 14, 15, 16}) {
+      cublasLtMatmulAlgo_t algo;
+      if (cublasLtMatmulAlgoInit(lt, CUBLAS_COMPUTE_32F, CUDA_R_32F, CUDA_R_16F, CUDA_R_16F, CUDA_R_16F, CUDA_R_16F,
+                                 algo_id, &algo) != 0) continue;
+      cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_TILE_ID, &tile, sizeof tile);
+      cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_STAGES_ID, &stages, sizeof stages);
+      cublasLtMatmulHeuristicResult_t check;
+      if (cublasLtMatmulAlgoCheck(lt, op, la, lb, lc, lc, &algo, &check) != 0 || check.workspaceSize > ws_bytes)
+        continue;
+      report("manual   ", algo);
+    }
   return 0;
 }
