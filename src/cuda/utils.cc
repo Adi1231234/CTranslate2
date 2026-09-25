@@ -8,6 +8,7 @@
 
 #include "ctranslate2/utils.h"
 #include "cuda/graph.h"
+#include "cuda/green_stream.h"
 
 #include "env.h"
 
@@ -95,7 +96,10 @@ namespace ctranslate2 {
           _stream = cudaStreamDefault;
         } else {
           CUDA_CHECK(cudaGetDevice(&_device));
-          CUDA_CHECK(cudaStreamCreateWithPriority(&_stream, cudaStreamDefault, stream_priority(low)));
+          const int sms = low ? encoder_sm_count() : 0;           // the encoder on part of the GPU (green_stream.h)
+          _stream = sms > 0 ? create_green_stream(sms, stream_priority(low)) : nullptr;
+          if (!_stream)
+            CUDA_CHECK(cudaStreamCreateWithPriority(&_stream, cudaStreamDefault, stream_priority(low)));
         }
       }
       ~CudaStream() {
