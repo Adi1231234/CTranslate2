@@ -61,6 +61,7 @@ for r in sorted(recs, key=lambda r: r[2]):
 print(f"== idle GPU {sum(idle.values()) / 1e9:.2f} s in {sum(count.values())} gaps, by the kernels around them")
 for k, v in idle.most_common(TOP):
     print(f"{v / 1e9:8.3f} s x{count[k]:7d} {v / count[k] / 1e3:8.1f} us  {k}")
-pool.shutdown()
+if not real:
+    pool.shutdown()
 del model
 import gc; gc.collect()
