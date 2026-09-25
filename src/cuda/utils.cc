@@ -73,12 +73,17 @@ namespace ctranslate2 {
     static std::atomic<bool> is_main_thread(true);
 
     // Worker streams get the highest priority, a thread's low-priority stream the lowest (the
-    // default of a plain stream); CT2_CUDA_STOCK_KERNELS=1 keeps plain streams.
+    // default of a plain stream); CT2_CUDA_STOCK_KERNELS=1 keeps plain streams. CT2_CUDA_STREAM_PRIORITIES:
+    // "equal" gives every stream the default priority, "encoder_high" swaps the two (for scheduling A/B
+    // runs; only the order in which the GPU takes up kernels changes, never a result).
     static int stream_priority(bool low) {
       int least = 0, greatest = 0;
       if (use_stock_kernels() || cudaDeviceGetStreamPriorityRange(&least, &greatest) != cudaSuccess)
         return 0;
-      return low ? least : greatest;
+      const std::string mode = read_string_from_env("CT2_CUDA_STREAM_PRIORITIES", "decoder_high");
+      if (mode == "equal")
+        return 0;
+      return (low != (mode == "encoder_high")) ? least : greatest;
     }
 
     class CudaStream {
