@@ -42,9 +42,12 @@ namespace ctranslate2 {
                                const dim_t beam_size,
                                const StorageView* alive_batches) const {
       flush_state_reorder(state);
+      // alive_batches may be on the host: the state's batch-level entries (e.g. the memory keys and values)
+      // are then compacted in place (ops::Gather) instead of copied whole into new buffers.
       if (alive_batches) {
         split_batch_beam(beam_indices, beam_size);
-        ops::Gather()(beam_indices, *alive_batches);
+        ops::Gather()(beam_indices, alive_batches->device() == beam_indices.device()
+                                    ? *alive_batches : alive_batches->to(beam_indices.device()));
         merge_batch_beam(beam_indices);
       }
 

@@ -19,6 +19,7 @@ namespace ctranslate2 {
     static bool support_gather_batch_inplace(const StorageView& data, const StorageView& input) {
       // We can gather in place if the output is not larger than data and indices are in
       // strictly increasing order (i.e. we never need to gather from a previous index).
+      // The indices must be on the host; the data may be on any device.
       const auto* input_begin = input.data<int32_t>();
       const auto* input_end = input_begin + input.size();
       return (input.device() == Device::CPU
@@ -26,7 +27,9 @@ namespace ctranslate2 {
               && std::adjacent_find(input_begin, input_end, std::greater_equal<int32_t>()) == input_end);
     }
 
-    template <typename T>
+    // Row i takes row indices[i] >= i: rows before the first dropped one stay, the others move down one
+    // copy each, in order, so no row is overwritten before it is read (on the GPU: stream-ordered copies).
+    template <Device D, typename T>
     void gather_batch_inplace(StorageView& data, const StorageView& input) {
       const auto* indices = input.data<int32_t>();
       auto* dst = data.data<T>();
@@ -35,7 +38,7 @@ namespace ctranslate2 {
       for (dim_t i = 0; i < input.size(); ++i) {
         const dim_t index = indices[i];
         if (index != i)
-          primitives<Device::CPU>::copy(src + index * copy_dim, dst, copy_dim);
+          primitives<D>::copy(src + index * copy_dim, dst, copy_dim);
         dst += copy_dim;
       }
     }
@@ -49,7 +52,7 @@ namespace ctranslate2 {
     void Gather::operator()(StorageView& data, const StorageView& input) const {
       if (_axis == 0 && _batch_dims == 0 && support_gather_batch_inplace(data, input)) {
         PROFILE("Gather");
-        TYPE_DISPATCH(data.dtype(), (gather_batch_inplace<T>(data, input)));
+        DEVICE_AND_TYPE_DISPATCH(data.device(), data.dtype(), (gather_batch_inplace<D, T>(data, input)));
         data.resize(compute_output_shape(data, input, _axis));
       } else {
         StorageView clone(std::move(data));

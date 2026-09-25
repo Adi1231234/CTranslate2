@@ -701,8 +701,7 @@ namespace ctranslate2 {
         gather(alive_seq, *keep_batches);
         if (alive_attention)
           gather(alive_attention, *keep_batches);
-        if (keep_batches->device() != device)
-          *keep_batches = keep_batches->to(device);
+        // Left on the host: update_state then compacts the decoder state in place.
       }
 
       if (gather_indices.device() != device)
