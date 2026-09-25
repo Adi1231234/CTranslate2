@@ -239,6 +239,7 @@ set(CUDA_SOURCES
   src/cuda/encoder_gemm.cu
   src/cuda/graph.cc
   src/cuda/graph_memory.cc
+  src/cuda/l2_prefetch.cu
   src/cuda/persistent.cu
   src/cuda/primitives.cu
   src/cuda/random.cu

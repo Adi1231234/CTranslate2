@@ -219,6 +219,12 @@ namespace ctranslate2 {
           !use_flash_attention
           && static_cast<MultiHeadAttention*>(_self_attention.get())->has_merged_encoder_attention())
       {
+      // A decoding step's self-attention leaves the memory idle after its input projection: the weights of the
+      // next Dense layers (its output, the cross-attention's queries and output) start moving into L2 there.
+      if (_encoder_attention && !_has_merged_encoder_attention)
+        _self_attention->prefetch_after_projection({&_self_attention->projections().back().weight(),
+                                                   &_encoder_attention->projections().front().weight(),
+                                                   &_encoder_attention->projections().back().weight()});
     }
 
     void TransformerDecoderLayer::operator()(const StorageView& input,

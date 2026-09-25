@@ -55,6 +55,16 @@ namespace ctranslate2 {
 
       virtual bool has_positional_embeddings() const = 0;
 
+      // The Dense projections: inputs first, the output projection last.
+      const std::vector<Dense>& projections() const {
+        return _linear;
+      }
+      // Weights a decoding step prefetches into L2 right after this layer's input projection, in order
+      // (cuda/l2_prefetch.h): the Dense layers that follow it.
+      void prefetch_after_projection(std::vector<const StorageView*> weights) {
+        _prefetch_after_projection = std::move(weights);
+      }
+
       bool multi_query() const {
         return _multi_query;
       }
@@ -81,6 +91,7 @@ namespace ctranslate2 {
       const bool _multi_query;
       const dim_t _num_heads_kv;
       const dim_t _sliding_window;
+      std::vector<const StorageView*> _prefetch_after_projection;
     };
 
     enum class RotaryScalingType {

@@ -14,6 +14,9 @@
 #include "attention_fused.h"
 #include "cross_attention_fused.h"
 #include "split_heads_fused.h"
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/l2_prefetch.h"
+#endif
 
 namespace ctranslate2 {
   namespace layers {
@@ -484,6 +487,18 @@ namespace ctranslate2 {
         && !_v_norm && !_rotary_embeddings && split_heads_fusable(x, linear, padder, _d_head);
     }
 
+    // The first CT2_L2_PREFETCH of `weights` into L2 (cuda/l2_prefetch.h; a cache hint only).
+    static void prefetch_weights(const std::vector<const StorageView*>& weights, Device device) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      const size_t count = std::min<size_t>(weights.size(), std::max(cuda::l2_prefetch_count(), 0));
+      if (device == Device::CUDA && count > 0)
+        cuda::l2_prefetch({weights.begin(), weights.begin() + count});
+#else
+      (void)weights;
+      (void)device;
+#endif
+    }
+
     void MultiHeadAttention::operator()(const StorageView& queries,
                                         const StorageView& values,
                                         const StorageView* values_lengths,
@@ -538,6 +553,8 @@ namespace ctranslate2 {
         _linear[0].compute_without_bias(*q, fused_proj);
       else
         _linear[0](*q, fused_proj);
+      if (_self_attention && cached_keys)
+        prefetch_weights(_prefetch_after_projection, device);
 
       dim_t beam_size = 1;
 
