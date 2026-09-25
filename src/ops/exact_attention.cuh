@@ -64,18 +64,21 @@ namespace at {
           const int j = j0 + g + 8 * (e % 2);
           a[c][e] = j < m ? *reinterpret_cast<const unsigned*>(qb + (size_t)j * ea_depth + 16 * c + 8 * (e / 2) + 2 * t) : 0u;
         }
+      // The warp's tiles are 8 apart, so its keys i are 64 apart: 8 halves further within a part of the row
+      // (ea_slot), and at the one step where i enters the second part (kc) the place is that part's (no branch).
+      const int i0 = 8 * warp + 2 * t, kc = (1024 - i0 + 63) / 64, jump = ea_slot(i0 + 64 * kc, tail_lanes);
+      int place = ea_slot(i0, tail_lanes);
       #pragma unroll 4
-      for (int tile = warp; tile < tiles; tile += ea_warps) {  // scores of keys 8 tile .. 8 tile + 7
+      for (int k = 0, tile = warp; tile < tiles; ++k, tile += ea_warps) {  // scores of keys 8 tile .. 8 tile + 7
         float d[4] = {0.f, 0.f, 0.f, 0.f};
         #pragma unroll
         for (int c = 0; c < 4; ++c)                             // 16-dim groups in increasing order
           ea_mma(d, a[c][0], a[c][1], a[c][2], a[c][3], kb[(tile * 4 + c) * C10_WARP_SIZE]);
-        const int i = 8 * tile + 2 * t;
-        if (i < n) {                                            // n % 4 == 0: keys i and i + 1 share a slot
-          const int at = ea_slot(i, tail_lanes);
-          *reinterpret_cast<__half2*>(s + g * pitch + at) = __floats2half2_rn(alpha * d[0], alpha * d[1]);
-          *reinterpret_cast<__half2*>(s + (g + 8) * pitch + at) = __floats2half2_rn(alpha * d[2], alpha * d[3]);
+        if (i0 + 64 * k < n) {                                  // n % 4 == 0: keys i and i + 1 share a slot
+          *reinterpret_cast<__half2*>(s + g * pitch + place) = __floats2half2_rn(alpha * d[0], alpha * d[1]);
+          *reinterpret_cast<__half2*>(s + (g + 8) * pitch + place) = __floats2half2_rn(alpha * d[2], alpha * d[3]);
         }
+        place = k + 1 == kc ? jump : place + 8;
       }
       __syncthreads();
       for (int r = warp; r < ea_rows; r += ea_warps) {         // softmax in place (rows past m are unused)
@@ -94,29 +97,30 @@ namespace at {
         ea_mma(acc, at(s0, lo), at(s8, lo), at(s0, hi), at(s8, hi), vb[G * C10_WARP_SIZE]);
       }
       // From group 2 on, groups G and G + 2 read keys 32 apart: within a part of the row (ea_slot) that is
-      // 4 halves further, so the places are stepped instead of recomputed (same loads, fewer instructions).
-      int key[2][2], off[2][2];                                 // [G parity][keys i, i + 8]
+      // 4 halves further, and at the one step where a key enters the second part (kc) its place is that part's,
+      // selected without a branch (same loads, fewer instructions).
+      int off[2][2], jump_to[2][2], k_in[2][2];                 // [G parity][keys i, i + 8]
       #pragma unroll
       for (int p = 0; p < 2; ++p)
         #pragma unroll
         for (int h = 0; h < 2; ++h) {
-          key[p][h] = residue + 16 * p + 8 * h + 2 * t;
-          off[p][h] = ea_slot(key[p][h], tail_lanes);
+          const int key0 = residue + 16 * p + 8 * h + 2 * t;
+          off[p][h] = ea_slot(key0, tail_lanes);
+          k_in[p][h] = (1024 - key0 + 31) / 32;
+          jump_to[p][h] = ea_slot(key0 + 32 * k_in[p][h], tail_lanes);
         }
       #pragma unroll 2
-      for (int G = 2; G < groups; G += 2) {
+      for (int k = 0; 2 + 2 * k < groups; ++k) {
         #pragma unroll
         for (int p = 0; p < 2; ++p)
-          if (G + p < groups)
+          if (2 + 2 * k + p < groups)
             ea_mma(acc, at(s0, off[p][0]), at(s8, off[p][0]), at(s0, off[p][1]), at(s8, off[p][1]),
-                   vb[(G + p) * C10_WARP_SIZE]);
+                   vb[(2 + 2 * k + p) * C10_WARP_SIZE]);
         #pragma unroll
         for (int p = 0; p < 2; ++p)
           #pragma unroll
-          for (int h = 0; h < 2; ++h) {
-            key[p][h] += 32;
-            off[p][h] = key[p][h] >= 1024 && key[p][h] < 1056 ? ea_slot(key[p][h], tail_lanes) : off[p][h] + 4;
-          }
+          for (int h = 0; h < 2; ++h)
+            off[p][h] = k + 1 == k_in[p][h] ? jump_to[p][h] : off[p][h] + 4;
       }
       const int clip = blockIdx.y / heads, head = blockIdx.y % heads;  // o is [clip, query, head, dim]
       for (int h = 0; h < 2; ++h)
