@@ -45,6 +45,28 @@ def sample_clips(sample):
     return [(x["key"], np.load(os.path.join(sample, x["key"] + ".npy"))) for x in meta[:150]]
 
 
+class Recorder:
+    """Stands in for the runner's fallback pool: keeps the fallback clips, runs nothing (the row is None)."""
+    def __init__(self):
+        self.clips = []
+
+    def submit(self, fn, model, uuid, wav):
+        self.clips.append((uuid, wav))
+
+
+def cached_units(cache, listing):
+    """The units of a list file as [[(uuid, waveform), ...], ...], decoded from the runner's cache folder
+    (runner/fetch.py) as the runner decodes them; the runner folder must be on sys.path (audio.py)."""
+    import pyarrow.parquet as pq
+    from audio import audio_format, decode
+    out = []
+    for uid in open(listing, encoding="utf-8").read().split():
+        t = pq.read_table(os.path.join(cache, uid + ".parquet"))
+        out.append([(u, decode(a["bytes"], audio_format(a.get("path"))))
+                    for u, a in zip(t.column("uuid").to_pylist(), t.column("audio").to_pylist())])
+    return out
+
+
 def sample_waves(sample):
     """The 150 sample clips, shortest first."""
     return sorted([w for _, w in sample_clips(sample)], key=len)

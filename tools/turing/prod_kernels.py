@@ -1,6 +1,7 @@
 """Where the production engine's GPU time goes: prod_equiv.py's run (same engine, clips and mode, one warm-up
 first) traced with kernel names; totals per kernel and per launch shape, and per stream busy time and overlap.
-usage: prod_kernels.py <sample_dir> <engine_dir> <mode> [ctranslate2 package parent dir] [top N, default 25]"""
+usage: prod_kernels.py <sample_dir> <engine_dir> <mode> [ctranslate2 package parent dir] [top N, default 25]
+REAL_UNITS="<cache dir>;<units list>;<n>": the first n cached real units (scale/README.md) instead of the sample."""
 import os, sys, time, collections
 from concurrent.futures import Future, ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -13,10 +14,15 @@ from faster_whisper import WhisperModel
 from engine import transcribe_unit
 from cupti import Tracer, short, busy
 
-clips = common.sample_clips(SAMPLE)
+real = os.environ.get("REAL_UNITS")                # "<cache dir>;<units list>;<n>": n real units as one list
+if real:
+    cache, listing, n = real.split(";")
+    clips = [c for unit in common.cached_units(cache, listing)[:int(n)] for c in unit]
+else:
+    clips = common.sample_clips(SAMPLE)
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=1 + int(MODE.startswith("pipe")) + 1, cpu_threads=1)
-pool = ThreadPoolExecutor(max_workers=1)
+pool = common.Recorder() if real else ThreadPoolExecutor(max_workers=1)   # real data: the batched path only
 run = lambda: [r.result() if isinstance(r, Future) else r for r in transcribe_unit(model, clips, MODE, pool)]
 run()
 tracer = Tracer(os.path.join(os.path.dirname(os.path.abspath(SAMPLE)), "cupti"))
