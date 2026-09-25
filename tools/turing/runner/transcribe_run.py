@@ -2,6 +2,7 @@
 
 usage: python transcribe_run.py <front|back> <mode: exact2|batch8>
 Producer thread streams row groups from HF and decodes audio; the GPU side never waits on I/O.
+RUN_CACHE=<dir>: row groups kept in a local folder (fetch.py), so a benchmark repeats on the same bytes.
 Each finished unit is written atomically to out/<unit_id>.jsonl, so a restart skips it.
 """
 import os, sys, json, time, queue, threading
@@ -10,16 +11,18 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import cudaenv  # noqa: F401
 os.environ["HF_HOME"] = os.path.join(ROOT, "hf")
-import pyarrow.parquet as pq
 from huggingface_hub import HfApi, HfFileSystem
 from faster_whisper import WhisperModel
-from units import DS, list_units, unit_id, my_order, should_stop, should_skip
+from units import list_units, unit_id, my_order, should_stop, should_skip
 from engine import transcribe_unit
 from audio import audio_format, decode
+from fetch import read_unit
 
 DIRECTION, MODE = sys.argv[1], sys.argv[2]
 OUT = os.environ.get("RUN_OUT") or os.path.join(ROOT, "out"); os.makedirs(OUT, exist_ok=True)
-TOK = open(os.path.join(ROOT, "hf_token.txt")).read().strip()
+CACHE = os.environ.get("RUN_CACHE")             # fetched row groups kept on disk (fetch.py)
+TOK_PATH = os.path.join(ROOT, "hf_token.txt")   # needed unless every unit is in the cache
+TOK = open(TOK_PATH).read().strip() if os.path.exists(TOK_PATH) else None
 fs, api = HfFileSystem(token=TOK), HfApi(token=TOK)
 
 def log(msg):
@@ -47,15 +50,8 @@ def _produce():
         why = should_stop(ROOT, uid)
         if why: log(f"STOP ({why}) before {uid}"); break
         if os.path.exists(os.path.join(OUT, uid + ".jsonl")) or should_skip(ROOT, uid): continue
-        for attempt in range(6):
-            try:
-                if u[0] not in handles:
-                    handles[u[0]] = pq.ParquetFile(fs.open(f"datasets/{DS}/{u[0]}", "rb"))
-                t = handles[u[0]].read_row_group(u[1], columns=["uuid", "audio", "extra_data"])
-                break
-            except Exception as e:
-                handles.pop(u[0], None); log(f"fetch retry {uid}: {e}"); time.sleep(10 * (attempt + 1))
-        else:
+        t = read_unit(fs, handles, u, uid, log, CACHE)
+        if t is None:
             log(f"FETCH FAILED {uid}"); continue
         clips = []
         for uu, a in zip(t.column("uuid").to_pylist(), t.column("audio").to_pylist()):

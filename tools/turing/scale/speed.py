@@ -29,6 +29,7 @@ def events(path):
 
 prod, _ = events(sys.argv[1])
 run, starts = events(sys.argv[2])
+run = [e for e in run if e[0] >= starts[-1]]               # the last run in the log
 gap, audio = {}, {}
 for (t0, _, a0), (t1, u, a1) in zip(prod, prod[1:]):
     if a1 > a0:                                   # same production process (a restart resets the counters)
