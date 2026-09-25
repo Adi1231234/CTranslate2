@@ -4,6 +4,7 @@
 // stream serialization; the kernel waits with griddepcontrol.wait before reading), then the same after a cuBLAS
 // GEMM of the decoder's shape (40 x 1280 x 1280), whose kernel does not trigger its dependents early.
 // usage: pdl_bench [chain length, default 2000]   (build for sm_120: -gencode arch=compute_120,code=sm_120)
+#include <chrono>
 #include <cstdio>
 #include "probe_common.h"
 #include "probe_data.cuh"
@@ -72,6 +73,33 @@ int main(int argc, char** argv) {
       float ms; CK(cudaEventElapsedTime(&ms, e0, e1));
       if (rep) printf("%-14s %8.2f us per step\n", names[mode], 1000.f * ms / chain);
     }
+  }
+  // Host cost of a graph made fresh per decoding step (the cache length changes every step): capture, instantiate,
+  // launch and destroy a chain of 285 GEMMs + 285 small kernels (~570, a Whisper decoder step), against plain
+  // launches of the same.
+  const int step_len = 285;
+  for (int mode = 0; mode < 2; ++mode) {
+    CK(cudaStreamSynchronize(s));
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int rep = 0; rep < 20; ++rep) {
+      if (mode == 0) {
+        for (int i = 0; i < step_len; ++i) { gemm(); launch(i % 2 ? b : a, i % 2 ? a : b, 0); }
+        continue;
+      }
+      cudaGraph_t graph; cudaGraphExec_t exec;
+      CK(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal));
+      for (int i = 0; i < step_len; ++i) { gemm(); launch(i % 2 ? b : a, i % 2 ? a : b, 0); }
+      CK(cudaStreamEndCapture(s, &graph));
+      CK(cudaGraphInstantiate(&exec, graph, 0));
+      CK(cudaGraphLaunch(exec, s));
+      CK(cudaGraphExecDestroy(exec)); CK(cudaGraphDestroy(graph));
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    CK(cudaStreamSynchronize(s));
+    const auto t2 = std::chrono::steady_clock::now();
+    printf("%-14s host %8.1f us per step, until done %8.1f us per step\n", mode ? "fresh graph" : "plain step",
+           std::chrono::duration<double, std::micro>(t1 - t0).count() / 20,
+           std::chrono::duration<double, std::micro>(t2 - t0).count() / 20);
   }
   return 0;
 }
