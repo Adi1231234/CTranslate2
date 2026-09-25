@@ -1,38 +1,24 @@
 #include "cuda/graph.h"
 
 #include <cstdio>
-#include <cstdlib>
-#include <exception>
 
 #include "env.h"
 
 namespace ctranslate2 {
   namespace cuda {
 
-    // A CUDA error inside a capture can end in std::terminate (a destructor's free failing while the error
-    // unwinds); print what terminated the process first.
-    static void report_terminate() {
-      if (std::exception_ptr e = std::current_exception()) {
-        try {
-          std::rethrow_exception(e);
-        } catch (const std::exception& x) {
-          std::fprintf(stderr, "terminate during a CUDA graph step: %s\n", x.what());
-        } catch (...) {
-          std::fprintf(stderr, "terminate during a CUDA graph step: unknown exception\n");
-        }
-      }
-      std::fflush(stderr);
-      std::abort();
+    bool graphs_enabled() {
+      static const bool enabled = read_bool_from_env("CT2_CUDA_GRAPHS") && !use_stock_kernels();
+      return enabled;
     }
 
-    bool graphs_enabled() {
-      static const bool enabled = [] {
-        const bool on = read_bool_from_env("CT2_CUDA_GRAPHS") && !use_stock_kernels();
-        if (on)
-          std::set_terminate(report_terminate);
-        return on;
-      }();
-      return enabled;
+    void report_failure(const char* call, const char* file, int line, const char* error) {
+      if (!graphs_enabled())
+        return;
+      cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+      cudaStreamIsCapturing(get_cuda_stream(), &status);
+      std::fprintf(stderr, "%s:%d: %s failed: %s (capture status %d)\n", file, line, call, error, int(status));
+      std::fflush(stderr);
     }
 
     StepGraph::StepGraph(bool capture) {

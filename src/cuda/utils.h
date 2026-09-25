@@ -68,17 +68,22 @@ namespace ctranslate2 {
 #define CUDA_CHECK(ans)                                                 \
     {                                                                   \
       cudaError_t code = (ans);                                         \
-      if (code != cudaSuccess)                                          \
+      if (code != cudaSuccess) {                                        \
+        ctranslate2::cuda::report_failure(#ans, __FILE__, __LINE__, cudaGetErrorString(code)); \
         THROW_RUNTIME_ERROR("CUDA failed with error "                   \
                             + std::string(cudaGetErrorString(code)));   \
+      }                                                                 \
     }
 
 #define CUBLAS_CHECK(ans)                                               \
     {                                                                   \
       cublasStatus_t status = (ans);                                    \
-      if (status != CUBLAS_STATUS_SUCCESS)                              \
+      if (status != CUBLAS_STATUS_SUCCESS) {                            \
+        ctranslate2::cuda::report_failure(#ans, __FILE__, __LINE__,     \
+                                          ctranslate2::cuda::cublasGetStatusName(status)); \
         THROW_RUNTIME_ERROR("cuBLAS failed with status "                \
                             + std::string(ctranslate2::cuda::cublasGetStatusName(status))); \
+      }                                                                 \
     }
 
 #define CUDNN_CHECK(ans)                                                \
@@ -96,6 +101,9 @@ namespace ctranslate2 {
     }
 
     const char* cublasGetStatusName(cublasStatus_t status);
+    // With CUDA graphs on, prints a failed call before it throws: a throw from a destructor terminates the
+    // process with no message.
+    void report_failure(const char* call, const char* file, int line, const char* error);
 
     cudaStream_t get_cuda_stream();
     cublasHandle_t get_cublas_handle();
