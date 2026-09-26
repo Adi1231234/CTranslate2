@@ -45,3 +45,10 @@ production run on the same units (23.9, batch8, async fallback, 2 workers: 1291 
 - **build 55f83c7 (the deploy candidate), pipe8, inline, `PIPE_ORDER=desc`: 546 s = 28.9x, 2.37x stock**, 92 MB
   shared. `compare.py` IDENTICAL: 2,899 of 2,906 rows byte-identical, 0 deterministic differences; the 10 rows
   decoded at a sampling temperature: `seeded.py` stock twice and the build all `bb32a84f4f7b201d`.
+
+## Both engines on the 101 units still missing from the crowd-v5 file (26-27.9, store PC)
+
+Stock and the deployed build (55f83c7) through the production runner, pipe8, from one cache (`-Cache`, the same
+bytes): stock 61 min (13.6x), build 27 min (30.3x). `compare.py`: 10,006 rows, 0 deterministic differences
+(one of them a fallback row at T=0); 23 rows decoded at a sampling temperature, all equal under `seeded.py`
+(stock twice and the build: `d58e9dfc63231d7c`). The stock output is the deliverable.
