@@ -3,7 +3,7 @@
 usage: python transcribe_run.py <front|back> <mode: exact2|batch8>
 Producer thread streams row groups from HF and decodes audio; the GPU side never waits on I/O.
 RUN_CACHE=<dir>: row groups kept in a local folder (fetch.py), so a benchmark repeats on the same bytes.
-RUN_FALLBACK=inline: fallback clips run on the main thread, never beside a batch (fallback.py).
+RUN_FALLBACK=async: fallback clips on a side thread beside the batches (default inline, fallback.py).
 Each finished unit is written atomically to out/<unit_id>.jsonl, so a restart skips it.
 """
 import os, sys, json, time, queue, threading
@@ -63,7 +63,7 @@ def _produce():
 
 threading.Thread(target=producer, daemon=True).start()
 BATCHED = MODE != "exact2"
-pool, own = make_pool(os.environ.get("RUN_FALLBACK", "async"), log) if BATCHED else (None, 0)
+pool, own = make_pool(os.environ.get("RUN_FALLBACK", "inline"), log) if BATCHED else (None, 0)
 workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith("pipe")) + own   # own: the async fallback's worker
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers, cpu_threads=1,   # the OpenMP threads of the default only spin

@@ -31,4 +31,17 @@ rows the stock wheel wrote in the production run.
   Half of the chosen units hold fallback rows (29% of production units), whose ladder runs clip by clip on one
   side worker; and the process used 7.4 GB of dedicated plus 1.0 GB of shared (system) GPU memory, i.e. WDDM
   paged it. Root cause not found yet: look at the pool release threshold (the build keeps freed memory) with
-  3 workers before deploying.
+  3 workers before deploying. (Found: the async fallback, below.)
+
+## Real-data benchmark 25-26.9 (store PC, `units_real.txt`: 30 cached units, 4.38 h, 10 fallback clips)
+
+Wall time of `../host/scale_run.ps1 -Cache $R\verify\cache_real` (model load included) against the stock
+production run on the same units (23.9, batch8, async fallback, 2 workers: 1291 s = 12.2x):
+
+- build G, pipe8, async fallback: 747 s (21.1x), 760-860 MB paged to system memory; the pool release
+  threshold at 0 changes nothing (764 s). The cause is the fallback's own worker: a ladder's memory beside a
+  batch's overflows the 8 GB GPU. `parts.py` (each part alone): batched 475 s, the 10 ladders 134 s.
+- build G, pipe8, `RUN_FALLBACK=inline`: 603 s (26.1x), 93 MB shared (none paged): inline is now the default.
+- **build 55f83c7 (the deploy candidate), pipe8, inline, `PIPE_ORDER=desc`: 546 s = 28.9x, 2.37x stock**, 92 MB
+  shared. `compare.py` IDENTICAL: 2,899 of 2,906 rows byte-identical, 0 deterministic differences; the 10 rows
+  decoded at a sampling temperature: `seeded.py` stock twice and the build all `bb32a84f4f7b201d`.

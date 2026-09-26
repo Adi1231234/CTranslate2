@@ -1,6 +1,7 @@
 """Where the fallback clips (the full temperature ladder) run, with each clip's ladder time in the log.
-'async' (default): a side thread and its own CTranslate2 worker, next to the batched path; 'inline' (RUN_FALLBACK=
-inline): right away on the caller's thread, so a ladder never needs GPU memory at the same time as a batch."""
+'inline' (default): right away on the caller's thread, so a ladder never needs GPU memory at the same time as a
+batch; 'async' (RUN_FALLBACK=async): a side thread and its own CTranslate2 worker, next to the batched path. On the
+store PC's 8 GB GPU async paged 760-860 MB to system memory and ran 30 real units at 21.1x, inline 26.1x (26.9)."""
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 

@@ -4,8 +4,9 @@ Per profile, ~31% of wall time is the encoder and ~66% the beam-search decoder, 
 The decoder leaves the GPU partly idle (many small steps), so a background thread encodes the next
 batch on a second CTranslate2 worker (model needs num_workers=2) while the main thread decodes.
 Per-batch math is unchanged: same batches, same encoder call, same generate() call.
-PIPE_ORDER=desc decodes the batches last to first (the longest clips first: while their long decodes
-run, the encoder banks later batches, which then decode without waiting); PIPE_ORDER=interleave alternates
+PIPE_ORDER=desc (default) decodes the batches last to first (the longest clips first: while their long decodes
+run, the encoder banks later batches, which then decode without waiting; 0.1-0.2 s faster than asc in 3 of 3
+alternated pairs, 26.9); PIPE_ORDER=asc keeps the batch order; PIPE_ORDER=interleave alternates
 the longest and the shortest left (a long decode, during which the encoder gets ahead, then a short one,
 which would otherwise wait for it); the segments still come out in batch order. PIPE_AHEAD=<n>: encoded batches that may wait (default 1). PIPE_LOG=<file>: one line
 per batch with its encode and decode start and end, then its generate() call's start and end (seconds).
@@ -19,7 +20,7 @@ from tqdm import tqdm
 class PipelinedBatchedInferencePipeline(BatchedInferencePipeline):
     def _batched_segments_generator(self, features, tokenizer, chunks_metadata, batch_size, options, log_progress):
         starts = list(range(0, len(features), batch_size))
-        mode = os.environ.get("PIPE_ORDER", "asc")
+        mode = os.environ.get("PIPE_ORDER", "desc")
         if mode == "desc":
             order = starts[::-1]
         elif mode == "interleave":                            # longest, shortest, 2nd longest, 2nd shortest, ...
