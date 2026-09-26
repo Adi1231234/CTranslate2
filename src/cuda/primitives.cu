@@ -29,6 +29,7 @@
 #include <cublas_v2.h>
 #include "cuda/attention_scores_k64.cuh"
 #include "cuda/encoder_gemm.h"
+#include "cuda/graph_host_copy.h"
 #endif
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
@@ -786,7 +787,12 @@ namespace ctranslate2 {
   template<>
   template <typename T>
   void cross_device_primitives<Device::CPU, Device::CUDA>::copy(const T* x, T* y, dim_t size) {
-    CUDA_CHECK(cudaMemcpyAsync(y, x, size * sizeof (T), cudaMemcpyHostToDevice, cuda::get_cuda_stream()));
+    const cudaStream_t stream = cuda::get_cuda_stream();
+#ifndef CT2_USE_HIP
+    if (cuda::copy_host_bytes_if_capturing(y, x, size * sizeof (T), stream))   // in a captured graph step
+      return;
+#endif
+    CUDA_CHECK(cudaMemcpyAsync(y, x, size * sizeof (T), cudaMemcpyHostToDevice, stream));
   }
 
   template<>

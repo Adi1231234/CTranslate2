@@ -4,26 +4,14 @@
 #include <cuda.h>
 #include <spdlog/spdlog.h>
 
+#include "cuda/driver_function.h"
 #include "cuda/utils.h"
 #include "env.h"
 
 namespace ctranslate2 {
   namespace cuda {
 
-    // A driver API function (green contexts: CUDA 12.4, their streams 12.5) as of the runtime this library is built
-    // with, from the driver in use; null when it has none.
-    template <typename F>
-    static F driver_function(const char* name) {
-      void* fn = nullptr;
-      cudaDriverEntryPointQueryResult found = cudaDriverEntryPointSymbolNotFound;
-      const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &fn, CUDART_VERSION, cudaEnableDefault, &found);
-      if (e != cudaSuccess || found != cudaDriverEntryPointSuccess) {
-        spdlog::warn("SM partition: no driver entry point {} (error {}, status {})", name, int(e), int(found));
-        return nullptr;
-      }
-      return reinterpret_cast<F>(fn);
-    }
-
+    // Green contexts: CUDA 12.4, their streams 12.5.
     struct Driver {
       CUresult (*device_get)(CUdevice*, int) = driver_function<decltype(device_get)>("cuDeviceGet");
       CUresult (*get_resource)(CUdevice, CUdevResource*, CUdevResourceType)

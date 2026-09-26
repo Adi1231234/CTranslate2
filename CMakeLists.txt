@@ -240,6 +240,7 @@ set(CUDA_SOURCES
   src/cuda/graph.cc
   src/cuda/graph_exec.cc
   src/cuda/graph_frees.cc
+  src/cuda/graph_host_copy.cu
   src/cuda/graph_memory.cc
   src/cuda/graph_memset.cu
   src/cuda/green_stream.cc

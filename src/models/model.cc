@@ -803,6 +803,9 @@ namespace ctranslate2 {
       const ScopedDeviceSetter scoped_device_setter(device, device_index);
       model->process_linear_weights();
       model->initialize(model_reader);
+      // The weights were allocated and written on this thread's stream, and the replicas read them on their own
+      // threads' streams: the legacy default stream ordered those implicitly, a created one (cuda/graph.h) does not.
+      synchronize_stream(device);
       return model;
     }
 
