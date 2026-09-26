@@ -14,6 +14,10 @@ namespace ctranslate2 {
                         size_t segment);
     void count_plain_step();
 
+    // Replaces the graph's memset nodes by kernels writing the same bytes (graph_memset.cu): cudaGraphExecUpdate
+    // cannot change a memset's size (cuBLAS zeroes buffers that grow with the caches), a kernel node's launch it can.
+    void memsets_to_kernels(cudaGraph_t graph);
+
     // CT2_CUDA_GRAPHS_STATS=1: prints how the thread's segments ran since the last call; resets the counts.
     void report_graph_stats();
 

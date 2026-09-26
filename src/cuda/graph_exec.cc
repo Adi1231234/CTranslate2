@@ -37,6 +37,7 @@ namespace ctranslate2 {
 
     void launch_segment(cudaGraph_t graph, cudaGraphExec_t& exec, bool memory_nodes, cudaStream_t stream,
                         size_t segment) {
+      memsets_to_kernels(graph);
       if (exec && !memory_nodes && update(exec, graph, segment)) {
         updated += 1;
       } else if (exec) {                                // another topology, or memory nodes: a new instance

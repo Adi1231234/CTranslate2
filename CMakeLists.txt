@@ -241,6 +241,7 @@ set(CUDA_SOURCES
   src/cuda/graph_exec.cc
   src/cuda/graph_frees.cc
   src/cuda/graph_memory.cc
+  src/cuda/graph_memset.cu
   src/cuda/green_stream.cc
   src/cuda/persistent.cu
   src/cuda/primitives.cu
