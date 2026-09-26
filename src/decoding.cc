@@ -90,7 +90,7 @@ namespace ctranslate2 {
   static void run_decoder_step(Device device, dim_t step, bool capturable, Run&& run) {
 #ifdef CT2_WITH_CUDA
     if (device == Device::CUDA && step > 0 && capturable) {
-      cuda::StepGraph graph(true);
+      cuda::StepGraph graph(step);
       try {
         run();
       } catch (const std::exception& e) {
@@ -467,6 +467,9 @@ namespace ctranslate2 {
                      const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors,
                      const std::vector<std::vector<size_t>>* prefix_ids) const {
     PROFILE("beam_search");
+#ifdef CT2_WITH_CUDA
+    const cuda::StepGraphScope step_graphs;           // releases the step graph and arenas at the end
+#endif
     const Device device = decoder.device();
     const DataType dtype = decoder.output_type();
     const dim_t vocabulary_size = decoder.output_size();
@@ -778,6 +781,9 @@ namespace ctranslate2 {
                        const bool include_eos_in_hypotheses,
                        const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors,
                        const std::vector<std::vector<size_t>>* prefix_ids) const {
+#ifdef CT2_WITH_CUDA
+    const cuda::StepGraphScope step_graphs;           // releases the step graph and arenas at the end
+#endif
     const dim_t batch_size = start_ids.size();
 
     // We can return multiple hypotheses from greedy search when random sampling is enabled.

@@ -114,9 +114,14 @@ namespace ctranslate2 {
         configure_pool(device);
 
         void* ptr = nullptr;
-        CUDA_CHECK(cudaMallocAsync(&ptr, size, get_cuda_stream()));
 #ifndef CT2_USE_HIP
-        note_allocation(ptr);
+        ptr = arena_allocate(size);                     // a captured decoding step (graph_memory.h)
+        if (!ptr) {
+          CUDA_CHECK(cudaMallocAsync(&ptr, size, get_cuda_stream()));
+          note_allocation(ptr);
+        }
+#else
+        CUDA_CHECK(cudaMallocAsync(&ptr, size, get_cuda_stream()));
 #endif
 
         if (prev_device_index >= 0) {
@@ -134,7 +139,7 @@ namespace ctranslate2 {
       void free(void* ptr, int device_index) override {
 #if CT2_USE_ASYNC_ALLOC
 #ifndef CT2_USE_HIP
-        if (defer_free(ptr))
+        if (arena_free(ptr) || defer_free(ptr))
           return;
 #endif
         int prev_device_index = -1;
