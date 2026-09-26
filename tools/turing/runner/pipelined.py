@@ -5,8 +5,9 @@ The decoder leaves the GPU partly idle (many small steps), so a background threa
 batch on a second CTranslate2 worker (model needs num_workers=2) while the main thread decodes.
 Per-batch math is unchanged: same batches, same encoder call, same generate() call.
 PIPE_ORDER=desc decodes the batches last to first (the longest clips first: while their long decodes
-run, the encoder banks later batches, which then decode without waiting); the segments still come out
-in batch order. PIPE_AHEAD=<n>: encoded batches that may wait (default 1). PIPE_LOG=<file>: one line
+run, the encoder banks later batches, which then decode without waiting); PIPE_ORDER=interleave alternates
+the longest and the shortest left (a long decode, during which the encoder gets ahead, then a short one,
+which would otherwise wait for it); the segments still come out in batch order. PIPE_AHEAD=<n>: encoded batches that may wait (default 1). PIPE_LOG=<file>: one line
 per batch with its encode and decode start and end, then its generate() call's start and end (seconds).
 """
 import os, queue, threading, time
@@ -18,7 +19,13 @@ from tqdm import tqdm
 class PipelinedBatchedInferencePipeline(BatchedInferencePipeline):
     def _batched_segments_generator(self, features, tokenizer, chunks_metadata, batch_size, options, log_progress):
         starts = list(range(0, len(features), batch_size))
-        order = starts[::-1] if os.environ.get("PIPE_ORDER") == "desc" else starts
+        mode = os.environ.get("PIPE_ORDER", "asc")
+        if mode == "desc":
+            order = starts[::-1]
+        elif mode == "interleave":                            # longest, shortest, 2nd longest, 2nd shortest, ...
+            order = [starts[-1 - k // 2] if k % 2 == 0 else starts[k // 2] for k in range(len(starts))]
+        else:
+            order = starts
         ahead = queue.Queue(maxsize=int(os.environ.get("PIPE_AHEAD", "1")))
         times = {i: [] for i in starts}                      # encode start, end, decode start, end
 
