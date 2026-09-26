@@ -7,7 +7,7 @@ Per-batch math is unchanged: same batches, same encoder call, same generate() ca
 PIPE_ORDER=desc decodes the batches last to first (the longest clips first: while their long decodes
 run, the encoder banks later batches, which then decode without waiting); the segments still come out
 in batch order. PIPE_AHEAD=<n>: encoded batches that may wait (default 1). PIPE_LOG=<file>: one line
-per batch with its encode and decode start and end (seconds).
+per batch with its encode and decode start and end, then its generate() call's start and end (seconds).
 """
 import os, queue, threading, time
 from faster_whisper import BatchedInferencePipeline, WhisperModel
@@ -40,9 +40,11 @@ class PipelinedBatchedInferencePipeline(BatchedInferencePipeline):
             if j is None:
                 raise enc
             self._encoder_output = enc
+            self._generate_times = []
             times[i].append(time.perf_counter())
             done[i] = self.forward(features[i:i + batch_size], tokenizer, chunks_metadata[i:i + batch_size], options)
             times[i].append(time.perf_counter())
+            times[i] += self._generate_times                # generate() call start and end
         if os.environ.get("PIPE_LOG"):
             with open(os.environ["PIPE_LOG"], "a") as f:
                 t0 = min(t[0] for t in times.values())
@@ -83,12 +85,15 @@ class PipelinedBatchedInferencePipeline(BatchedInferencePipeline):
             idx = prompt.index(tokenizer.language)
             for k, tok in enumerate(language_tokens):
                 prompts[k][idx] = tok
+        marks = getattr(self, "_generate_times", [])
+        marks.append(time.perf_counter())
         results = self.model.model.generate(
             encoder_output, prompts, beam_size=options.beam_size, patience=options.patience,
             length_penalty=options.length_penalty, max_length=max_length,
             suppress_blank=options.suppress_blank, suppress_tokens=options.suppress_tokens,
             return_scores=True, return_no_speech_prob=True, sampling_temperature=options.temperatures[0],
             repetition_penalty=options.repetition_penalty, no_repeat_ngram_size=options.no_repeat_ngram_size)
+        marks.append(time.perf_counter())
         output = []
         for result in results:
             seq_len = len(result.sequences_ids[0])
