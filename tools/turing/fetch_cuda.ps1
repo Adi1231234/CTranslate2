@@ -1,5 +1,6 @@
 # CUDA 12.8.1 without the installer: the components the official wheel build installs (nvcc, cudart,
-# cublas_dev, curand_dev; python/tools/prepare_build_environment_windows.sh) plus cuobjdump, from NVIDIA's
+# cublas_dev, curand_dev; python/tools/prepare_build_environment_windows.sh) plus cuobjdump and the NVTX headers
+# (profiler ranges, cuda/nvtx.h), from NVIDIA's
 # redistributable archives, each checked against the sha256 of the release manifest and unpacked into one
 # tree ($Dest\bin, include, lib, nvvm). Library archives contribute headers and import libraries only (the
 # *_dev components); the runtime DLLs come from the nvidia-* wheels at run time. Then build with
@@ -7,7 +8,7 @@
 param([Parameter(Mandatory)][string]$Dest, [string]$Release = '12.8.1')
 $base = 'https://developer.download.nvidia.com/compute/cuda/redist'
 $manifest = Invoke-RestMethod "$base/redistrib_$Release.json"
-$full = @('cuda_nvcc', 'cuda_cudart', 'cuda_cuobjdump'); $dev = @('libcublas', 'libcurand')
+$full = @('cuda_nvcc', 'cuda_cudart', 'cuda_cuobjdump', 'cuda_nvtx'); $dev = @('libcublas', 'libcurand')
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $null = New-Item -ItemType Directory -Force "$Dest\_zips"
 foreach ($c in $full + $dev) {

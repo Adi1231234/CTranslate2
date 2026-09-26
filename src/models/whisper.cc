@@ -10,8 +10,13 @@
 #ifdef CT2_WITH_CUDA
 #  include "cuda/utils.h"
 #  ifndef CT2_USE_HIP
+#    include "cuda/nvtx.h"
 #    include "cuda/timestamp_rules.h"
+#    define CT2_NVTX_RANGE(var, name) const cuda::NvtxRange var(name)
 #  endif
+#endif
+#ifndef CT2_NVTX_RANGE
+#  define CT2_NVTX_RANGE(var, name)
 #endif
 
 namespace ctranslate2 {
@@ -82,6 +87,7 @@ namespace ctranslate2 {
 
     StorageView WhisperReplica::encode(StorageView features, const bool to_cpu) {
       PROFILE("WhisperReplica::encode");
+      CT2_NVTX_RANGE(range, "encode");
 
 #ifdef CT2_WITH_CUDA
       const cuda::UseTrueFp16GemmInScope use_true_fp16_gemm(false);
@@ -239,6 +245,7 @@ namespace ctranslate2 {
                              const std::vector<std::vector<size_t>>& prompts,
                              const WhisperOptions& options) {
       PROFILE("WhisperReplica::generate");
+      CT2_NVTX_RANGE(range, "generate");
       if (prompts.empty())
         return {};
 
@@ -267,6 +274,7 @@ namespace ctranslate2 {
         start_tokens = prompts;
 
       } else {
+        CT2_NVTX_RANGE(prompt_range, "prompt");
         std::vector<std::vector<size_t>> prompt_tokens;
         prompt_tokens.reserve(prompts.size());
         start_tokens.reserve(prompts.size());
@@ -346,11 +354,11 @@ namespace ctranslate2 {
                                                 max_initial_timestamp_id));
       }
 
-      std::vector<DecodingResult> results = decode(*_decoder,
-                                                   state,
-                                                   start_tokens,
-                                                   {_eot_id},
-                                                   decoding_options);
+      std::vector<DecodingResult> results;
+      {
+        CT2_NVTX_RANGE(decode_range, "decode");
+        results = decode(*_decoder, state, start_tokens, {_eot_id}, decoding_options);
+      }
 
       if (no_speech_probs_processor)
         no_speech_probs = no_speech_probs_processor->get_no_speech_probs();
@@ -674,6 +682,7 @@ namespace ctranslate2 {
     }
 
     std::future<StorageView> Whisper::encode(const StorageView& features, const bool to_cpu) {
+      CT2_NVTX_RANGE(range, "submit encode");
       return post<StorageView>(
         [features = features.sync_copy(), to_cpu](WhisperReplica& replica) mutable {
           return replica.encode(std::move(features), to_cpu);
@@ -684,6 +693,7 @@ namespace ctranslate2 {
     Whisper::generate(const StorageView& features,
                       std::vector<std::vector<std::string>> prompts,
                       WhisperOptions options) {
+      CT2_NVTX_RANGE(range, "submit generate");   // the input copy runs on this thread
       const size_t batch_size = features.dim(0);
       return post_batch<WhisperGenerationResult>(
         [features = features.sync_copy(),
@@ -699,6 +709,7 @@ namespace ctranslate2 {
     Whisper::generate(const StorageView& features,
                       std::vector<std::vector<size_t>> prompts,
                       WhisperOptions options) {
+      CT2_NVTX_RANGE(range, "submit generate");   // the input copy runs on this thread
       const size_t batch_size = features.dim(0);
       return post_batch<WhisperGenerationResult>(
         [features = features.sync_copy(),
