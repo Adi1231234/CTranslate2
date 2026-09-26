@@ -35,6 +35,7 @@ namespace ctranslate2 {
         count_plain_step();
         return;
       }
+      _step = step;
       begin_segment();
       active = this;
     }
@@ -55,6 +56,15 @@ namespace ctranslate2 {
       _segment += 1;
       CUDA_CHECK(cudaGraphDestroy(graph));
       release_deferred(_stream);
+      static const bool check = read_bool_from_env("CT2_CUDA_GRAPHS_CHECK");   // debug: each segment's own error
+      if (check) {
+        const cudaError_t e = cudaStreamSynchronize(_stream);
+        if (e != cudaSuccess) {
+          std::fprintf(stderr, "cuda graphs: step %lld segment %zu failed: %s\n", _step, _segment - 1,
+                       cudaGetErrorString(e));
+          std::fflush(stderr);
+        }
+      }
     }
 
     void StepGraph::launch() {

@@ -32,6 +32,7 @@ namespace ctranslate2 {
       cudaStream_t _stream = nullptr;
       bool _capturing = false;
       size_t _segment = 0;
+      long long _step = 0;
     };
 
     // Inside a captured step: launches the segment captured so far, and resumes capturing when it goes out of

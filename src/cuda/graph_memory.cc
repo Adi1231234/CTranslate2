@@ -56,7 +56,8 @@ namespace ctranslate2 {
         free_buffer(a);
         a.stream = stream;
         a.capacity = want;
-        CUDA_CHECK(cudaMallocAsync(reinterpret_cast<void**>(&a.base), a.capacity, stream));
+        // The buffer ends 1 MB after the last byte handed out, as a pool allocation is followed by more pool.
+        CUDA_CHECK(cudaMallocAsync(reinterpret_cast<void**>(&a.base), a.capacity + (size_t(1) << 20), stream));
         a.overflowed = false;
       }
       a.offset = 0;
