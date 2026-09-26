@@ -15,7 +15,8 @@ def init(pkg_parent=None):
         os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 
 
-RELEASE_THRESHOLD, RESERVED_HIGH, USED_HIGH = 4, 6, 8     # CUmemPool_attribute
+REUSE_OPPORTUNISTIC, REUSE_INTERNAL_DEPS = 2, 3             # CUmemPool_attribute
+RELEASE_THRESHOLD, RESERVED_HIGH, USED_HIGH = 4, 6, 8
 
 
 def mempool(device=0):

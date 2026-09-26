@@ -8,6 +8,8 @@ PROFILE_RANGE=1: run once to warm up, then mark the measured run with cuProfiler
 `nsys profile --capture-range=cudaProfilerApi` records only the steady state.
 POOL_RETAIN=1: the CUDA memory pool keeps freed memory (release threshold UINT64_MAX) instead of
 returning it to the OS at every synchronize. The output also reports the pool's high-water marks.
+POOL_INTERNAL_DEPS=0 / POOL_OPPORTUNISTIC=0: the pool may not reuse memory freed on another stream by
+making the allocating stream wait for the free / once the free has run (both allowed by default).
 GPU_TIME=1: CUPTI kernel records of the measured run: gpu_busy_s (union of kernel intervals) and
 gpu_kernel_s (sum of kernel durations), which other processes' CPU load does not inflate."""
 import os, sys, json, time, hashlib
@@ -30,6 +32,10 @@ model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_typ
 mem = common.mempool()
 if os.environ.get("POOL_RETAIN") == "1":
     mem(common.RELEASE_THRESHOLD, 2**64 - 1)
+for name, attribute in (("POOL_INTERNAL_DEPS", common.REUSE_INTERNAL_DEPS),
+                        ("POOL_OPPORTUNISTIC", common.REUSE_OPPORTUNISTIC)):
+    if os.environ.get(name) in ("0", "1"):
+        mem(attribute, int(os.environ[name]))
 pool = ThreadPoolExecutor(max_workers=1)
 run = lambda: [r.result() if isinstance(r, Future) else r for r in transcribe_unit(model, clips, MODE, pool)]
 profile = os.environ.get("PROFILE_RANGE") == "1"   # nsys --capture-range=cudaProfilerApi: warm run only
