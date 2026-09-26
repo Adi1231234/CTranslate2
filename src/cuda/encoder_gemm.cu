@@ -21,7 +21,7 @@ namespace ctranslate2 {
     // another kernel (and another arithmetic) for them. k a multiple of 64: no k tile has a residue, in any
     // configuration below (a residue tile would change where the chain starts).
     bool encoder_gemm_applies(dim_t m, dim_t n, dim_t k, const void* a, const void* w, const void* c) {
-      static const bool enabled = read_string_from_env("CT2_ENC_GEMM", "cutlass") != "cublas";
+      static const bool enabled = read_string_from_env("CT2_ENC_GEMM", "cublas") == "cutlass";
       static const dim_t min_rows = read_int_from_env("CT2_ENC_GEMM_MIN_ROWS", 1500);
       return enabled && m >= min_rows && n % 8 == 0 && k % 64 == 0
         && aligned16(a) && aligned16(w) && aligned16(c) && hmma_replicas_verified();
