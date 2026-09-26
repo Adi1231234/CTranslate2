@@ -158,14 +158,15 @@ namespace ctranslate2 {
       low_priority_stream = _previous_value;
     }
 
+    // One handle per stream of the thread, each bound to its stream once: cublasSetStream resets the handle's
+    // workspace, and a worker that alternated between its streams (Whisper's encoder on the low-priority one)
+    // then waited for the device, i.e. for the other threads' queued kernels, before its next job could start.
     cublasHandle_t get_cublas_handle() {
-      static thread_local CublasHandle cublas_handle;
-      static thread_local cudaStream_t bound = get_cuda_stream();   // the handle's stream at creation
-      const cudaStream_t stream = get_cuda_stream();
-      if (stream != bound) {                                        // follow the thread's active stream
-        CUBLAS_CHECK(cublasSetStream(cublas_handle.get(), stream));
-        bound = stream;
+      if (low_priority_stream) {
+        static thread_local CublasHandle low_handle;                // made while the low stream is active
+        return low_handle.get();
       }
+      static thread_local CublasHandle cublas_handle;
       return cublas_handle.get();
     }
 
