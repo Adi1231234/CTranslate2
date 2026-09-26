@@ -5,6 +5,7 @@
 
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/cache_reorder.h"
+#  include "cuda/graph.h"
 #endif
 
 namespace ctranslate2 {
@@ -18,6 +19,10 @@ namespace ctranslate2 {
 
     void reorder_and_append(StorageView& keys, StorageView& values, const StorageView& order,
                             const StorageView& fresh_keys, const StorageView& fresh_values) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      // In a captured step, the caches grow here: launched as is, their memory from the pool (cuda/graph.h).
+      const cuda::CaptureBreak capture_break;
+#endif
       StorageView out_keys = appended_like(keys, fresh_keys);
       StorageView out_values = appended_like(values, fresh_values);
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)

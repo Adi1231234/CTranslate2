@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
-#include <unordered_set>
 #include <vector>
 
 #include "cuda/graph.h"
@@ -16,18 +15,17 @@ namespace ctranslate2 {
       size_t capacity = 0, offset = 0, peak = 0;
       long long live = 0;                     // allocations not freed yet
       bool released = false;                  // the decoding loop ended: free the buffer once empty
-      bool overflowed = false;
+      bool overflowed = false;                // in this step: the next arena is made larger
+      bool segment_overflowed = false;        // in the current captured segment: its graph has memory nodes
       cudaStream_t stream = nullptr;          // the owner's stream, which orders the buffer's own release
     };
 
-    // Arena memory and graph memory can be freed by any thread, so their records are shared.
+    // Arena memory can be freed by any thread, so the record of the arenas is shared.
     static std::mutex mutex;
     static std::vector<std::unique_ptr<Arena>> arenas;           // never shrinks: pointers stay valid
-    static std::unordered_set<void*> graph_memory;
     static thread_local Arena* own[2] = {nullptr, nullptr};
     static thread_local Arena* capturing = nullptr;
     static thread_local bool step_capturing = false;
-    static thread_local std::vector<void*> deferred_frees;
 
     static Arena* own_arena(int i) {                              // under the lock
       if (!own[i]) {
@@ -51,8 +49,8 @@ namespace ctranslate2 {
       if (a.live > 0)
         return false;
       a.released = other.released = false;
-      // A step needs a little more than the one before (the caches grow by one position): the larger of the two
-      // last peaks and a margin, no more (the arenas hold what the pool would hold at once, old and new caches).
+      // A step's temporaries (the caches stay in the pool, CaptureBreak): the larger of the last two peaks and a
+      // margin for the step to grow.
       const size_t want = std::max(a.peak, other.peak) + (size_t(64) << 20);
       if (a.capacity < want || a.overflowed) {
         free_buffer(a);
@@ -69,11 +67,31 @@ namespace ctranslate2 {
       return true;
     }
 
-    bool end_step_arena() {
-      const bool overflowed = capturing && capturing->overflowed;
+    static thread_local Arena* paused = nullptr;
+
+    bool segment_memory_nodes() {
+      Arena* a = capturing ? capturing : paused;
+      const bool overflowed = a && a->segment_overflowed;
+      if (a)
+        a->segment_overflowed = false;
+      return overflowed;
+    }
+
+    void end_step_arena() {
+      capturing = paused = nullptr;
+      step_capturing = false;
+    }
+
+    void pause_step_arena() {
+      paused = capturing;
       capturing = nullptr;
       step_capturing = false;
-      return overflowed;
+    }
+
+    void resume_step_arena() {
+      capturing = paused;
+      paused = nullptr;
+      step_capturing = capturing != nullptr;
     }
 
     void* arena_allocate(size_t size) {
@@ -84,7 +102,7 @@ namespace ctranslate2 {
       const size_t start = (a->offset + 255) / 256 * 256;
       a->peak = std::max(a->peak, start + size);
       if (start + size > a->capacity) {
-        a->overflowed = true;                                     // the pool serves it; the next arena is larger
+        a->overflowed = a->segment_overflowed = true;             // the pool serves it; the next arena is larger
         return nullptr;
       }
       a->offset = start + size;
@@ -107,32 +125,8 @@ namespace ctranslate2 {
       return false;
     }
 
-    void note_allocation(void* ptr) {
-      if (!step_capturing)
-        return;
-      const std::lock_guard<std::mutex> lock(mutex);
-      graph_memory.insert(ptr);
-    }
-
-    bool defer_free(void* ptr) {
-      if (!graphs_enabled())
-        return false;
-      bool from_graph = false;
-      {
-        const std::lock_guard<std::mutex> lock(mutex);
-        from_graph = graph_memory.erase(ptr) > 0;
-      }
-      if (from_graph || !step_capturing)
-        return false;
-      deferred_frees.push_back(ptr);
-      return true;
-    }
-
-    void release_deferred(cudaStream_t stream) {
-      std::vector<void*> frees;
-      frees.swap(deferred_frees);
-      for (void* ptr : frees)
-        CUDA_CHECK(cudaFreeAsync(ptr, stream));
+    bool capturing_step() {
+      return step_capturing;
     }
 
     void release_arenas() {

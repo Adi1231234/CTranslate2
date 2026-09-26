@@ -1,8 +1,9 @@
 #include "cuda/graph.h"
 
-#include <algorithm>
 #include <cstdio>
+#include <vector>
 
+#include "cuda/graph_exec.h"
 #include "cuda/graph_memory.h"
 #include "env.h"
 
@@ -23,101 +24,86 @@ namespace ctranslate2 {
       std::fflush(stderr);
     }
 
-    // The thread's executable graph, kept between steps and updated in place.
-    static thread_local cudaGraphExec_t step_exec = nullptr;
-    static thread_local long long steps_plain = 0, steps_updated = 0, steps_instantiated = 0, steps_overflowed = 0;
-    static thread_local long long update_failures[16] = {};   // by cudaGraphExecUpdateResult
+    static thread_local std::vector<cudaGraphExec_t> execs;   // per segment of a step, kept between steps
+    static thread_local StepGraph* active = nullptr;
 
     StepGraph::StepGraph(long long step) {
       if (!graphs_enabled())
         return;
       _stream = get_cuda_stream();
       if (_stream == cudaStreamDefault || !begin_step_arena(step, _stream)) {   // legacy stream, or arena in use
-        steps_plain += 1;
+        count_plain_step();
         return;
       }
+      begin_segment();
+      active = this;
+    }
+
+    void StepGraph::begin_segment() {
       // Thread-local: other threads' work (the encoder beside the decoder) is not captured nor restricted.
       CUDA_CHECK(cudaStreamBeginCapture(_stream, cudaStreamCaptureModeThreadLocal));
       _capturing = true;
     }
 
-    void StepGraph::launch() {
-      if (!_capturing)
-        return;
+    void StepGraph::end_segment() {
       _capturing = false;
       cudaGraph_t graph = nullptr;
       CUDA_CHECK(cudaStreamEndCapture(_stream, &graph));
-      const bool memory_nodes = end_step_arena();
-      if (step_exec && !memory_nodes) {
-        cudaGraphExecUpdateResultInfo info;
-        const cudaError_t e = cudaGraphExecUpdate(step_exec, graph, &info);
-        if (e == cudaSuccess) {
-          steps_updated += 1;
-        } else {
-          static bool reported = false;                 // the first failure's error, for the stats
-          if (!reported && read_bool_from_env("CT2_CUDA_GRAPHS_STATS")) {
-            cudaGraphNodeType type = cudaGraphNodeTypeEmpty;
-            if (info.errorNode)
-              cudaGraphNodeGetType(info.errorNode, &type);
-            std::fprintf(stderr, "cuda graphs: update failed: %s (result %d, node type %d)\n",
-                         cudaGetErrorString(e), int(info.result), int(type));
-            reported = true;
-          }
-          update_failures[std::min<int>(int(info.result), 15)] += 1;
-          (void)cudaGetLastError();                     // another topology: instantiate below
-          CUDA_CHECK(cudaGraphExecDestroy(step_exec));
-          step_exec = nullptr;
-        }
-      }
-      if (memory_nodes && step_exec) {                  // a graph with memory nodes is never kept
-        CUDA_CHECK(cudaGraphExecDestroy(step_exec));
-        step_exec = nullptr;
-      }
-      if (!step_exec) {
-        CUDA_CHECK(cudaGraphInstantiate(&step_exec, graph, 0));
-        steps_instantiated += 1;
-      }
-      CUDA_CHECK(cudaGraphLaunch(step_exec, _stream));
-      if (memory_nodes) {
-        steps_overflowed += 1;
-        CUDA_CHECK(cudaGraphExecDestroy(step_exec));    // the launched work completes regardless
-        step_exec = nullptr;
-      }
+      if (execs.size() <= _segment)
+        execs.resize(_segment + 1, nullptr);
+      launch_segment(graph, execs[_segment], segment_memory_nodes(), _stream, _segment);
+      _segment += 1;
       CUDA_CHECK(cudaGraphDestroy(graph));
       release_deferred(_stream);
     }
 
+    void StepGraph::launch() {
+      if (!_capturing)
+        return;
+      end_segment();
+      end_step_arena();
+      active = nullptr;
+    }
+
     StepGraph::~StepGraph() {
       if (_capturing) {                                 // an exception left the step: end the capture
+        _capturing = false;
         cudaGraph_t graph = nullptr;
         cudaStreamEndCapture(_stream, &graph);
-        end_step_arena();
         if (graph)
           cudaGraphDestroy(graph);
+        end_step_arena();
         release_deferred(_stream);
       }
+      if (active == this)
+        active = nullptr;
+    }
+
+    CaptureBreak::CaptureBreak() {
+      if (!active || !active->_capturing)
+        return;
+      _step = active;
+      _step->end_segment();
+      pause_step_arena();
+    }
+
+    CaptureBreak::~CaptureBreak() {
+      if (!_step)
+        return;
+      resume_step_arena();
+      if (cudaStreamBeginCapture(_step->_stream, cudaStreamCaptureModeThreadLocal) == cudaSuccess)
+        _step->_capturing = true;                       // else the rest of the step runs as launched
     }
 
     StepGraphScope::~StepGraphScope() {
       if (!graphs_enabled())
         return;
-      if (step_exec)
-        cudaGraphExecDestroy(step_exec);
-      step_exec = nullptr;
+      for (cudaGraphExec_t exec : execs)
+        if (exec)
+          cudaGraphExecDestroy(exec);
+      execs.clear();
       release_arenas();
-      static const bool stats = read_bool_from_env("CT2_CUDA_GRAPHS_STATS");
-      if (stats) {
-        std::fprintf(stderr, "cuda graphs: %lld updated, %lld instantiated (%lld with memory nodes), %lld plain;"
-                     " update failures by cudaGraphExecUpdateResult:", steps_updated, steps_instantiated,
-                     steps_overflowed, steps_plain);
-        for (int r = 0; r < 16; ++r)
-          if (update_failures[r])
-            std::fprintf(stderr, " %d x%lld", r, update_failures[r]);
-        std::fprintf(stderr, "\n");
-      }
-      steps_plain = steps_updated = steps_instantiated = steps_overflowed = 0;
-      for (long long& n : update_failures)
-        n = 0;
+      report_graph_stats();
     }
 
   }

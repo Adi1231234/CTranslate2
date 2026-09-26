@@ -238,6 +238,8 @@ set(CUDA_SOURCES
   src/cuda/disable_tokens.cu
   src/cuda/encoder_gemm.cu
   src/cuda/graph.cc
+  src/cuda/graph_exec.cc
+  src/cuda/graph_frees.cc
   src/cuda/graph_memory.cc
   src/cuda/green_stream.cc
   src/cuda/persistent.cu

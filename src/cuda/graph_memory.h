@@ -18,13 +18,22 @@ namespace ctranslate2 {
 
     // Before capturing step `step` on `stream`: false when that step's arena still holds live data.
     bool begin_step_arena(long long step, cudaStream_t stream);
-    // After the capture ended: true when an allocation did not fit (the graph then has memory nodes).
-    bool end_step_arena();
+    // After a captured segment ended: true when one of its allocations did not fit (its graph has memory nodes).
+    bool segment_memory_nodes();
+    // After the step's last segment.
+    void end_step_arena();
+    // Between two captured segments of a step (cuda/graph.h CaptureBreak): allocations come from the pool and
+    // frees are immediate; resume returns to the step's arena.
+    void pause_step_arena();
+    void resume_step_arena();
     // During a capture: memory from the step's arena, or null (not capturing, or full).
     void* arena_allocate(size_t size);
     // True when `ptr` is arena memory (its release is only counted).
     bool arena_free(void* ptr);
-    // Allocations of the pool made inside a capture (graph memory), and frees of other memory deferred.
+    // Whether the thread is capturing a segment of a step now.
+    bool capturing_step();
+    // Allocations of the pool made inside a capture (graph memory), and frees of other memory deferred
+    // (cuda/graph_frees.cc).
     void note_allocation(void* ptr);
     bool defer_free(void* ptr);
     void release_deferred(cudaStream_t stream);
