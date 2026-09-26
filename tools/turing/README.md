@@ -103,6 +103,24 @@ with the residue of the 64-key tiles first (av_hmma_probe.cu). Changes:
   copied whole into new buffers at each finish); Conv1D bias + GELU on 16-byte vectors. 35.0 -> 35.4x.
 Tried, not kept: hmma_gemm.cuh (decoder Dense replica, exact on every shape, no faster than cuBLAS with the
 weights coming from DRAM, slower in production); an encode-ahead queue of 2-3 batches (slower).
+
+Store PC, round 3 (25-26.9): 35.4x -> 38.3x (pipe8, 150 clips, 21.2-21.3 s), digest PASS, rows_sha ccbbc32e.
+**Deployed 26.9 as 55f83c7** (D:\ct2build\pyct2 + this runner in the production root; nothing started).
+- On by default: residual add + next pre-norm in one kernel (cuda/residual_norm.cu); row softmax divisions as
+  fma steps from one reciprocal; exact_attention stepping its shared-memory places, and fed straight from the
+  fused projection (exact_attention_qkv); the decoder's cross-attention in one kernel (ops/cross_attention.cuh,
+  only where cuBLAS's arithmetic was matched), with an L2 prefetch 4 steps ahead (CT2_CROSS_AHEAD); one cuBLAS
+  handle per stream of a thread; runner: PIPE_ORDER=desc and the fallback ladder inline.
+- Off by default (opt in): the encoder GEMM's CUTLASS replica (CT2_ENC_GEMM=cutlass, exact); the cross-attention
+  query projection (CT2_CROSS_Q=1, exact, slower); SM partitions on green contexts (CT2_ENCODER_SMS,
+  CT2_SM_PARTITION, slower); NVTX ranges (free without a profiler). Reverted: an L2 prefetch of decoder weights.
+- CT2_CUDA_GRAPHS=1 (the decoder's steps as CUDA graphs, cuda/graph*.cc): 39.4x with identical rows, but a
+  run faults ("unspecified launch failure", a Windows TDR) at a few specific batches in roughly 1 run in 3.
+  compute-sanitizer (stream-ordered races, all 150 clips) is clean after the load fix (cecd31f); ruled out so
+  far: graph updates, memcpy nodes, the pool's cross-stream reuse. Keep it off.
+- Real units (scale/README.md): 30 store-PC units 28.9x vs stock production 12.2x, every deterministic row
+  identical, fallback rows identical to stock under a fixed seed. Kernel probes on the device: softmax_check,
+  ts_check, exact_attention_check all 0 (Smart App Control, which blocks new unsigned DLLs and exes, is off).
 prod_kernels.py lists kernel time by name and launch shape and the GPU idle between kernels;
 kernels/build_probe.ps1 -Gencode builds a probe for another target (compute_86 PTX for the store PC).
 Measure: `python tools/turing/bench_whisper.py <sample_dir> <package parent dir>`.
