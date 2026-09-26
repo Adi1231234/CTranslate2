@@ -50,9 +50,19 @@ namespace ctranslate2 {
       const bool memory_nodes = end_step_arena();
       if (step_exec && !memory_nodes) {
         cudaGraphExecUpdateResultInfo info;
-        if (cudaGraphExecUpdate(step_exec, graph, &info) == cudaSuccess) {
+        const cudaError_t e = cudaGraphExecUpdate(step_exec, graph, &info);
+        if (e == cudaSuccess) {
           steps_updated += 1;
         } else {
+          static bool reported = false;                 // the first failure's error, for the stats
+          if (!reported && read_bool_from_env("CT2_CUDA_GRAPHS_STATS")) {
+            cudaGraphNodeType type = cudaGraphNodeTypeEmpty;
+            if (info.errorNode)
+              cudaGraphNodeGetType(info.errorNode, &type);
+            std::fprintf(stderr, "cuda graphs: update failed: %s (result %d, node type %d)\n",
+                         cudaGetErrorString(e), int(info.result), int(type));
+            reported = true;
+          }
           update_failures[std::min<int>(int(info.result), 15)] += 1;
           (void)cudaGetLastError();                     // another topology: instantiate below
           CUDA_CHECK(cudaGraphExecDestroy(step_exec));
