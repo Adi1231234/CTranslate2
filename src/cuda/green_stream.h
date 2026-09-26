@@ -5,15 +5,15 @@
 namespace ctranslate2 {
   namespace cuda {
 
-    // CT2_ENCODER_SMS=<n> (0, the default: off): a thread's low-priority stream (the encoder's, see
-    // UseLowPriorityStreamInScope) runs its kernels on n SMs only, through a green context (CUDA 12.4+ driver),
-    // while the decoder's streams keep the whole GPU. n is a multiple of 8 (whole SM groups) or the SMs left
-    // after one such split (e.g. 28 or 20 of 36). Only where the kernels run changes, never a result.
-    int encoder_sm_count();
-
-    // A stream on a green context of `sms` SMs of the current device, with the given priority, or null when the
-    // driver cannot make one.
-    cudaStream_t create_green_stream(int sms, int priority);
+    // Where a worker thread's streams run, through green contexts (CUDA 12.4+ driver; only where kernels run
+    // changes, never a result):
+    //   CT2_SM_PARTITION=<decoder SMs>:<encoder SMs> (e.g. 16:20 of 36): disjoint SM sets from one split, the
+    //     thread's normal stream (decoding) on the first, its low-priority stream (Whisper's encoder, see
+    //     UseLowPriorityStreamInScope) on the second. One side is a multiple of 8 (whole SM groups), the other
+    //     the SMs left.
+    //   CT2_ENCODER_SMS=<n>: only the low-priority stream confined to n SMs; the decoder keeps the whole GPU.
+    // Returns a stream for the given side and priority, or null to make a plain stream.
+    cudaStream_t create_partition_stream(bool low, int priority);
 
   }
 }

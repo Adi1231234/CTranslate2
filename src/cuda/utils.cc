@@ -96,8 +96,7 @@ namespace ctranslate2 {
           _stream = cudaStreamDefault;
         } else {
           CUDA_CHECK(cudaGetDevice(&_device));
-          const int sms = low ? encoder_sm_count() : 0;           // the encoder on part of the GPU (green_stream.h)
-          _stream = sms > 0 ? create_green_stream(sms, stream_priority(low)) : nullptr;
+          _stream = create_partition_stream(low, stream_priority(low));   // on part of the GPU (green_stream.h)
           if (!_stream)
             CUDA_CHECK(cudaStreamCreateWithPriority(&_stream, cudaStreamDefault, stream_priority(low)));
         }
