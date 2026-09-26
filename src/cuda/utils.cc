@@ -129,10 +129,23 @@ namespace ctranslate2 {
         CUDA_CHECK(cudaGetDevice(&_device));
         CUBLAS_CHECK(cublasCreate(&_handle));
         CUBLAS_CHECK(cublasSetStream(_handle, get_cuda_stream()));
+        if (graphs_enabled()) {
+          // Inside a captured step cuBLAS would allocate its workspace with stream-ordered allocations, which
+          // become graph memory nodes (no in-place update): a workspace of its own, the size of cuBLAS's default
+          // pool on this GPU, so the same routines are chosen (cuBLAS 12.9 cublasSetWorkspace: 32 MiB on sm_90
+          // and sm_10x, 12 MiB on sm_12x, 4 MiB otherwise). Set after cublasSetStream, which resets it.
+          cudaDeviceProp prop;
+          CUDA_CHECK(cudaGetDeviceProperties(&prop, _device));
+          _workspace_size = size_t(prop.major == 12 ? 12 : prop.major >= 9 ? 32 : 4) << 20;
+          CUDA_CHECK(cudaMalloc(&_workspace, _workspace_size));
+          CUBLAS_CHECK(cublasSetWorkspace(_handle, _workspace, _workspace_size));
+        }
       }
       ~CublasHandle() {
         ScopedDeviceSetter scoped_device_setter(Device::CUDA, _device);
         cublasDestroy(_handle);
+        if (_workspace)
+          cudaFree(_workspace);
       }
       cublasHandle_t get() const {
         return _handle;
@@ -140,6 +153,8 @@ namespace ctranslate2 {
     private:
       int _device;
       cublasHandle_t _handle;
+      void* _workspace = nullptr;
+      size_t _workspace_size = 0;
     };
 
     // We create one cuBLAS/cuDNN handle per host thread. The handle is destroyed

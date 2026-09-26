@@ -101,6 +101,12 @@ extern "C" {
     return func(handle, stream);
   }
 
+  cublasStatus_t cublasSetWorkspace_v2(cublasHandle_t handle, void* workspace, size_t size) {
+    using Signature = cublasStatus_t(*)(cublasHandle_t, void*, size_t);
+    static auto func = ctranslate2::load_symbol<Signature>("cublasSetWorkspace_v2");
+    return func(handle, workspace, size);
+  }
+
   cublasStatus_t cublasGetMathMode(cublasHandle_t handle, cublasMath_t *mode) {
     using Signature = cublasStatus_t(*)(cublasHandle_t, cublasMath_t*);
     static auto func = ctranslate2::load_symbol<Signature>("cublasGetMathMode");
