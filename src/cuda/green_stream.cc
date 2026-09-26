@@ -1,6 +1,7 @@
 #include "cuda/green_stream.h"
 
 #include <cuda.h>
+#include <spdlog/spdlog.h>
 
 #include "cuda/utils.h"
 #include "env.h"
@@ -24,6 +25,12 @@ namespace ctranslate2 {
       return reinterpret_cast<F>(fn);
     }
 
+    // The encoder keeps the whole GPU when a requested partition cannot be made: says which step failed.
+    static cudaStream_t failed(const char* step, int code) {
+      spdlog::warn("CT2_ENCODER_SMS: {} failed ({}), the encoder uses the whole GPU", step, code);
+      return nullptr;
+    }
+
     cudaStream_t create_green_stream(int sms, int priority) {
       const auto device_get = driver_function<CUresult (*)(CUdevice*, int)>("cuDeviceGet");
       const auto get_resource = driver_function<CUresult (*)(CUdevice, CUdevResource*, CUdevResourceType)>(
@@ -37,28 +44,39 @@ namespace ctranslate2 {
         "cuGreenCtxCreate");
       const auto stream_create = driver_function<CUresult (*)(CUstream*, CUgreenCtx, unsigned, int)>(
         "cuGreenCtxStreamCreate");
+      if (!device_get || !get_resource || !split || !describe || !create || !stream_create)
+        return failed("finding the driver's green context functions", 0);
       int ordinal = 0;
       CUdevice device;
       CUdevResource all, rest, groups[8];
-      if (!device_get || !get_resource || !split || !describe || !create || !stream_create
-          || cudaGetDevice(&ordinal) != cudaSuccess || device_get(&device, ordinal) != CUDA_SUCCESS
-          || get_resource(device, &all, CU_DEV_RESOURCE_TYPE_SM) != CUDA_SUCCESS
-          || sms <= 0 || unsigned(sms) >= all.sm.smCount)
-        return nullptr;
+      CUresult r = device_get(&device, cudaGetDevice(&ordinal) == cudaSuccess ? ordinal : 0);
+      if (r != CUDA_SUCCESS)
+        return failed("cuDeviceGet", r);
+      if ((r = get_resource(device, &all, CU_DEV_RESOURCE_TYPE_SM)) != CUDA_SUCCESS)
+        return failed("cuDeviceGetDevResource", r);
+      if (sms <= 0 || unsigned(sms) >= all.sm.smCount)
+        return failed("checking the SM count", int(all.sm.smCount));
       constexpr unsigned group = 8;                                // this GPU's SM group size
       const bool whole_groups = sms % group == 0;
       const unsigned wanted = whole_groups ? unsigned(sms) / group : 1;
       unsigned count = wanted;
-      if (wanted > 8 || split(groups, &count, &all, &rest, 0, whole_groups ? group : all.sm.smCount - sms)
-                          != CUDA_SUCCESS || count != wanted)
-        return nullptr;
+      if (wanted > 8)
+        return failed("checking the SM count", sms);
+      if ((r = split(groups, &count, &all, &rest, 0, whole_groups ? group : all.sm.smCount - sms)) != CUDA_SUCCESS)
+        return failed("cuDevSmResourceSplitByCount", r);
+      if (count != wanted)
+        return failed("splitting into SM groups", int(count));
       CUdevResourceDesc desc;
       CUgreenCtx context;                                          // lives as long as the process
-      CUstream stream = nullptr;                                   // green context streams must be non-blocking
-      if (describe(&desc, whole_groups ? groups : &rest, whole_groups ? count : 1) != CUDA_SUCCESS
-          || create(&context, desc, device, CU_GREEN_CTX_DEFAULT_STREAM) != CUDA_SUCCESS
-          || stream_create(&stream, context, CU_STREAM_NON_BLOCKING, priority) != CUDA_SUCCESS)
-        return nullptr;
+      CUstream stream = nullptr;
+      if ((r = describe(&desc, whole_groups ? groups : &rest, whole_groups ? count : 1)) != CUDA_SUCCESS)
+        return failed("cuDevResourceGenerateDesc", r);
+      if ((r = create(&context, desc, device, CU_GREEN_CTX_DEFAULT_STREAM)) != CUDA_SUCCESS)
+        return failed("cuGreenCtxCreate", r);
+      // Green context streams must be non-blocking.
+      if ((r = stream_create(&stream, context, CU_STREAM_NON_BLOCKING, priority)) != CUDA_SUCCESS)
+        return failed("cuGreenCtxStreamCreate", r);
+      spdlog::info("CT2_ENCODER_SMS: the encoder runs on {} of {} SMs", sms, all.sm.smCount);
       return reinterpret_cast<cudaStream_t>(stream);
     }
 
