@@ -35,18 +35,21 @@ for n, (a, b, before, after) in enumerate(gaps):
         print(f"\n@{(a - t0) / 1e6:9.1f} ms gap {(b - a) / 1e6:6.2f} ms after {before[:30]} before {after[:30]}")
     for tid, v in calls.items():
         lo, hi = bisect.bisect_left(v, (a,)), bisect.bisect_left(v, (b,))
-        inside = v[lo:hi]
+        inside = ([v[lo - 1]] if lo > 0 and v[lo - 1][1] > a else []) + v[lo:hi]   # with a call still running
         if not inside:
             continue
         by = collections.Counter()
         for s, e, name in inside:
-            by[name] += min(e, b) - s
-            total[name] += min(e, b) - s
-        edges = [a] + [x for s, e, _ in inside for x in (s, e)] + [b]
+            by[name] += min(e, b) - max(s, a)
+            total[name] += min(e, b) - max(s, a)
+        edges = [a] + [min(max(x, a), b) for s, e, _ in inside for x in (s, e)] + [b]
         free = max(edges[i + 1] - edges[i] for i in range(0, len(edges) - 1, 2))
         if show:
             top = ", ".join(f"{k} {t / 1e6:.2f}ms x{sum(1 for *_, m in inside if m == k)}" for k, t in by.most_common(3))
-            print(f"   thread {tid & 0xFFFFFF:6d}: {len(inside):5d} calls, longest free {free / 1e6:6.2f} ms; {top}")
+            order = " > ".join(f"{m}@{(max(s, a) - a) / 1e6:.0f}+{(min(e, b) - max(s, a)) / 1e6:.1f}"
+                               for s, e, m in inside if min(e, b) - max(s, a) > 1e6)
+            print(f"   thread {tid & 0xFFFFFF:6d}: {len(inside):5d} calls, longest free {free / 1e6:6.2f} ms; {top}"
+                  + (f"\n      calls over 1 ms (at+ms): {order}" if order else ""))
 print("\ntime inside CUDA calls during all these gaps, by call:")
 for k, t in total.most_common(10):
     print(f"  {t / 1e6:9.1f} ms  {k}")
