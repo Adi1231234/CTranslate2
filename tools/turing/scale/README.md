@@ -15,6 +15,10 @@ rows the stock wheel wrote in the production run.
 - `seeded.py <runner_dir> <list> <out.jsonl> [build]`: those clips through the sequential ladder on one worker
   with a fixed seed; the stock wheel twice (the control) and the build must give the same `rows_sha`.
 - `speed.py <production progress.log> <scale progress.log>`: the two runs' wall time on the same units.
+- `prefetch.py <runner_dir> <list> <cache dir> [threads]`: fetches a list's row groups into the run cache
+  (`scale_run.ps1 -Cache`, `RUN_CACHE` for `seeded.py`), network only, so it can run beside a GPU job.
+- `truncated.py <output dir>... > list.txt`: the `batch8` rows that stop over 1 s before their clip's end, as
+  `seeded.py` lines. Batched decoding can end a clip early; the sequential path transcribes such clips to the end.
 
 ## Result 25.9 (store PC, build G = e9d176b, runner with the feature cache, pipe8, cpu_threads=1)
 
