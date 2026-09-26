@@ -1,13 +1,20 @@
 """Who makes the GPU wait between kernels: each idle gap before a kernel (GPU-wide, all streams) is put down to
 the host when the kernel's launch call returned after the previous kernel had already ended (the GPU had
 nothing queued), else to the GPU (the kernel was queued in time; the gap is launch latency). Needs an nsys
-profile with --trace=cuda (runtime API records).
-usage: nsys_launch.py <profile.sqlite>"""
+profile with --trace=cuda (runtime API records). --decoder: only the decoder's streams of a pipelined profile
+(their idle moments, whether or not the encoder runs then).
+usage: nsys_launch.py <profile.sqlite> [--decoder]"""
 import collections, sqlite3, sys
 
 db = sqlite3.connect(sys.argv[1])
 api = dict(db.execute("SELECT correlationId, end FROM CUPTI_ACTIVITY_KIND_RUNTIME"))
-rows = db.execute("SELECT start, end, correlationId FROM CUPTI_ACTIVITY_KIND_KERNEL ORDER BY start").fetchall()
+rows = db.execute("SELECT start, end, correlationId, streamId FROM CUPTI_ACTIVITY_KIND_KERNEL ORDER BY start").fetchall()
+if "--decoder" in sys.argv:                          # only the decoder's streams (kernels averaging <= 100 us)
+    times = collections.defaultdict(list)
+    for s, e, _, st in rows:
+        times[st].append(e - s)
+    rows = [r for r in rows if sum(times[r[3]]) / len(times[r[3]]) <= 100_000]
+rows = [r[:3] for r in rows]
 buckets = [(3e3, "<3 us"), (10e3, "3-10 us"), (100e3, "10-100 us"), (1e6, "0.1-1 ms"), (float("inf"), ">=1 ms")]
 host, gpu = collections.Counter(), collections.Counter()
 nh, ng = collections.Counter(), collections.Counter()
