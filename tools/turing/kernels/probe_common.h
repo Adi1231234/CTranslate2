@@ -15,6 +15,16 @@
 
 inline uint16_t half_bits(__half h) { uint16_t b; memcpy(&b, &h, 2); return b; }
 
+// The library's CUDA_CHECK (cuda/utils.h, in headers some probes include) reports a failed call through this
+// function (src/cuda/graph.cc). A probe links no library, so it defines it: one translation unit per probe.
+namespace ctranslate2 {
+  namespace cuda {
+    void report_failure(const char* call, const char* file, int line, const char* error) {
+      fprintf(stderr, "%s:%d: %s failed: %s\n", file, line, call, error);
+    }
+  }
+}
+
 struct Probe {
   int batch, m, n, k;
   __half *dQ, *dK, *dC;
