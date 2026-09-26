@@ -4,6 +4,9 @@
 // Systems is attached), so host phases such as a generate() call's prompt and decoding line up with their GPU
 // work in a profile (nsys --trace=cuda,nvtx).
 
+#if defined(_WIN32) && !defined(NOMINMAX)
+#  define NOMINMAX            // nvToolsExt.h includes windows.h, whose min and max macros break std::min
+#endif
 #include <nvtx3/nvToolsExt.h>
 
 namespace ctranslate2 {
