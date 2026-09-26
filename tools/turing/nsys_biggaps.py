@@ -16,7 +16,8 @@ if "--decoder" in sys.argv:
     times = collections.defaultdict(list)
     for s, e, _, st in kern:
         times[st].append(e - s)
-    kern = [k for k in kern if sum(times[k[3]]) / len(times[k[3]]) <= 100_000]
+    decoder = {st for st, d in times.items() if sum(d) / len(d) <= 100_000}
+    kern = [k for k in kern if k[3] in decoder]
 busy, last = [], []                               # merged busy intervals, index of their last kernel
 for i, (s, e, _, _) in enumerate(kern):
     if busy and s <= busy[-1][1]:

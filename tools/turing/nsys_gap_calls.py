@@ -13,7 +13,8 @@ kern = sorted(db.execute("SELECT start, end, streamId, shortName FROM CUPTI_ACTI
 times = collections.defaultdict(list)
 for s, e, st, _ in kern:
     times[st].append(e - s)
-dec = [k for k in kern if sum(times[k[2]]) / len(times[k[2]]) <= 100_000]
+decoder = {st for st, d in times.items() if sum(d) / len(d) <= 100_000}
+dec = [k for k in kern if k[2] in decoder]
 gaps, end, last = [], None, None
 for s, e, st, n in dec:
     if end is not None and s - end >= MIN:

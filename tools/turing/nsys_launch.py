@@ -13,7 +13,8 @@ if "--decoder" in sys.argv:                          # only the decoder's stream
     times = collections.defaultdict(list)
     for s, e, _, st in rows:
         times[st].append(e - s)
-    rows = [r for r in rows if sum(times[r[3]]) / len(times[r[3]]) <= 100_000]
+    decoder = {st for st, d in times.items() if sum(d) / len(d) <= 100_000}
+    rows = [r for r in rows if r[3] in decoder]
 rows = [r[:3] for r in rows]
 buckets = [(3e3, "<3 us"), (10e3, "3-10 us"), (100e3, "10-100 us"), (1e6, "0.1-1 ms"), (float("inf"), ">=1 ms")]
 host, gpu = collections.Counter(), collections.Counter()
