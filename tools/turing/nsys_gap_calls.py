@@ -9,16 +9,17 @@ db = sqlite3.connect(sys.argv[1])
 MIN = float(sys.argv[2] if len(sys.argv) > 2 else 1) * 1e6
 LIST = int(sys.argv[3]) if len(sys.argv) > 3 else 12
 S = dict(db.execute("SELECT id, value FROM StringIds"))
-kern = sorted(db.execute("SELECT start, end, streamId, shortName FROM CUPTI_ACTIVITY_KIND_KERNEL"))
+kern = sorted(db.execute("SELECT start, end, streamId, shortName, correlationId FROM CUPTI_ACTIVITY_KIND_KERNEL"))
+launch = {cid: (s, tid) for cid, s, tid in db.execute("SELECT correlationId, start, globalTid FROM CUPTI_ACTIVITY_KIND_RUNTIME")}
 times = collections.defaultdict(list)
-for s, e, st, _ in kern:
+for s, e, st, *_ in kern:
     times[st].append(e - s)
 decoder = {st for st, d in times.items() if sum(d) / len(d) <= 100_000}
 dec = [k for k in kern if k[2] in decoder]
 gaps, end, last = [], None, None
-for s, e, st, n in dec:
+for s, e, st, n, cid in dec:
     if end is not None and s - end >= MIN:
-        gaps.append((end, s, S.get(last, "?"), S.get(n, "?")))
+        gaps.append((end, s, S.get(last, "?"), S.get(n, "?"), cid, st))
     if end is None or e > end:
         end, last = e, n
 calls = collections.defaultdict(list)
@@ -29,10 +30,13 @@ for v in calls.values():
 total = collections.Counter()
 t0 = dec[0][0]
 print(f"{len(gaps)} decoder gaps >= {MIN / 1e6:g} ms, {sum(b - a for a, b, *_ in gaps) / 1e6:.0f} ms")
-for n, (a, b, before, after) in enumerate(gaps):
+for n, (a, b, before, after, cid, stream) in enumerate(gaps):
     show = n < LIST
     if show:
-        print(f"\n@{(a - t0) / 1e6:9.1f} ms gap {(b - a) / 1e6:6.2f} ms after {before[:30]} before {after[:30]}")
+        host, tid = launch.get(cid, (None, 0))
+        when = f"launched at gap +{(host - a) / 1e6:.1f} ms by thread {tid & 0xFFFFFF}" if host else "launch unknown"
+        print(f"\n@{(a - t0) / 1e6:9.1f} ms gap {(b - a) / 1e6:6.2f} ms after {before[:30]} before {after[:30]}"
+              f" (stream {stream}, {when})")
     for tid, v in calls.items():
         lo, hi = bisect.bisect_left(v, (a,)), bisect.bisect_left(v, (b,))
         inside = ([v[lo - 1]] if lo > 0 and v[lo - 1][1] > a else []) + v[lo:hi]   # with a call still running
