@@ -1,5 +1,6 @@
 #include "cuda/graph.h"
 
+#include <algorithm>
 #include <cstdio>
 
 #include "cuda/graph_memory.h"
@@ -25,6 +26,7 @@ namespace ctranslate2 {
     // The thread's executable graph, kept between steps and updated in place.
     static thread_local cudaGraphExec_t step_exec = nullptr;
     static thread_local long long steps_plain = 0, steps_updated = 0, steps_instantiated = 0, steps_overflowed = 0;
+    static thread_local long long update_failures[16] = {};   // by cudaGraphExecUpdateResult
 
     StepGraph::StepGraph(long long step) {
       if (!graphs_enabled())
@@ -51,6 +53,7 @@ namespace ctranslate2 {
         if (cudaGraphExecUpdate(step_exec, graph, &info) == cudaSuccess) {
           steps_updated += 1;
         } else {
+          update_failures[std::min<int>(int(info.result), 15)] += 1;
           (void)cudaGetLastError();                     // another topology: instantiate below
           CUDA_CHECK(cudaGraphExecDestroy(step_exec));
           step_exec = nullptr;
@@ -93,10 +96,18 @@ namespace ctranslate2 {
       step_exec = nullptr;
       release_arenas();
       static const bool stats = read_bool_from_env("CT2_CUDA_GRAPHS_STATS");
-      if (stats)
-        std::fprintf(stderr, "cuda graphs: %lld updated, %lld instantiated (%lld with memory nodes), %lld plain\n",
-                     steps_updated, steps_instantiated, steps_overflowed, steps_plain);
+      if (stats) {
+        std::fprintf(stderr, "cuda graphs: %lld updated, %lld instantiated (%lld with memory nodes), %lld plain;"
+                     " update failures by cudaGraphExecUpdateResult:", steps_updated, steps_instantiated,
+                     steps_overflowed, steps_plain);
+        for (int r = 0; r < 16; ++r)
+          if (update_failures[r])
+            std::fprintf(stderr, " %d x%lld", r, update_failures[r]);
+        std::fprintf(stderr, "\n");
+      }
       steps_plain = steps_updated = steps_instantiated = steps_overflowed = 0;
+      for (long long& n : update_failures)
+        n = 0;
     }
 
   }

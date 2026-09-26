@@ -102,10 +102,18 @@ namespace ctranslate2 {
         }
       }
       ~CudaStream() {
-        if (_stream != cudaStreamDefault) {
-          ScopedDeviceSetter scoped_device_setter(Device::CUDA, _device);
-          cudaStreamDestroy(_stream);
-        }
+        if (_stream == cudaStreamDefault)
+          return;
+        // The main thread's stream (a created one when graphs are on) goes at process exit, when the runtime may
+        // be unloading already: then there is nothing to release, and nothing may throw here.
+        int current = -1;
+        if (cudaGetDevice(&current) != cudaSuccess)
+          return;
+        if (current != _device)
+          cudaSetDevice(_device);
+        cudaStreamDestroy(_stream);
+        if (current != _device)
+          cudaSetDevice(current);
       }
       cudaStream_t get() const {
         return _stream;

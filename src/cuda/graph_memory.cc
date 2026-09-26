@@ -51,11 +51,13 @@ namespace ctranslate2 {
       if (a.live > 0)
         return false;
       a.released = other.released = false;
-      const size_t want = std::max(a.peak, other.peak) + (size_t(32) << 20);   // a step grows the caches a little
+      // A step needs a little more than the one before (the caches grow by one position): the larger of the two
+      // last peaks and a margin, no more (the arenas hold what the pool would hold at once, old and new caches).
+      const size_t want = std::max(a.peak, other.peak) + (size_t(64) << 20);
       if (a.capacity < want || a.overflowed) {
         free_buffer(a);
         a.stream = stream;
-        a.capacity = want + want / 2;
+        a.capacity = want;
         CUDA_CHECK(cudaMallocAsync(reinterpret_cast<void**>(&a.base), a.capacity, stream));
         a.overflowed = false;
       }
