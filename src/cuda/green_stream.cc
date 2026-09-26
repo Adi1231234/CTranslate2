@@ -14,14 +14,17 @@ namespace ctranslate2 {
       return sms;
     }
 
-    // A driver API function of CUDA 12.4 (green contexts), from the driver in use; null when it has none.
+    // A driver API function (green contexts: CUDA 12.4, their streams 12.5) as of the runtime this library is built
+    // with, from the driver in use; null when it has none.
     template <typename F>
     static F driver_function(const char* name) {
       void* fn = nullptr;
-      cudaDriverEntryPointQueryResult found;
-      if (cudaGetDriverEntryPointByVersion(name, &fn, 12040, cudaEnableDefault, &found) != cudaSuccess
-          || found != cudaDriverEntryPointSuccess)
+      cudaDriverEntryPointQueryResult found = cudaDriverEntryPointSymbolNotFound;
+      const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &fn, CUDART_VERSION, cudaEnableDefault, &found);
+      if (e != cudaSuccess || found != cudaDriverEntryPointSuccess) {
+        spdlog::warn("CT2_ENCODER_SMS: no driver entry point {} (error {}, status {})", name, int(e), int(found));
         return nullptr;
+      }
       return reinterpret_cast<F>(fn);
     }
 
