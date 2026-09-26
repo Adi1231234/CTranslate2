@@ -1,15 +1,22 @@
 """The long GPU idle gaps one by one, from a sampled Nsight Systems report exported to SQLite: when each
 gap starts, the kernels around it, and per host thread the CUDA call it was inside and its innermost
-python frames during the gap (CPU samples, --python-sampling=true).
-usage: nsys_biggaps.py <report.sqlite> [min_gap_ms=5]"""
+python frames during the gap (CPU samples, --python-sampling=true). --decoder: the gaps of the decoder's
+streams of a pipelined profile (kernels averaging <= 100 us), whether or not the encoder runs then.
+usage: nsys_biggaps.py <report.sqlite> [min_gap_ms=5] [--decoder]"""
 import sys, sqlite3, bisect, collections
 
-db = sqlite3.connect(sys.argv[1])
-MIN_GAP = float(sys.argv[2] if len(sys.argv) > 2 else 5) * 1e6
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+db = sqlite3.connect(args[0])
+MIN_GAP = float(args[1] if len(args) > 1 else 5) * 1e6
 S = dict(db.execute("SELECT id, value FROM StringIds"))
 pid = db.execute("SELECT globalPid FROM CUPTI_ACTIVITY_KIND_KERNEL LIMIT 1").fetchone()[0]
 kern = sorted((s, e, S.get(n, "?"), st) for s, e, n, st in
               db.execute("SELECT start, end, shortName, streamId FROM CUPTI_ACTIVITY_KIND_KERNEL"))
+if "--decoder" in sys.argv:
+    times = collections.defaultdict(list)
+    for s, e, _, st in kern:
+        times[st].append(e - s)
+    kern = [k for k in kern if sum(times[k[3]]) / len(times[k[3]]) <= 100_000]
 busy, last = [], []                               # merged busy intervals, index of their last kernel
 for i, (s, e, _, _) in enumerate(kern):
     if busy and s <= busy[-1][1]:
