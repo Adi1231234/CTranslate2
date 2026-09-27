@@ -1,7 +1,9 @@
 """Summary of a ladder_recorder log (seeded.py LADDER_LOG): per window, each attempt's temperature, token counts
-(the kept hypothesis first, then the longest), whether a hypothesis used the whole token budget (a 30 s window
-decodes at most 448 - prompt tokens, or 224 with the capped build: `budget`), compression ratio, avg log-prob,
-pass or fail, and seconds; then totals: time in attempts that reached the budget and in the others.
+(the kept hypothesis first, then the longest), whether a hypothesis ran to the token budget, compression ratio,
+avg log-prob, pass or fail, and seconds; then totals: time in attempts that reached the budget and in the others.
+The budget (`whisper.cc`): the prompt's last token starts the decode, so 448 - (prompt - 1) steps are left, or
+224 with the capped build. Measured 27.9 with the 3-token prompt: at the full budget (446) a beam returns 444
+tokens and a sample 444-446, so a hypothesis within 2 tokens of the budget counts as reaching it.
 usage: ladder_report.py <ladder log> <budget: capped | full> [--brief]"""
 import json, sys
 
@@ -10,7 +12,8 @@ brief = "--brief" in sys.argv
 
 
 def budget(prompt):
-    return min(224, 448 - prompt) if BUDGET == "capped" else 448 - prompt
+    left = 448 - (prompt - 1)
+    return min(224, left) if BUDGET == "capped" else left
 
 
 tot = {"clips": 0, "windows": 0, "attempts": 0, "secs": 0.0, "at_budget": 0, "secs_at_budget": 0.0,
@@ -25,7 +28,7 @@ for line in open(LOG, encoding="utf-8"):
         atts = win["attempts"]
         tot["all_failed_windows"] += not any(a["passes"] for a in atts)
         for a in atts:
-            full = max(a["n"]) >= budget(a["prompt"])
+            full = max(a["n"]) >= budget(a["prompt"]) - 2
             tot["attempts"] += 1; tot["secs"] += a["secs"]
             tot["at_budget"] += full; tot["secs_at_budget"] += a["secs"] * full
             tot["cr_fail"] += a["cr"] > 2.4; tot["lp_fail"] += a["avg_lp"] < -1.0
