@@ -56,3 +56,11 @@ Stock and the deployed build (55f83c7) through the production runner, pipe8, fro
 bytes): stock 61 min (13.6x), build 27 min (30.3x). `compare.py`: 10,006 rows, 0 deterministic differences
 (one of them a fallback row at T=0); 23 rows decoded at a sampling temperature, all equal under `seeded.py`
 (stock twice and the build: `d58e9dfc63231d7c`). The stock output is the deliverable.
+
+## Batch rows re-run on the sequential path (27.9, store PC)
+
+`truncated.py` over the crowd-v5 file's batch rows and the 125 laptop units re-run with the build (pipe8, 31.8x):
+4,607 rows (4,379 + 228), `seeded.py` with stock in 115 min (`970c93b630395ca7`). 3,805 came out identical and
+802 changed; in 615 the batch text is a prefix of the sequential one (a clip cut short), and the sequential text is
+closer to the human one in 724 rows vs 42 (mean CER 0.130 -> 0.098). The 1 s gap over-selects: 3,913 of the
+sequential rows also end over 1 s early (silence at the clip's end), so it finds cut-offs, it does not prove one.
