@@ -86,8 +86,8 @@ The store-pc library (611cf1c, built for 7.5) against Yarin's last tuned build e
 gate PASS (probes 0, bench 60/90/118, pipe8 262ababd, exact2 a83ba880). 150 sample clips, 5 alternated rounds:
 GPU time -2.5% and wall -2.2% in every round (765k vs 876k kernels); the fork runner vs Yarin's old one -1.1% wall;
 PIPE_ORDER desc = asc there. The pool reserves ~0.7 GB more (7.3 vs 6.6 GB, used equal) but 30 real units show no
-paging (shared peak 119 MB both): 18.41x vs 18.30x, `compare.py` IDENTICAL. Launch on Yarin through WMI
-(Win32_Process Create): a child of the mesh session inherits MeshAgent's BelowNormal priority and stalled at start.
+paging (shared peak 119 MB both): 18.41x vs 18.30x, `compare.py` IDENTICAL. The first run after idle on Yarin reads
+the model from a cold HDD: two digests hit the 300 s limit (the next ones took 26 s), so warm it or discard it.
 
 Full context (store-pc-fullctx 25cc1a32) on the same 30 units: 2,878 of 2,894 deterministic rows identical; 14 of the
 16 others were cut short and now reach the clip's end (e.g. 66 -> 120 words). Cost 856 -> 934 s (+9%): the ladder
