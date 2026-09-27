@@ -19,6 +19,9 @@ rows the stock wheel wrote in the production run.
   (`scale_run.ps1 -Cache`, `RUN_CACHE` for `seeded.py`), network only, so it can run beside a GPU job.
 - `truncated.py <output dir>... > list.txt`: the `batch8` rows that stop over 1 s before their clip's end, as
   `seeded.py` lines. Batched decoding can end a clip early; the sequential path transcribes such clips to the end.
+- `seeded.py` with `LADDER_LOG=<file>` also writes every attempt of the temperature ladder (`ladder_recorder.py`:
+  temperature, token counts, compression ratio, log-prob, pass or fail, seconds, tokens); `ladder_report.py <file>
+  capped|full [--brief]` sums it and marks where a repetition loop begins. The rows do not change with it.
 
 ## Result 25.9 (store PC, build G = e9d176b, runner with the feature cache, pipe8, cpu_threads=1)
 
@@ -92,4 +95,27 @@ the model from a cold HDD: two digests hit the 300 s limit (the next ones took 2
 Full context (store-pc-fullctx 25cc1a32) on the same 30 units: 2,878 of 2,894 deterministic rows identical; 14 of the
 16 others were cut short and now reach the clip's end (e.g. 66 -> 120 words). Cost 856 -> 934 s (+9%): the ladder
 took 180 s vs 114 s, since a repetition loop now decodes up to 445 tokens per attempt, and 2 clips cut at 20-21 s
-of 29 s now fail the thresholds at full length and go to the ladder (+23 s each).
+of 29 s now fail the thresholds at full length and go to the ladder (+23 s each). (Measured below: loops are the
+smaller part.)
+
+## Where the full context's ladder time goes, and why an early loop stop cannot keep every row (27.9, Yarin)
+
+The 12 fallback clips of those 30 units through `seeded.py LADDER_LOG` (one worker, seed 1234; GPU time of the
+generate() calls): full context 62 attempts, 176.3 s; store-pc 56 attempts, 128.5 s. Control: the full-context run
+without the recorder gives the same `rows_sha` (d95b8813964a2c42).
+- **Loops are 7 of the 62 attempts, 32.4 s.** Five are one 2.3 s clip (a token repeated from step 2); the others
+  begin at steps 120 and 282. The other 55 attempts are normal text of 160-321 tokens that fail the compression
+  ratio by a hair (2.40-2.69; log-prob fails 1 of 62). The 2 clips new to the ladder have no loop at all.
+- **Why: a whole window of dense Hebrew compresses to ~2.4 by its length.** Over all 224,446 human crowd-v5
+  transcripts the median ratio grows with length: 1.08 under 100 UTF-8 bytes, 2.06 at 400-499, 2.38 at 800-899;
+  above 2.4 are 40% of the 800-899-byte ones and 64% of the 900-999-byte ones, most without a repeated word 3-gram.
+  With the 224-token cap a window rarely holds that much; with the full context 7 of 14 windows fail every attempt
+  (store-pc: 4 of 15).
+- **An early stop changes rows.** (1) When every attempt fails, faster-whisper returns the best avg log-prob, among
+  all attempts if none is under 2.4: seeded, 2 of the 12 rows are a 444-token loop (ratio 5.09 and 5.66), which
+  any earlier stop changes. (2) A sampled attempt draws one Philox number per live row per step from per-row
+  states that persist across calls (`src/cuda/random.cu`, `ops/multinomial_gpu.cu`), so stopping one changes every
+  later sampled attempt. (3) A prefix does not bound the text still to come, so no stop short of the end proves
+  that an attempt fails.
+- **Upper bound of the gain:** stopping each loop two periods after it begins saves 24.5 s of the 176.3 s; with the
+  batched path's +12 s at most that is under half of the +78 s.
