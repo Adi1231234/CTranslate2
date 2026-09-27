@@ -119,3 +119,18 @@ without the recorder gives the same `rows_sha` (d95b8813964a2c42).
   that an attempt fails.
 - **Upper bound of the gain:** stopping each loop two periods after it begins saves 24.5 s of the 176.3 s; with the
   batched path's +12 s at most that is under half of the +78 s.
+
+## The whole of crowd-v5 again with the full context (27-28.9, Yarin and the store PC)
+
+Library 25cc1a32 and runner 2f74fea (`runner/resume.py`), pipe8, inline fallback. Before the run: the whole gate on
+Yarin (all stock hashes), and on 30 units only the 2 clips that `resume.py` sends on changed, each by its missing
+end; on the store PC the digest differs only in the three 448-token cases. Yarin 14:45-01:35, 1,418 units at 18.6x;
+the store PC 20:01-01:38, 850 units at 22.2x; no restart on either. Merged: 224,538 rows, `verify_merge` and
+`check.py` without problems (5 segments past the clip's end, 7 before).
+- Against the file of 27.9 (sha 99D987FF): the text changed in 1,625 rows (0.72%), 1,043 of them deterministic and
+  582 decoded at a sampling temperature. In 142 the old text is the start of the new one (a cut row completed);
+  908 words were added in all.
+- Deterministic changed rows against the human text (7 with an empty one left out, CER capped at 5): mean CER
+  0.0841 -> 0.0829, median 0.0476 -> 0.0441, the new text closer in 406 rows and the old one in 304.
+- The whole file: mean CER 0.0463 in both, 356 hallucination rows (CER >= 1, over twice the human length) in
+  both, outputs with a compression ratio over 2.4: 486 -> 457.
