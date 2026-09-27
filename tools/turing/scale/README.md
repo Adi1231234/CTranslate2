@@ -79,3 +79,17 @@ transcribed 21 of the 24 `batch8` ones further (376 words), and 21 of the 23 cut
   from there (22 of 24); `BatchedInferencePipeline.forward` ignores it (1.2.1 and master, 11.2025), so the rest of
   the clip is lost. The runner's fallback tests (empty, compression ratio, log-prob) do not see it.
 - The 2 other cut rows ended in a single timestamp: the batched decode itself stopped earlier (fp16 batch drift).
+
+## Yarin (RTX 2080, sm_75) after the store-PC work, and the full-context fix (27.9)
+
+The store-pc library (611cf1c, built for 7.5) against Yarin's last tuned build e1a636e: digest and the whole release
+gate PASS (probes 0, bench 60/90/118, pipe8 262ababd, exact2 a83ba880). 150 sample clips, 5 alternated rounds:
+GPU time -2.5% and wall -2.2% in every round (765k vs 876k kernels); the fork runner vs Yarin's old one -1.1% wall;
+PIPE_ORDER desc = asc there. The pool reserves ~0.7 GB more (7.3 vs 6.6 GB, used equal) but 30 real units show no
+paging (shared peak 119 MB both): 18.41x vs 18.30x, `compare.py` IDENTICAL. Launch on Yarin through WMI
+(Win32_Process Create): a child of the mesh session inherits MeshAgent's BelowNormal priority and stalled at start.
+
+Full context (store-pc-fullctx 25cc1a32) on the same 30 units: 2,878 of 2,894 deterministic rows identical; 14 of the
+16 others were cut short and now reach the clip's end (e.g. 66 -> 120 words). Cost 856 -> 934 s (+9%): the ladder
+took 180 s vs 114 s, since a repetition loop now decodes up to 445 tokens per attempt, and 2 clips cut at 20-21 s
+of 29 s now fail the thresholds at full length and go to the ladder (+23 s each).
