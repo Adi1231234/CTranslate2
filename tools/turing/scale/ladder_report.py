@@ -19,7 +19,8 @@ def loop_start(tokens, max_period=150):
         s = len(tokens) - p
         while s > 0 and tokens[s - 1] == tokens[s - 1 + p]:
             s -= 1
-        best = min(best, (s, p))
+        if len(tokens) - s >= 2 * p:                            # at least two whole periods
+            best = min(best, (s, p))
     return best
 
 
