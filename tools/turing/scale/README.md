@@ -64,3 +64,18 @@ bytes): stock 61 min (13.6x), build 27 min (30.3x). `compare.py`: 10,006 rows, 0
 802 changed; in 615 the batch text is a prefix of the sequential one (a clip cut short), and the sequential text is
 closer to the human one in 724 rows vs 42 (mean CER 0.130 -> 0.098). The 1 s gap over-selects: 3,913 of the
 sequential rows also end over 1 s early (silence at the clip's end), so it finds cut-offs, it does not prove one.
+
+## Root cause of the cut-short batch rows (27.9, `cutoff_probe.py` on the 125 laptop units)
+
+The probe re-ran the production path (rows identical to that morning's run: `compare.py` IDENTICAL) and recorded
+every decoded window. 30 of 12,406 batched windows did not end in a single timestamp; the sequential path
+transcribed 21 of the 24 `batch8` ones further (376 words), and 21 of the 23 cut rows found are among them.
+- CTranslate2 generates at most 224 tokens per 30 s window (`whisper.cc`: `min(448 / 2, 448 - start_step)`, as
+  OpenAI's `sample_len = n_text_ctx // 2`). Hebrew takes ~2.8 tokens a word, so a dense 29 s clip hits it
+  mid-segment (25 of the 30; 19 lost text, 369 of the 376 words). The other 5 end with a timestamp pair, the
+  paper's "segment continues past this window" signal (Radford et al. 2022, 2.3), near the clip's end.
+- faster-whisper's `_split_segments_by_timestamps` then drops the unfinished segment and returns the frame to
+  resume from. `generate_segments` (the sequential path, as OpenAI's `transcribe.py`) decodes a second window
+  from there (22 of 24); `BatchedInferencePipeline.forward` ignores it (1.2.1 and master, 11.2025), so the rest of
+  the clip is lost. The runner's fallback tests (empty, compression ratio, log-prob) do not see it.
+- The 2 other cut rows ended in a single timestamp: the batched decode itself stopped earlier (fp16 batch drift).
