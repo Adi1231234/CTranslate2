@@ -11,6 +11,18 @@ LOG, BUDGET = sys.argv[1], sys.argv[2]
 brief = "--brief" in sys.argv
 
 
+def loop_start(tokens, max_period=150):
+    """The earliest step from which the tokens repeat with one period, and that period (tokens[i] == tokens[i + p]
+    for every i >= step): where a repetition loop begins."""
+    best = (len(tokens), 0)
+    for p in range(1, min(max_period, len(tokens) // 2) + 1):
+        s = len(tokens) - p
+        while s > 0 and tokens[s - 1] == tokens[s - 1 + p]:
+            s -= 1
+        best = min(best, (s, p))
+    return best
+
+
 def budget(prompt):
     left = 448 - (prompt - 1)
     return min(224, left) if BUDGET == "capped" else left
@@ -35,7 +47,8 @@ for line in open(LOG, encoding="utf-8"):
             if not brief:
                 print(f"  w{w} T{a['T']:.1f} n {a['n'][0]:3d}/{max(a['n']):3d} of {budget(a['prompt'])}"
                       f"{' FULL' if full else '     '} cr {a['cr']:.2f} lp {a['avg_lp']:6.3f} nsp {a['nsp']:.2f}"
-                      f" {'pass' if a['passes'] else 'fail'} {a['secs']:.2f}s")
+                      f" {'pass' if a['passes'] else 'fail'} {a['secs']:.2f}s"
+                      + (" loop from step {} (period {})".format(*loop_start(a["tokens"])) if full else ""))
         if not brief:
             r = win["returned"]
             print(f"  w{w} -> T{r['T']:.1f} cr {r['cr']:.2f} lp {r['avg_lp']:.3f} n {len(r['tokens'])}")
