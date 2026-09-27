@@ -3,7 +3,8 @@ runs agree: each clip goes through the runner's sequential path (the full temper
 runs it) on one CTranslate2 worker with a fixed random seed, so a build gives the same rows on every run and two
 builds can be compared byte for byte. Audio comes as in the runner (fetch.py): from its cache folder RUN_CACHE when
 the unit is there, else from HF with the runner's hf_token.txt; units.json from the runner folder.
-usage: seeded.py <runner_dir> <list file> <out.jsonl> [ctranslate2 package parent dir]    N_CLIPS=<n>: the first n"""
+usage: seeded.py <runner_dir> <list file> <out.jsonl> [ctranslate2 package parent dir]    N_CLIPS=<n>: the first n
+LADDER_LOG=<file>: also every ladder attempt of every window (ladder_recorder.py), one line per clip."""
 import os, sys, json, hashlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
@@ -18,8 +19,11 @@ from units import unit_id
 from audio import audio_format, decode
 from engine import _sequential
 from fetch import read_unit
+LADDER_LOG = os.environ.get("LADDER_LOG")
+if LADDER_LOG:
+    import ladder_recorder as rec
 
-ctranslate2.set_random_seed(1234)               # every worker thread's sampler starts from this seed
+ctranslate2.set_random_seed(1234)              # every worker thread's sampler starts from this seed
 wanted = {}
 lines = [line.rstrip("\r\n") for line in open(LISTING, encoding="utf-8") if line.strip()]
 for line in lines[:int(os.environ.get("N_CLIPS", len(lines)))]:   # N_CLIPS: the first n of the list
@@ -35,6 +39,7 @@ if missing and fs is None:
 handles = {}
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=1, cpu_threads=1)          # one worker: one sampler, one order of draws
+ladder = open(LADDER_LOG, "w", encoding="utf-8") if LADDER_LOG else None
 with open(OUT, "w", encoding="utf-8") as f:
     for uid in sorted(wanted):
         t = read_unit(fs, handles, units[uid], uid, print, cache)
@@ -45,6 +50,11 @@ with open(OUT, "w", encoding="utf-8") as f:
             a = audio[uuid]
             row = _sequential(model, uuid, decode(a["bytes"], audio_format(a.get("path"))))
             f.write(json.dumps({"unit": uid, **row}, ensure_ascii=False) + "\n")
+            if ladder:
+                ladder.write(json.dumps({"unit": uid, "uuid": uuid, "windows": rec.calls}) + "\n")
+                rec.calls.clear()
+if ladder:
+    ladder.close()
 digest = hashlib.sha256(open(OUT, "rb").read()).hexdigest()[:16]
 print(json.dumps({"ctranslate2": ctranslate2.__file__, "clips": sum(map(len, wanted.values())), "rows_sha": digest}),
       flush=True)
