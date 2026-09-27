@@ -12,6 +12,11 @@ groups) and `out\<unit>.jsonl`; copy these files there after a pull.
   decodes the audio; `engine.transcribe_unit` runs the exact decoding parameters (`pipe8`: sorted
   batches of 8 with the next batch's encoder overlapped, clips failing the thresholds re-run with
   the full temperature ladder on a side thread). Units whose output exists are skipped.
+- `resume.py` (27.9): the batched pass drops the rest of a clip whose tokens do not end in a single timestamp
+  (faster-whisper's batched `forward` ignores the frame to resume from); such a clip now goes to the fallback,
+  which is the sequential path and decodes it to the end. With the full-context build (`whisper.cc` decodes up
+  to 448 - prompt tokens a window, upstream CT2 PR #2075) that is a clip whose segment runs past its window or a
+  repetition loop; with the 224-token cap it was every clip that hit the cap.
 - `stop.json` (re-read before every unit): `skip_units`, `only_units`, `stop_before_unit`, `deadline`.
 - `audio.py`: the decode (container from the declared file extension); `decode_check.py <units>`
   compares it with content probing, bit for bit. `RUN_OUT=<dir>` writes the outputs elsewhere.

@@ -1,8 +1,9 @@
 """Transcribe one unit's clips. exact2 = 2 in-flight model.transcribe calls (byte-identical to
-sequential). batch8 = cross-clip batched T=0 + sequential full-ladder fallback (hybrid)."""
+sequential). batch8 = cross-clip batched T=0 + sequential full-ladder fallback (hybrid): a clip goes to the
+fallback when its batched pass fails the thresholds or stopped before the clip's end (resume.py)."""
 import queue, threading
 import numpy as np
-from faster_whisper import BatchedInferencePipeline
+from resume import ResumeCheck
 from features import feature_cache
 try:
     from faster_whisper.transcribe import get_compression_ratio as gcr
@@ -56,7 +57,7 @@ def _batch8(model, clips, bs=8, pipelined=False, pool=None):
 
 def _batch8_ordered(model, clips, bs, pipelined=False, pool=None):
     if (id(model), pipelined) not in _bp:
-        cls = BatchedInferencePipeline
+        cls = ResumeCheck
         if pipelined:
             from pipelined import PipelinedBatchedInferencePipeline as cls
         _bp[(id(model), pipelined)] = cls(model=model)
@@ -68,15 +69,18 @@ def _batch8_ordered(model, clips, bs, pipelined=False, pool=None):
     audio = np.concatenate(pieces)
     # transcribe's own slices of the clips (int(seconds * rate)), so it gets their precomputed features
     feature_cache(model).prefetch([audio[int(t["start"] * SR):int(t["end"] * SR)] for t in ts])
+    bp.unfinished.clear()
     segs, _ = bp.transcribe(audio, batch_size=bs, clip_timestamps=ts, **EXACT)
     per = [[] for _ in clips]
     for s in segs:
         per[max(j for j, t in enumerate(ts) if s.start >= t["start"] - 1e-3)].append(s)
+    cut = [any(abs(o - t["start"]) < 1e-3 for o in bp.unfinished) for t in ts]    # filled once segs are consumed
     rows = []
-    for (uuid, w), t, ss in zip(clips, ts, per):
+    for (uuid, w), t, ss, unfinished in zip(clips, ts, per, cut):
         text = " ".join(s.text for s in ss).strip()
         lp = min((s.avg_logprob for s in ss), default=-99.0)
-        if not ss or gcr(text) > EXACT["compression_ratio_threshold"] or lp < EXACT["log_prob_threshold"]:
+        if (unfinished or not ss or gcr(text) > EXACT["compression_ratio_threshold"]
+                or lp < EXACT["log_prob_threshold"]):
             rows.append(pool.submit(_fallback, model, uuid, w) if pool else _fallback(model, uuid, w))
         else:
             rows.append(_row(uuid, w, ss, "batch8", offset=t["start"]))

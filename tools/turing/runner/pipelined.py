@@ -12,12 +12,13 @@ which would otherwise wait for it); the segments still come out in batch order. 
 per batch with its encode and decode start and end, then its generate() call's start and end (seconds).
 """
 import os, queue, threading, time
-from faster_whisper import BatchedInferencePipeline, WhisperModel
+from faster_whisper import WhisperModel
 from faster_whisper.transcribe import Segment, Word
 from tqdm import tqdm
+from resume import ResumeCheck
 
 
-class PipelinedBatchedInferencePipeline(BatchedInferencePipeline):
+class PipelinedBatchedInferencePipeline(ResumeCheck):
     def _batched_segments_generator(self, features, tokenizer, chunks_metadata, batch_size, options, log_progress):
         starts = list(range(0, len(features), batch_size))
         mode = os.environ.get("PIPE_ORDER", "desc")
@@ -108,4 +109,4 @@ class PipelinedBatchedInferencePipeline(BatchedInferencePipeline):
             cum_logprob = result.scores[0] * (seq_len ** options.length_penalty)
             output.append(dict(avg_logprob=cum_logprob / (seq_len + 1), no_speech_prob=result.no_speech_prob,
                                tokens=result.sequences_ids[0]))
-        return encoder_output, output
+        return encoder_output, self._keep_tokens(output)
