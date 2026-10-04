@@ -4,8 +4,8 @@
 # 100), so one call waits up to ~8 minutes: a longer step prints its command id, and -CommandId waits again.
 # usage: ssm.ps1 -Id i-... -Script box\setup.sh [-ScriptArgs 'a','b'] [-Timeout 3600]   |   ssm.ps1 -Id i-... -CommandId <id>
 param([Parameter(Mandatory)][string]$Id, [string]$Script, [string[]]$ScriptArgs = @(), [int]$Timeout = 3600,
-      [string]$CommandId)
-$r = 'us-east-1'
+      [string]$CommandId, [string]$Region = 'us-east-1')
+$r = $Region     # the box's region (SSM); the box itself talks to S3 and the token in us-east-1
 if (-not $CommandId) {
   $quoted = ($ScriptArgs | ForEach-Object { "'" + $_.Replace("'", "'\''") + "'" }) -join ' '
   $body = [IO.File]::ReadAllLines((Resolve-Path $Script))
