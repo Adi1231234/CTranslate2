@@ -1,0 +1,7 @@
+# The ladder took 109.5 of the production run's 413 s (15 clips): run it on its own CTranslate2 worker beside the
+# batches (RUN_FALLBACK=async; it paged the 8 GB store GPU, the L40S has 46 GB), alone and with MPS processes.
+# The ladder's work is the same work on another stream: rows compared with round2's fullctx on the laptop.
+a1|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1|RUN_FALLBACK=async
+a2|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=async
+a3|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=async
+a4|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FALLBACK=async
