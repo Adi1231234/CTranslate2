@@ -1,0 +1,3 @@
+# The batched path alone (5 units without fallback clips): where the time goes with 8 clips a batch and with 32.
+profile8|pyct2-l40|runner|src/tools/turing/scale/units_clean5.txt|5
+profile32|pyct2-l40|runner|src/tools/turing/scale/units_clean5.txt|5|MODE=pipe32

@@ -1,0 +1,6 @@
+# 5 of units_real.txt without a fallback clip in the full-context runs (the batched path alone, for profiles)
+train-00005-of-00042_rg010
+train-00005-of-00042_rg013
+train-00007-of-00042_rg006
+train-00007-of-00042_rg018
+train-00007-of-00042_rg020
