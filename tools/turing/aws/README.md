@@ -16,6 +16,21 @@ run on an AWS GPU, and how much of the GPU does it leave idle? A throwaway EC2 b
 On Linux CTranslate2 loads cuBLAS with `dlopen("libcublas.so.12")`, so `run.sh` puts the venv's
 `nvidia/cublas/lib` on `LD_LIBRARY_PATH` before the process starts (setting it from Python is too late).
 
+`batch/` is the same benchmark as our own AWS Batch stack (`provision.py`, `image/build.py` in CodeBuild,
+`submit.py <tag> experiments/<list> --fleet g6e|g6e2x`, `watch.py <job>`); results in
+`s3://docvoice-042984981008-code/whisper-aws-bench/results/<job id>/`.
+
+**Results 5.10.2026** (g6e L40S, us-east-1c, the 30 units of `../scale/units_real.txt` = 4.38 h, wall time with
+model load, one run each; runs on two hosts of the same type differed by ~6%):
+- Stock wheel 25.8x. The fork with the 224-token cap 42.3x, rows identical to stock (2,900 equal, 0 deterministic
+  differences). Production (full context + `resume.py`) 37.9x, the lowest CER against the human text (0.0455 vs 0.0473).
+- Several processes under MPS (`run.sh <n>`, `MPS=1`): 2 = 43.6x, 3 = 44.2x, 4 = 46.3x, rows identical to one
+  process. Without MPS, 2 processes are slower than one (34.5x). On g6e.xlarge 4 processes use 96% of the 4 vCPUs;
+  g6e.2xlarge (8 vCPU) with 4 is not faster (43.4x), and 6 or more run out of the 46 GB (about 8 GB a process).
+  The GPU's memory controller is busy ~90% of the time from 2 processes on: about 45x is this pipeline's ceiling here.
+- `CT2_CUDA_GRAPHS=1` is slower (36.4x) and changes 58 texts: a bug, not used. `pipe16`/`pipe32` (bigger batches)
+  give 40.4x/42.2x but change ~22 deterministic texts and the CER gets worse (0.0459/0.0475).
+
 **Beside other AWS work in the account** (the asr-training Batch queues): a standalone box, never their queues;
 no resource named `asr-train*` (their submit uses the newest `asr-train` job definition); another AZ than their
 running box; everything tagged.
