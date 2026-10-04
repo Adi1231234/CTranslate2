@@ -22,5 +22,5 @@ nsys export --type=sqlite --force-overwrite=true -o "$LOG/report.sqlite" "$LOG/r
 echo "== kernels by GPU time"
 nsys stats --quiet --report cuda_gpu_kern_sum --format csv "$LOG/report.sqlite" 2>/dev/null | head -45 | tee "$LOG/kern_sum.csv"
 for s in nsys_steps nsys_streams nsys_gaps; do
-  echo "== $s"; $B/venv/bin/python "$T/$s.py" "$LOG/report.sqlite" 2>&1 | head -120 | tee "$LOG/$s.txt"
+  echo "== $s"; { $B/venv/bin/python "$T/$s.py" "$LOG/report.sqlite" 2>&1 || true; } | head -120 | tee "$LOG/$s.txt" || true
 done
