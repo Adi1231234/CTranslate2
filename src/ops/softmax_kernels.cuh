@@ -216,7 +216,7 @@ namespace at {
     constexpr unsigned warp_softmax_rows_per_block = 4;
     constexpr unsigned warp_softmax_max_cols = 2048;
 
-    inline __host__ __device__ __forceinline__ unsigned warp_softmax_slot(unsigned j) {
+    __host__ __device__ __forceinline__ unsigned warp_softmax_slot(unsigned j) {  // GCC: __forceinline__ is inline
       return j + j / 32;  // one pad float per 32: lane L reading 32L + i hits bank (L + i) % 32
     }
 
