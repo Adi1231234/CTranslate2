@@ -1,0 +1,14 @@
+# CodeBuild steps for the whisper-bench image (started by build.py). Env: ECR_URI, IMAGE_TAG, BUCKET, S3_PREFIX.
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${ECR_URI%%/*}"
+      - mkdir -p pkgs && for p in pyct2-l40 pyct2-l40-224; do aws s3 cp --only-show-errors "s3://$BUCKET/$S3_PREFIX/$p.tgz" - | tar xz -C pkgs; done
+  build:
+    commands:
+      - DOCKER_BUILDKIT=1 docker build -f tools/turing/aws/batch/image/Dockerfile -t "$ECR_URI:$IMAGE_TAG" .
+      - docker images "$ECR_URI:$IMAGE_TAG"
+  post_build:
+    commands:
+      - test "$CODEBUILD_BUILD_SUCCEEDING" = 1 && docker push "$ECR_URI:$IMAGE_TAG"

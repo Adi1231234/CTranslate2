@@ -1,0 +1,11 @@
+# The production fork on the same 30 units, filling the GPU: several runner processes at once (each unit is still
+# decoded whole by one process, so its rows cannot change), with and without MPS; CUDA graphs; bigger batches
+# (pipe16/pipe32 change the batch composition, so a few rows may differ: measured, not adopted).
+p2|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|2|MPS=1
+p3|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|3|MPS=1
+p4|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|4|MPS=1
+compare|p2|p4
+p2plain|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|2
+graphs|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1|CT2_CUDA_GRAPHS=1
+b16|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1|MODE=pipe16
+b32|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1|MODE=pipe32

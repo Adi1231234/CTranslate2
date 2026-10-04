@@ -2,7 +2,8 @@
 # One benchmark configuration on the box: N production runner processes started together, each in its own root
 # with an only_units share of the list (every N-th unit), all reading the cache and writing out/<label>. Wall time
 # from the first start to the last exit; the GPU (nvidia-smi) and CPU (vmstat) sampled throughout. MPS=1 runs them
-# under NVIDIA MPS (kernels of several processes on the GPU at once). Other VAR=value pairs go to the environment.
+# under NVIDIA MPS (kernels of several processes on the GPU at once); MODE=pipe16 etc. sets the runner's batch
+# (default pipe8, production). Other VAR=value pairs go to the environment.
 # usage: run.sh <label> <stock | package dir> <runner dir> <units list> <processes> [VAR=value ...]
 set -euo pipefail
 B=/opt/wb; LABEL=$1; PKG=$2; RUNNER=$3; LIST=$4; N=$5; shift 5
@@ -22,7 +23,7 @@ for i in $(seq 0 $((N - 1))); do
   awk -v n="$N" -v i="$i" 'NF && (NR - 1) % n == i {print $1}' "$B/$LIST" > "$LOG/units.$i.txt"
   venv/bin/python -c "import json,sys; json.dump({'only_units': open(sys.argv[1]).read().split()}, open(sys.argv[2], 'w'))" \
     "$LOG/units.$i.txt" "$R/stop.json"
-  (cd "$R" && exec $B/venv/bin/python transcribe_run.py back pipe8 > "$LOG/p$i.out" 2>&1) & pids+=($!)
+  (cd "$R" && exec $B/venv/bin/python transcribe_run.py back "${MODE:-pipe8}" > "$LOG/p$i.out" 2>&1) & pids+=($!)
 done
 fail=0; for p in "${pids[@]}"; do wait "$p" || fail=$((fail + 1)); done
 t1=$(date +%s.%N); kill $SMI $VM

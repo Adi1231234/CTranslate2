@@ -1,0 +1,7 @@
+# 30 real units (scale/units_real.txt, 4.38 h, the set every machine was measured on). The stock wheel and the
+# fork's store-PC library (224-token cap) with the runner before resume.py: same rows expected (compare). Then the
+# production fork: full context and resume.py.
+stock|stock|runner_old|src/tools/turing/scale/units_real.txt|1
+fork224|pyct2-l40-224|runner_old|src/tools/turing/scale/units_real.txt|1
+compare|stock|fork224
+fullctx|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1

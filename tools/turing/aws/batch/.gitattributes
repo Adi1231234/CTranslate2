@@ -1,0 +1,2 @@
+# Run by bash, also straight from a Windows checkout (/mnt/c in WSL): a CRLF checkout breaks them.
+*.sh text eol=lf
