@@ -1,0 +1,15 @@
+# Everything after the stock baseline in one job (one queue wait, one image pull): the fork's store-PC library
+# (identity against the first job's stock rows, compared on the laptop), the production fork, then filling the
+# GPU (fill_gpu.txt) and checking that more processes leave every row as it was.
+fork224|pyct2-l40-224|runner_old|src/tools/turing/scale/units_real.txt|1
+fullctx|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1
+p2|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|2|MPS=1
+p3|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|3|MPS=1
+p4|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|4|MPS=1
+compare|fullctx|p4
+p2plain|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|2
+graphs|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1|CT2_CUDA_GRAPHS=1
+compare|fullctx|graphs
+b16|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1|MODE=pipe16
+b32|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1|MODE=pipe32
+compare|fullctx|b32
