@@ -1,0 +1,4 @@
+# g6e.xlarge (4 vCPU): 4 processes were CPU-bound (96%). The same with one feature thread per process (the pool
+# of 6 per process oversubscribed 4 cores), and 5 processes. Rows compared on the laptop with round2's fullctx.
+p4ft1|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FEATURE_THREADS=1
+p5ft1|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|5|MPS=1|RUN_FEATURE_THREADS=1

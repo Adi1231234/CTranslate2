@@ -16,7 +16,8 @@ echo "vCPU $(nproc), memory $(free -g | awk '/Mem:/ {print $2}') GB, MPS control
 : > results.jsonl
 while IFS='|' read -r label a b c d extra; do
   [ -z "$label" ] && continue
-  echo "=== $(date +%T) $label $a $b"
+  extra=${extra//|/ }                                   # read leaves the later fields' separators in the last one
+  echo "=== $(date +%T) $label $a $b $extra"
   if [ "$label" = compare ]; then
     venv/bin/python src/tools/turing/scale/compare.py "out/$a" "out/$b" | tee "logs/compare_${a}_${b}.txt"
   else

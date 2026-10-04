@@ -1,10 +1,10 @@
-"""Creates (or confirms) the whisper-bench stack: ECR repository, log group, IAM roles, launch template, compute
-environment (on-demand g6e, ECS GPU AMI, min 0 vCPU: costs nothing while idle) and job queue. Idempotent.
+"""Creates (or confirms) the whisper-bench stack: ECR repository, log group, IAM roles, launch template, and per
+fleet (settings.FLEETS) a compute environment (on-demand, ECS GPU AMI, min 0 vCPU: free while idle) and its job queue.
+Idempotent.
 usage: python provision.py"""
 import time
 from botocore.exceptions import ClientError
-from settings import (COMPUTE_ENV, ECR_REPO, INSTANCE_TYPES, LAUNCH_TEMPLATE, LOG_GROUP, MAX_VCPUS, QUEUE, ROOT_GB,
-                      TAGS, client, tag_list)
+from settings import ECR_REPO, FLEETS, LAUNCH_TEMPLATE, LOG_GROUP, MAX_VCPUS, ROOT_GB, TAGS, client, fleet_name, tag_list
 import iam
 
 
@@ -34,12 +34,12 @@ def launch_template():
             TagSpecifications=[{"ResourceType": "launch-template", "Tags": tag_list()}]), "InvalidLaunchTemplateName.AlreadyExistsException")
 
 
-def network():
-    """Default-VPC subnets of every AZ that sells the instance types, and the default security group."""
+def network(instance_type):
+    """Default-VPC subnets of every AZ that sells the instance type, and the default security group."""
     ec2 = client("ec2")
     vpc = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])["Vpcs"][0]["VpcId"]
     azs = {o["Location"] for o in ec2.describe_instance_type_offerings(LocationType="availability-zone",
-           Filters=[{"Name": "instance-type", "Values": INSTANCE_TYPES}])["InstanceTypeOfferings"]}
+           Filters=[{"Name": "instance-type", "Values": [instance_type]}])["InstanceTypeOfferings"]}
     subnets = [s["SubnetId"] for s in ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc]},
                {"Name": "default-for-az", "Values": ["true"]}])["Subnets"] if s["AvailabilityZone"] in azs]
     sg = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [vpc]},
@@ -59,23 +59,24 @@ def _wait(describe, key, name):
     raise SystemExit(f"{name} not VALID after 5 minutes")
 
 
-def compute_and_queue(profile):
-    b = client("batch")
-    subnets, sg = network()
-    if not b.describe_compute_environments(computeEnvironments=[COMPUTE_ENV])["computeEnvironments"]:
-        b.create_compute_environment(computeEnvironmentName=COMPUTE_ENV, type="MANAGED", state="ENABLED", tags=TAGS,
+def compute_and_queue(profile, fleet):
+    """The fleet's compute environment and its job queue, both named fleet_name(fleet)."""
+    b, name, itype = client("batch"), fleet_name(fleet), FLEETS[fleet][0]
+    subnets, sg = network(itype)
+    if not b.describe_compute_environments(computeEnvironments=[name])["computeEnvironments"]:
+        b.create_compute_environment(computeEnvironmentName=name, type="MANAGED", state="ENABLED", tags=TAGS,
             computeResources={"type": "EC2", "allocationStrategy": "BEST_FIT_PROGRESSIVE", "minvCpus": 0,
-                "maxvCpus": MAX_VCPUS, "instanceTypes": INSTANCE_TYPES, "subnets": subnets,
-                "securityGroupIds": [sg], "instanceRole": profile, "tags": {**TAGS, "Name": COMPUTE_ENV},
+                "maxvCpus": MAX_VCPUS, "instanceTypes": [itype], "subnets": subnets,
+                "securityGroupIds": [sg], "instanceRole": profile, "tags": {**TAGS, "Name": name},
                 "ec2Configuration": [{"imageType": "ECS_AL2023_NVIDIA"}],
                 "launchTemplate": {"launchTemplateName": LAUNCH_TEMPLATE, "version": "$Default"}})
-        print("created compute environment", COMPUTE_ENV, "in", len(subnets), "subnets")
-    _wait(lambda: b.describe_compute_environments(computeEnvironments=[COMPUTE_ENV]), "computeEnvironments", COMPUTE_ENV)
-    if not b.describe_job_queues(jobQueues=[QUEUE])["jobQueues"]:
-        b.create_job_queue(jobQueueName=QUEUE, state="ENABLED", priority=1, tags=TAGS,
-                           computeEnvironmentOrder=[{"order": 1, "computeEnvironment": COMPUTE_ENV}])
-        print("created job queue", QUEUE)
-    _wait(lambda: b.describe_job_queues(jobQueues=[QUEUE]), "jobQueues", QUEUE)
+        print("created compute environment", name, itype, "in", len(subnets), "subnets")
+    _wait(lambda: b.describe_compute_environments(computeEnvironments=[name]), "computeEnvironments", name)
+    if not b.describe_job_queues(jobQueues=[name])["jobQueues"]:
+        b.create_job_queue(jobQueueName=name, state="ENABLED", priority=1, tags=TAGS,
+                           computeEnvironmentOrder=[{"order": 1, "computeEnvironment": name}])
+        print("created job queue", name)
+    _wait(lambda: b.describe_job_queues(jobQueues=[name]), "jobQueues", name)
 
 
 if __name__ == "__main__":
@@ -83,5 +84,6 @@ if __name__ == "__main__":
     profile = iam.instance_profile()
     print("job role", iam.job_role(), "| codebuild role", iam.codebuild_role())
     launch_template()
-    compute_and_queue(profile)
-    print("stack ready:", COMPUTE_ENV, QUEUE)
+    for fleet in FLEETS:
+        compute_and_queue(profile, fleet)
+    print("stack ready:", ", ".join(fleet_name(f) for f in FLEETS))

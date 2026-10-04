@@ -8,12 +8,17 @@ BUCKET = "docvoice-042984981008-code"
 S3_PREFIX = "whisper-aws-bench"                 # packages, data/ (units.json, cache/), build/, results/
 TAGS = {"Project": "whisper-aws-bench"}
 ROLE_INSTANCE, ROLE_JOB, ROLE_CODEBUILD = f"{NAME}-instance", f"{NAME}-job", f"{NAME}-codebuild"
-COMPUTE_ENV, QUEUE, JOB_DEF, LAUNCH_TEMPLATE = f"{NAME}-g6e", f"{NAME}-queue", NAME, NAME
+JOB_DEF, LAUNCH_TEMPLATE = NAME, NAME
 ECR_REPO, CODEBUILD, LOG_GROUP = NAME, f"{NAME}-image", f"/{NAME}"
-INSTANCE_TYPES = ["g6e.xlarge"]                 # one type: every measurement on the same machine
-MAX_VCPUS = 8                                   # two g6e.xlarge at most
+# One compute environment and one job queue (same name) per instance type, so a job always lands on the type it
+# asked for and every measurement is on a known machine. Job size: (vCPU, memory MiB) as ECS can place it.
+FLEETS = {"g6e": ("g6e.xlarge", 4, 28 * 1024), "g6e2x": ("g6e.2xlarge", 8, 56 * 1024)}
+MAX_VCPUS = 8                                   # per fleet: two g6e.xlarge or one g6e.2xlarge at most
 ROOT_GB = 100                                   # the image (~6 GB) and its layers, the cache, the outputs
-JOB_VCPUS, JOB_MEMORY_MIB = 4, 28 * 1024        # g6e.xlarge: 4 vCPU, 32 GiB (ECS keeps some for itself)
+
+
+def fleet_name(fleet):
+    return f"{NAME}-{fleet}"                     # the compute environment and its job queue
 
 
 def client(service):

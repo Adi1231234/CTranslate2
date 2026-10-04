@@ -1,0 +1,7 @@
+# g6e.2xlarge (same L40S, 8 vCPU, 64 GiB): one process for the baseline, then 4, 6 and 8 processes under MPS,
+# to see how far the GPU goes once the CPU is not the limit.
+x1|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1
+x4|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FEATURE_THREADS=1
+x6|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|6|MPS=1|RUN_FEATURE_THREADS=1
+x8|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|8|MPS=1|RUN_FEATURE_THREADS=1
+compare|x1|x8

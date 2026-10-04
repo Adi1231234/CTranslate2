@@ -3,7 +3,9 @@ BatchedInferencePipeline.transcribe computes every clip's features one after the
 the call (0.6 s of 150 clips on the store PC, the GPU idle meanwhile); numpy releases the GIL, so a pool does the
 same computations about 5x sooner. FeatureCache wraps model.feature_extractor: a call with a clip that was
 prefetched (same samples, checked with np.array_equal) returns that clip's precomputed features, anything else
-(e.g. a fallback's own call) is computed as before. Same function, same input: the same features."""
+(e.g. a fallback's own call) is computed as before. Same function, same input: the same features.
+RUN_FEATURE_THREADS=<n> (default 6): the pool's size; several runner processes on one GPU share the host's cores."""
+import os
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
@@ -33,5 +35,5 @@ class FeatureCache:
 def feature_cache(model):
     """model.feature_extractor as a FeatureCache (installed once)."""
     if not isinstance(model.feature_extractor, FeatureCache):
-        model.feature_extractor = FeatureCache(model.feature_extractor)
+        model.feature_extractor = FeatureCache(model.feature_extractor, int(os.environ.get("RUN_FEATURE_THREADS", "6")))
     return model.feature_extractor
