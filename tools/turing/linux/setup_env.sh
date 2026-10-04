@@ -21,7 +21,8 @@ pinned() {  # the repository's exact version string for a package at an upstream
 }
 apt-get install -y -qq --no-install-recommends \
   "$(pinned cuda-nvcc-12-8 12.8.93)" "$(pinned cuda-cudart-dev-12-8 12.8.90)" \
-  "$(pinned libcublas-dev-12-8 12.8.4.1)" "$(pinned libcurand-dev-12-8 10.3.9.90)" cuda-cuobjdump-12-8
+  "$(pinned libcublas-dev-12-8 12.8.4.1)" "$(pinned libcurand-dev-12-8 10.3.9.90)" cuda-cuobjdump-12-8 \
+  cuda-nvtx-12-8   # nvtx3 headers (src/cuda/nvtx.h); the Windows redist zips carry them
 ln -sfn /usr/local/cuda-12.8 /usr/local/cuda
 /usr/local/cuda/bin/nvcc --version | tail -2
 gcc --version | head -1
