@@ -3,6 +3,7 @@
 # $EXPERIMENTS in order, then results and logs to s3://$BUCKET/$S3_PREFIX/results/<job id>/. A line is either
 #   label|package|runner dir|units list|processes|VAR=value ...   one configuration (../../box/run.sh)
 #   compare|reference label|label                                  compare.py on the two outputs
+#   profile<name>|package|runner dir|units list|n units|VAR=value   an Nsight Systems profile (../../box/profile.sh)
 set -uo pipefail
 B=/opt/wb; S3=s3://$BUCKET/$S3_PREFIX; OUT=$S3/results/${AWS_BATCH_JOB_ID:-local}
 cd $B
@@ -20,6 +21,8 @@ while IFS='|' read -r label a b c d extra; do
   echo "=== $(date +%T) $label $a $b $extra"
   if [ "$label" = compare ]; then
     venv/bin/python src/tools/turing/scale/compare.py "out/$a" "out/$b" | tee "logs/compare_${a}_${b}.txt"
+  elif [[ "$label" == profile* ]]; then
+    bash src/tools/turing/aws/box/profile.sh "$label" "$a" "$b" "$c" "$d" $extra
   else
     bash src/tools/turing/aws/box/run.sh "$label" "$a" "$b" "$c" "$d" $extra
     tail -2 "logs/$label/root0/progress.log"

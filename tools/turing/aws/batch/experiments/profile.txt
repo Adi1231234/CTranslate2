@@ -1,0 +1,3 @@
+# Where the production engine's time goes on the L40S: an Nsight Systems profile of one process (fullctx, pipe8)
+# on the first 5 of the 30 benchmark units (3 of them with fallback clips).
+profile1|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|5

@@ -10,6 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSLo /tmp/awscli.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
  && unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install && rm -rf /tmp/aws /tmp/awscli.zip
+# Nsight Systems for box/profile.sh (2025.3.2: the CUDA 13.0 generation, as the Batch hosts' driver 580).
+RUN curl -fsSLo /tmp/kr.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
+ && dpkg -i /tmp/kr.deb && apt-get update && apt-get install -y --no-install-recommends nsight-systems-2025.3.2 \
+ && rm -rf /var/lib/apt/lists/* /tmp/kr.deb && nsys --version
 WORKDIR /opt/wb
 COPY tools/turing/aws/requirements.txt /tmp/requirements.txt
 RUN python3.12 -m venv venv && venv/bin/pip install -q --no-cache-dir -r /tmp/requirements.txt
