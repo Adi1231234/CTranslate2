@@ -25,6 +25,10 @@ PKG="$OUT/ctranslate2"
 rm -rf "$PKG"; mkdir -p "$OUT"
 cp -r "$SRC/python/ctranslate2" "$PKG"
 cp -P "$INST"/lib/libctranslate2.so* "$PKG/"
-patchelf --set-rpath '$ORIGIN' "$PKG"/_ext*.so
+# The OpenMP runtime ships inside the package, as the official wheel does (libiomp5 in ctranslate2.libs) and
+# ../build_windows.ps1 does with vcomp140.dll: a slim image has no libgomp. RUNPATH is not inherited, so the
+# library gets $ORIGIN too.
+cp -L "$(gcc -print-file-name=libgomp.so.1)" "$PKG/"
+patchelf --set-rpath '$ORIGIN' "$PKG"/_ext*.so "$PKG"/libctranslate2.so.*.*.*
 git -C "$SRC" log --oneline -1 > "$PKG/BUILD.txt"
 echo "built $PKG from $(git -C "$SRC" rev-parse --short HEAD) for $ARCH"
