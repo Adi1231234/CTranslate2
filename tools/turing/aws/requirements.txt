@@ -1,0 +1,14 @@
+# The production venv of the crowd-v5 runs (store PC, pip freeze 4.10.2026), for the AWS benchmark box.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+nvidia-cublas-cu12==12.9.2.10
+av==18.1.0
+huggingface_hub==1.32.0
+hf_xet==1.6.0
+fsspec==2026.9.0
+numpy==2.5.3
+pyarrow==25.0.1
+tokenizers==0.23.2
+onnxruntime==1.30.0
+tqdm==4.70.1
+pyyaml==6.0.3
