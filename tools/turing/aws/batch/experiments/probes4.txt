@@ -1,0 +1,2 @@
+# Pointer-array vs strided cross-attention products of sampled hypotheses (one copy of a clip's keys for its hypotheses).
+scriptp|scripts/probes.sh|probes/probes-970d1104.tgz|ptrbatch_probe

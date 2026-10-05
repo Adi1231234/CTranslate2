@@ -1,0 +1,3 @@
+# DRAM by kernel kind on the batched path alone (RUN_FALLBACK=skip), grouped as kh3 (88x steady): 3 MPS processes,
+# 2 groups, one call for the row-independent products, sleeping waits.
+scriptd|scripts/profile_metrics.sh|dk3|pyct2-l40h|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|3|60|15|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking

@@ -1,0 +1,4 @@
+# Does grouping (PIPE_GROUPS, group_size) cut the decoder products' DRAM reads? dram1's d1 (1 process) against the
+# same with 4 groups, pyct2-l40g with sleeping waits... (l40g predates CT2_CUDA_SCHEDULE: plain waits, 1 process).
+scriptg1|scripts/profile_metrics.sh|dg4|pyct2-l40g|runner|src/tools/turing/scale/units_real.txt|1|60|15|RUN_FALLBACK=async|PIPE_GROUPS=4
+scriptg0|scripts/profile_metrics.sh|dg0|pyct2-l40g|runner|src/tools/turing/scale/units_real.txt|1|60|15|RUN_FALLBACK=async
