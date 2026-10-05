@@ -1,0 +1,3 @@
+# The streamed encoder attention (54b5126e, ops/exact_attention_stream.cuh): bits against the three cuBLAS steps
+# and exact_attention_qkv, and time against exact_attention (1560 us at 8 clips on this GPU), five block shapes.
+scripta|scripts/probes.sh|probes/probes-54b5126e.tgz|exact_attention_stream_check:20

@@ -77,14 +77,10 @@ int main(int argc, char** argv) {
     fill<<<1024, 256>>>(X, (size_t)clips * n * row, 97u * clips, -6, 2);
     fill<<<16, 256>>>(B, (size_t)row, 131u * clips, -8, 0);
     set_bits<<<4, 256>>>(B + heads * d, (size_t)heads * d, 0);
-    const long long part = (long long)heads * d;
-    auto source = [&](int k) { return at::native::EalSource{X + k * part, B + k * part, row * (long long)n, d, row}; };
     const size_t count = (size_t)clips * heads * n * d;
     auto qkv_path = [&] { at::native::exact_attention_qkv(X, B, W, O, clips, heads, n, alpha, 0); };
     auto stream_path = [&](const Shape& s) {
-      at::native::exact_attention_stream_split<<<1024, 256>>>(source(0), source(1), source(2), S, heads,
-                                                               clips * heads, n);
-      s.run(S, S + count, S + 2 * count, F, clips * heads, heads, alpha, 0);
+      at::native::exact_attention_stream_qkv(s.run, X, B, S, F, clips, heads, n, alpha, 0);
     };
     qkv_path();
     printf("qkv %d clips: exact_attention_qkv %8.1f us;", clips, time_us(qkv_path, reps));

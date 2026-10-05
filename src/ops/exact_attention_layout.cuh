@@ -40,6 +40,14 @@ namespace at {
       return EalSource{x, nullptr, (long long)heads * n * depth, (long long)n * depth, depth};
     }
 
+    // Part p (0 queries, 1 keys, 2 values) of the fused projection x [clips, n, 3 * heads * depth] without its bias,
+    // with its part of the bias (or none).
+    __host__ __device__ inline EalSource eal_qkv_part(const __half* x, const __half* bias, int heads, int n, int depth,
+                                                      int p) {
+      const long long part = (long long)heads * depth, row = 3 * part;
+      return EalSource{x + p * part, bias ? bias + p * part : nullptr, row * n, depth, row};
+    }
+
     __device__ __forceinline__ const __half* eal_row(const EalSource& s, int b, int heads, int j) {
       const int clip = b / heads;
       return s.p + clip * s.clip_stride + (b - clip * heads) * s.head_stride + (long long)j * s.row_stride;

@@ -15,6 +15,8 @@
 // Rows past 1500 compute on zero queries and are not stored. q, k and v are head-split [batch, 1500, 64]; o is
 // [clip, query, head, dim] as exact_attention's.
 
+#include <string>
+
 #include "exact_attention_parts.cuh"
 #include "cuda/split_gemm_common.cuh"
 
@@ -301,6 +303,33 @@ namespace at {
       exact_attention_stream_kernel<WARPS, RT, STAGES><<<dim3((eas_n + queries - 1) / queries, batch),
                                                          WARPS * C10_WARP_SIZE, smem, stream>>>(q, k, v, o, heads,
                                                                                                 alpha);
+    }
+
+    // The attention of head-split q, k, v [batch, 1500, 64] in one block shape.
+    using EasItems = void (*)(const __half*, const __half*, const __half*, __half*, int, int, float, cudaStream_t);
+
+    // A block shape by name, <warps>x<tiles>s<stages> (null for any other name).
+    inline EasItems exact_attention_stream_shape(const std::string& name) {
+      if (name == "8x1s3") return exact_attention_stream_items<8, 1, 3>;
+      if (name == "8x1s2") return exact_attention_stream_items<8, 1, 2>;
+      if (name == "4x2s3") return exact_attention_stream_items<4, 2, 3>;
+      if (name == "4x1s4") return exact_attention_stream_items<4, 1, 4>;
+      if (name == "8x2s2") return exact_attention_stream_items<8, 2, 2>;
+      return nullptr;
+    }
+
+    // From the fused projection x [clips, n, 3 * heads * 64] without its bias, and that bias (or null): q, k and v
+    // head-split with their bias into the workspace (3 x clips x heads x n x 64 halves, which
+    // exact_attention_workspace(clips * heads, n, true) holds), then `items` on them.
+    inline void exact_attention_stream_qkv(EasItems items, const __half* x, const __half* bias, void* workspace,
+                                           __half* o, int clips, int heads, int n, float alpha, cudaStream_t stream) {
+      __half* split = static_cast<__half*>(workspace);
+      const size_t count = (size_t)clips * heads * n * ea_depth;
+      exact_attention_stream_split<<<1024, 256, 0, stream>>>(eal_qkv_part(x, bias, heads, n, ea_depth, 0),
+                                                             eal_qkv_part(x, bias, heads, n, ea_depth, 1),
+                                                             eal_qkv_part(x, bias, heads, n, ea_depth, 2), split,
+                                                             heads, clips * heads, n);
+      items(split, split + count, split + 2 * count, o, clips * heads, heads, alpha, stream);
     }
 
   }

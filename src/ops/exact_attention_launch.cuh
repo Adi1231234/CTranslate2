@@ -67,11 +67,8 @@ namespace at {
     inline void exact_attention_qkv(const __half* x, const __half* bias, void* workspace, __half* o, int clips,
                                     int heads, int n, float alpha, cudaStream_t stream, unsigned* counter = nullptr,
                                     int blocks = 0, int rows = 16) {
-      const long long part = (long long)heads * ea_depth, row = 3 * part, clip = row * n;
-      auto source = [&](int p) {
-        return EalSource{x + p * part, bias ? bias + p * part : nullptr, clip, ea_depth, row};
-      };
-      exact_attention(nullptr, source(0), source(1), source(2), workspace, o, clips * heads, heads, n, alpha,
+      exact_attention(nullptr, eal_qkv_part(x, bias, heads, n, ea_depth, 0), eal_qkv_part(x, bias, heads, n, ea_depth, 1),
+                      eal_qkv_part(x, bias, heads, n, ea_depth, 2), workspace, o, clips * heads, heads, n, alpha,
                       stream, counter, blocks, rows);
     }
 
