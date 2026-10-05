@@ -160,11 +160,13 @@ namespace ctranslate2 {
   public:
     // Penalties are only applied to return scores consistent with the beam search.
     // seeds: on CUDA, each input's sampling seed (DecodingOptions::sampling_seeds), empty for the shared states.
+    // temperatures: DecodingOptions::sampling_temperatures (the sampler then a RandomSampler at temperature 1).
     GreedySearch(const float length_penalty = 0,
                  const float coverage_penalty = 0,
                  std::function<bool(DecodingStepResult)> callback = nullptr,
                  const dim_t group_size = 0,
-                 std::vector<uint64_t> seeds = {});
+                 std::vector<uint64_t> seeds = {},
+                 std::vector<float> temperatures = {});
 
     std::vector<DecodingResult>
     search(layers::Decoder& decoder,
@@ -190,6 +192,7 @@ namespace ctranslate2 {
     const std::function<bool(DecodingStepResult)> _callback;
     const dim_t _group_size;
     const std::vector<uint64_t> _seeds;
+    const std::vector<float> _temperatures;
   };
 
 
@@ -221,6 +224,12 @@ namespace ctranslate2 {
     // Random sampling on CUDA: a seed per input, from which each of its hypotheses draws a stream of its own
     // (cuda/row_random.h), so an input draws the same in any batch and every run; empty: the thread's shared states.
     std::vector<uint64_t> sampling_seeds;
+    // Random sampling (beam_size 1) of every input at each of these temperatures in one search: the variants share
+    // the input's decoder steps and its memory keys and values, and each variant samples exactly what a search of
+    // its input alone at its temperature samples (on CUDA its hypotheses decode as a group of their own,
+    // cuda/clip_groups.h). Results input-major: input i's variant v is result i * variants + v; sampling_seeds then
+    // holds a seed per input and variant in that order. Empty: every input at sampling_temperature.
+    std::vector<float> sampling_temperatures;
     std::vector<size_t> disable_ids;
     std::vector<size_t> disable_ids_begin;
     std::vector<std::vector<size_t>> disable_sequences;

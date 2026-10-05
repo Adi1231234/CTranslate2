@@ -136,6 +136,10 @@ namespace ctranslate2 {
       mul_batch_broadcast(x, y, y, x_size, y_size);
     }
 
+    // c[i] = a[i / (b_size / a_size)] * b[i]: each row of b times its own value of a, as mul(T a, ...) multiplies.
+    template <typename T>
+    static void mul_depth_broadcast(const T* a, const T* b, T* c, dim_t a_size, dim_t b_size);
+
     template <typename T>
     static void mul(const T* a, const T* b, T* c, dim_t size);
 

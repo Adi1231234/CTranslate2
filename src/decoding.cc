@@ -53,6 +53,20 @@ namespace ctranslate2 {
     const RowSeeds* previous;
   };
 
+  // Likewise each row's temperature (its variant's, DecodingOptions::sampling_temperatures) at its original index,
+  // or null: the sampler's own.
+  static thread_local const std::vector<float>* greedy_row_temperatures = nullptr;
+
+  struct GreedyRowTemperatures {
+    explicit GreedyRowTemperatures(const std::vector<float>* temperatures) : previous(greedy_row_temperatures) {
+      greedy_row_temperatures = temperatures;
+    }
+    ~GreedyRowTemperatures() {
+      greedy_row_temperatures = previous;
+    }
+    const std::vector<float>* previous;
+  };
+
   struct GreedyGroupRows {
     explicit GreedyGroupRows(dim_t rows) : previous(greedy_group_rows) {
       greedy_group_rows = rows;
@@ -998,12 +1012,14 @@ namespace ctranslate2 {
                              const float coverage_penalty,
                              std::function<bool(DecodingStepResult)> callback,
                              const dim_t group_size,
-                             std::vector<uint64_t> seeds)
+                             std::vector<uint64_t> seeds,
+                             std::vector<float> temperatures)
     : _length_penalty(length_penalty)
     , _coverage_penalty(coverage_penalty)
     , _callback(std::move(callback))
     , _group_size(group_size)
     , _seeds(std::move(seeds))
+    , _temperatures(std::move(temperatures))
   {
   }
 
@@ -1031,7 +1047,12 @@ namespace ctranslate2 {
 
     // We can return multiple hypotheses from greedy search when random sampling is enabled.
     // In that case we replicate the batches and then merge the hypotheses in a single result.
-    if (num_hypotheses > 1) {
+    // Temperature variants likewise: an input's rows are its variants' hypotheses, variant-major (the search they
+    // then run sees greedy_row_temperatures set and expands no further).
+    const bool variants_here = !_temperatures.empty() && !greedy_row_temperatures;
+    if (num_hypotheses > 1 || variants_here) {
+      const size_t variants = variants_here ? _temperatures.size() : 1;
+      const size_t per_input = num_hypotheses * variants;
 #ifdef CT2_WITH_CUDA
       // On CUDA the hypotheses read one copy of their input's memory keys and values (cuda/shared_memory_rows.h):
       // the entries the decoder does not replicate for beams stay one per input.
@@ -1042,20 +1063,27 @@ namespace ctranslate2 {
 #endif
       for (auto& [name, value] : state) {
         if (value && !(share && !decoder.replicate_state(name)))
-          repeat_batch(value, num_hypotheses);
+          repeat_batch(value, per_input);
       }
-      const SharedMemoryHypotheses shared_memory(share ? static_cast<dim_t>(num_hypotheses) : 0);
-      const GreedyGroupRows group_rows(_group_size * static_cast<dim_t>(num_hypotheses));
-      RowSeeds row_seeds;                                    // input i's hypothesis j: (seed i, j)
-      for (size_t i = 0; i < _seeds.size(); ++i)
+      const SharedMemoryHypotheses shared_memory(share ? static_cast<dim_t>(per_input) : 0);
+      // A variant's hypotheses decode as the one group a search of their input alone would (cuda/clip_groups.h).
+      const GreedyGroupRows group_rows(static_cast<dim_t>(num_hypotheses) * (variants_here ? 1 : _group_size));
+      RowSeeds row_seeds;                                    // seed s (input i's variant v), hypothesis j: (s, j)
+      for (size_t s = 0; s < _seeds.size(); ++s)
         for (size_t j = 0; j < num_hypotheses; ++j)
-          row_seeds.emplace_back(_seeds[i], j);
+          row_seeds.emplace_back(_seeds[s], j);
       const GreedyRowSeeds seeded(_seeds.empty() ? nullptr : &row_seeds);
+      std::vector<float> row_temperatures;                   // each row's variant's temperature
+      if (variants_here)
+        for (dim_t i = 0; i < batch_size; ++i)
+          for (const float temperature : _temperatures)
+            row_temperatures.insert(row_temperatures.end(), num_hypotheses, temperature);
+      const GreedyRowTemperatures tempered(variants_here ? &row_temperatures : nullptr);
 
-      std::vector<size_t> repeat_start_ids = repeat_vector(start_ids, num_hypotheses);
+      std::vector<size_t> repeat_start_ids = repeat_vector(start_ids, per_input);
       std::vector<std::vector<size_t>> repeat_prefix_ids;
       if (prefix_ids)
-        repeat_prefix_ids = repeat_vector(*prefix_ids, num_hypotheses);
+        repeat_prefix_ids = repeat_vector(*prefix_ids, per_input);
 
       std::unique_ptr<GreedySearch> greedy;
 
@@ -1080,7 +1108,7 @@ namespace ctranslate2 {
         start_step,
         max_length,
         min_length,
-        /*return_scores=*/true,
+        /*return_scores=*/num_hypotheses > 1 || return_scores,   // as a variant's search alone samples
         return_attention,
         return_logits_vocab,
         return_prefix,
@@ -1089,22 +1117,24 @@ namespace ctranslate2 {
         logits_processors,
         prefix_ids ? &repeat_prefix_ids : nullptr);
 
-      std::vector<DecodingResult> final_results(batch_size);
+      std::vector<DecodingResult> final_results(batch_size * variants);   // input i's variant v: i * variants + v
 
       for (size_t i = 0; i < results.size(); ++i) {
         auto& result = results[i];
         auto& final_result = final_results[i / num_hypotheses];
 
         final_result.hypotheses.emplace_back(std::move(result.hypotheses[0]));
-        final_result.scores.emplace_back(result.scores[0]);
+        if (!result.scores.empty())
+          final_result.scores.emplace_back(result.scores[0]);
         if (return_attention)
           final_result.attention.emplace_back(std::move(result.attention[0]));
         if (return_logits_vocab)
           final_result.logits_vocab.emplace_back(std::move(result.logits_vocab[0]));
       }
 
-      for (auto& result : final_results)
-        sort_hypotheses(result, num_hypotheses, return_scores, return_attention, return_logits_vocab);
+      if (num_hypotheses > 1)
+        for (auto& result : final_results)
+          sort_hypotheses(result, num_hypotheses, return_scores, return_attention, return_logits_vocab);
 
       return final_results;
     }
@@ -1163,7 +1193,8 @@ namespace ctranslate2 {
       own_seeds.emplace_back(seed, 0);
     const RowSeeds& row_seeds = greedy_row_seeds ? *greedy_row_seeds : own_seeds;
     if (!row_seeds.empty() && static_cast<dim_t>(row_seeds.size()) != batch_size)
-      throw std::invalid_argument("sampling_seeds needs one seed per input");
+      throw std::invalid_argument("sampling_seeds needs one seed per input (and temperature variant)");
+    const std::vector<float>* row_temperatures = greedy_row_temperatures;   // each row's, at its original index
 #ifdef CT2_WITH_CUDA
     std::unique_ptr<cuda::RowStates> row_states;
     if (!row_seeds.empty() && device == Device::CUDA)
@@ -1232,6 +1263,17 @@ namespace ctranslate2 {
           row_scope = std::make_unique<cuda::RowRandomScope>(seeded);
         }
 #endif
+        // The rows' 1 / temperature, converted as RandomSampler converts its own (StorageView(1 / t).to(dtype)).
+        StorageView row_scale(dtype, device);
+        std::unique_ptr<RowScalesScope> scales_scope;
+        if (row_temperatures) {
+          std::vector<float> inverse;
+          inverse.reserve(batch_offset.size());
+          for (const dim_t row : batch_offset)
+            inverse.push_back(float(1) / (*row_temperatures)[row]);
+          row_scale = StorageView({static_cast<dim_t>(inverse.size())}, inverse).to(dtype).to(device);
+          scales_scope = std::make_unique<RowScalesScope>(&row_scale);
+        }
         sampler(log_probs, best_ids, best_probs);
       }
       if (prefix_ids)
@@ -1434,6 +1476,18 @@ namespace ctranslate2 {
 
     if (options.sampling_topp <= 0 || options.sampling_topp > 1)
       throw std::invalid_argument("The sampling_topp parameter must be between 0 and 1");
+    if (!options.sampling_temperatures.empty()) {
+      // num_hypotheses > 1: a search alone then expands its input's rows the same way (GreedySearch::search).
+      if (options.beam_size != 1 || options.sampling_topk == 1 || options.num_hypotheses < 2
+          || options.prefix_bias_beta > 0 || options.return_alternatives || options.callback
+          || options.group_size > 1)
+        throw std::invalid_argument("Temperature variants are random sampling (beam_size 1, sampling_topk != 1, "
+                                    "num_hypotheses > 1) without alternatives, prefix bias, callback or groups "
+                                    "of several inputs");
+      for (const float temperature : options.sampling_temperatures)
+        if (!(temperature > 0))
+          throw std::invalid_argument("Every temperature variant must be > 0");
+    }
     if (options.sampling_topp < 1
         && options.sampling_topk > static_cast<size_t>(ops::TopPMask::max_num_classes(device)))
       throw std::invalid_argument(
@@ -1444,6 +1498,8 @@ namespace ctranslate2 {
 
   static std::unique_ptr<const Sampler>
   make_sampler(const DecodingOptions& options) {
+    if (!options.sampling_temperatures.empty())   // each row at its variant's (GreedySearch's RowScalesScope)
+      return std::make_unique<RandomSampler>(options.sampling_topk, options.sampling_topp, 1.f);
     if (options.sampling_topk == 1 || options.sampling_temperature == 0.0)
       return std::make_unique<BestSampler>();
     else
@@ -1459,7 +1515,8 @@ namespace ctranslate2 {
                                             options.coverage_penalty,
                                             options.callback,
                                             options.group_size,
-                                            options.sampling_seeds);
+                                            options.sampling_seeds,
+                                            options.sampling_temperatures);
     else
       return std::make_unique<BeamSearch>(options.beam_size,
                                           options.length_penalty,

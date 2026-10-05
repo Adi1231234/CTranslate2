@@ -1,8 +1,25 @@
 #include "ctranslate2/sampling.h"
 
 #include "ctranslate2/ops/ops.h"
+#include "ctranslate2/primitives.h"
+#include "dispatch.h"
 
 namespace ctranslate2 {
+
+  static thread_local const StorageView* current_row_scales = nullptr;
+
+  RowScalesScope::RowScalesScope(const StorageView* scales)
+    : _previous(current_row_scales) {
+    current_row_scales = scales;
+  }
+
+  RowScalesScope::~RowScalesScope() {
+    current_row_scales = _previous;
+  }
+
+  const StorageView* row_scales() {
+    return current_row_scales;
+  }
 
   void Sampler::operator()(const StorageView& scores,
                            StorageView& sampled_ids,
@@ -65,8 +82,20 @@ namespace ctranslate2 {
       final_scores = &scores;
     }
 
-    // Divide scores by the temperature constant.
-    if (_temperature != 1) {
+    // Divide scores by the temperature constant: each row by its own where the rows have theirs (RowScalesScope),
+    // the same product (mul_depth_broadcast multiplies as mul does).
+    if (const StorageView* scales = row_scales()) {
+      if (scales->dtype() != dtype || scales->device() != device || scales->size() != final_scores->dim(0))
+        throw std::invalid_argument("Row scales need one value a row, in the scores' type and device");
+      StorageView scaled_scores(dtype, device);
+      scaled_scores.resize_as(*final_scores);
+      DEVICE_AND_TYPE_DISPATCH(device, dtype,
+                               primitives<D>::mul_depth_broadcast(scales->data<T>(), final_scores->data<T>(),
+                                                                  scaled_scores.data<T>(), scales->size(),
+                                                                  final_scores->size()));
+      top_scores = std::move(scaled_scores);
+      final_scores = &top_scores;
+    } else if (_temperature != 1) {
       StorageView scaled_scores(dtype, device);
       ops::Mul()(*final_scores, StorageView(float(1) / _temperature).to(dtype), scaled_scores);
       top_scores = std::move(scaled_scores);

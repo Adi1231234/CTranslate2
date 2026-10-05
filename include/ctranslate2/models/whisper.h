@@ -65,6 +65,12 @@ namespace ctranslate2 {
       // Random sampling on CUDA: a seed per input, each of its hypotheses drawing a stream of its own
       // (cuda/row_random.h): an input draws the same in any batch and on every run. Empty: shared states.
       std::vector<uint64_t> sampling_seeds;
+
+      // Random sampling of every input at each of these temperatures in one search (DecodingOptions::
+      // sampling_temperatures): results input-major, input i at temperature v as result i * variants + v, each what
+      // generate() of that input alone at that temperature returns; sampling_seeds then a seed per input and
+      // temperature. Empty: sampling_temperature.
+      std::vector<float> sampling_temperatures;
     };
 
     struct WhisperGenerationResult {

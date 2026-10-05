@@ -68,6 +68,38 @@ if os.environ.get("CHECK") == "joined":
         same = sum(a == b for a, b in zip(runs["joined"], runs["alone"]))
         again = sum(a == b for a, b in zip(runs["again"], runs["alone"]))
         print(f"seeded T={t}: {same} of {len(clips)} clips joined identical to alone, {again} repeat alone")
+elif os.environ.get("CHECK") == "variants":
+    # The ladder's sampled temperatures in one search (sampling_temperatures, the runner's RUN_FALLBACK_SPECULATE):
+    # every clip's attempt at each temperature alone with its own seed, against the clip's attempts in one call, and
+    # against 4 clips' in one call (group_size=1): every attempt must keep its tokens, score and no-speech bits.
+    import time
+    temps = [0.2, 0.4, 0.6, 0.8, 1.0]
+    opts = dict(beam_size=1, num_hypotheses=5, sampling_topk=0)
+    seed = lambda i, v: (int.from_bytes(clips[i][0].encode("utf-8")[:8].ljust(8, b"\0"), "little") + 7919 * v) % 2 ** 64
+    encode = lambda a, b: model.model.encode(get_ctranslate2_storage(feats[a:b]), to_cpu=False, group_size=1)
+    runs, took = {}, {}
+    for name in ("alone", "clip", "joined"):
+        t0, runs[name] = time.time(), []
+        if name == "alone":
+            for i in range(len(clips)):
+                enc = encode(i, i + 1)
+                for v, t in enumerate(temps):
+                    runs[name].append(entry(model.model.generate(enc, [prompt], sampling_temperature=t,
+                                                                 sampling_seeds=[seed(i, v)], **opts, **kw)[0]))
+        else:
+            step = 1 if name == "clip" else 4
+            for a in range(0, len(clips), step):
+                b = min(a + step, len(clips))
+                rs = model.model.generate(encode(a, b), [prompt] * (b - a), group_size=1, sampling_temperatures=temps,
+                                          sampling_seeds=[seed(i, v) for i in range(a, b) for v in range(len(temps))],
+                                          **opts, **kw)
+                runs[name] += [entry(r) for r in rs]
+        took[name] = time.time() - t0
+    attempts = len(clips) * len(temps)
+    for name in ("clip", "joined"):
+        same = sum(x == y for x, y in zip(runs[name], runs["alone"]))
+        print(f"variants {name}: {same} of {attempts} attempts identical to alone ({len(runs[name])} returned); "
+              f"{took[name]:.1f} s against {took['alone']:.1f} s alone")
 else:
     ctranslate2.set_random_seed(1234)
     for i, (uuid, _) in enumerate(clips):

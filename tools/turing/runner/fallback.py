@@ -50,9 +50,13 @@ class BatchedPool:
     def submit(self, fn, model, uuid, wav):
         from fallback_batch import Broker, ladder_of
         if id(model) not in self.proxies:
+            from engine import EXACT
             proxy = copy.copy(model)
+            speculate = ([t for t in EXACT["temperature"] if t > 0]
+                         if os.environ.get("RUN_FALLBACK_SPECULATE") == "1" else None)
             proxy.model = Broker(model.model, os.environ.get("RUN_FALLBACK_SAMPLING") == "batched",
-                                 os.environ.get("RUN_FALLBACK_SEEDS") == "1")
+                                 os.environ.get("RUN_FALLBACK_SEEDS") == "1", speculate=speculate,
+                                 spec_clips=int(os.environ.get("RUN_FALLBACK_SPEC_CLIPS", "2")))
             self.proxies[id(model)] = proxy
         proxy, done = self.proxies[id(model)], Future()
 

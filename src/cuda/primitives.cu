@@ -256,6 +256,15 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
+  void primitives<Device::CUDA>::mul_depth_broadcast(const T* a, const T* b, T* c,
+                                                     dim_t a_size, dim_t b_size) {
+    cuda::binary_transform(a, b, c, b_size,
+                           cuda::multiplies<cuda::device_type<T>>(),
+                           cuda::repeat_vec_depth<cuda::index_t>(b_size / a_size));
+  }
+
+  template<>
+  template <typename T>
   void primitives<Device::CUDA>::relu(const T* x, T* y, dim_t size) {
     cuda::unary_transform(x, y, size, cuda::relu_func<cuda::device_type<T>>());
   }
@@ -890,6 +899,9 @@ namespace ctranslate2 {
   primitives<Device::CUDA>::mul(const T* a, const T* b, T* c, dim_t size); \
   template void                                                         \
   primitives<Device::CUDA>::mul_batch_broadcast(const T* a, const T* b, \
+                                                T* c, dim_t a_size, dim_t b_size); \
+  template void                                                         \
+  primitives<Device::CUDA>::mul_depth_broadcast(const T* a, const T* b, \
                                                 T* c, dim_t a_size, dim_t b_size); \
   template void                                                         \
   primitives<Device::CUDA>::penalize_previous_tokens(T*,                \

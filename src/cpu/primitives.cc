@@ -299,6 +299,17 @@ namespace ctranslate2 {
   }
 
   template<>
+  template <typename T>
+  void primitives<Device::CPU>::mul_depth_broadcast(const T* a, const T* b, T* c,
+                                                    dim_t a_size, dim_t b_size) {
+    const dim_t depth = b_size / a_size;
+    cpu::parallel_for(0, a_size, 1, [&](dim_t begin, dim_t end) {
+      for (dim_t i = begin; i < end; ++i)
+        mul(a[i], b + i * depth, c + i * depth, depth);
+    });
+  }
+
+  template<>
   template<>
   void primitives<Device::CPU>::relu(const float* x, float* y, dim_t size) {
     cpu::parallel_for(0, size, cpu::GRAIN_SIZE,
@@ -1200,6 +1211,9 @@ namespace ctranslate2 {
   primitives<Device::CPU>::max(T a, const T* x, T* y, dim_t size);     \
   template void                                                         \
   primitives<Device::CPU>::mul_batch_broadcast(const T* a, const T* b, T* c, \
+                                               dim_t a_size, dim_t b_size); \
+  template void                                                         \
+  primitives<Device::CPU>::mul_depth_broadcast(const T* a, const T* b, T* c, \
                                                dim_t a_size, dim_t b_size); \
   template void                                                         \
   primitives<Device::CPU>::penalize_previous_tokens(T*,                 \

@@ -31,6 +31,22 @@ namespace ctranslate2 {
   };
 
 
+  // Rows sampled at temperatures of their own (GreedySearch's temperature variants): while a RowScalesScope is
+  // active on a thread, RandomSampler multiplies each row of its scores by that row's value of `scales` (one a row,
+  // 1 / its temperature in the scores' type and device), as it otherwise multiplies them all by its own.
+  class RowScalesScope {
+  public:
+    explicit RowScalesScope(const StorageView* scales);
+    ~RowScalesScope();
+    RowScalesScope(const RowScalesScope&) = delete;
+    RowScalesScope& operator=(const RowScalesScope&) = delete;
+  private:
+    const StorageView* _previous;
+  };
+
+  const StorageView* row_scales();
+
+
   class RandomSampler : public Sampler {
   public:
     RandomSampler(dim_t from_topk = 0, float topp = 1, float temperature = 1);

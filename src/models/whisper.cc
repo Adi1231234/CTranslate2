@@ -362,6 +362,7 @@ namespace ctranslate2 {
       decoding_options.include_eos_in_hypotheses = false;
       decoding_options.group_size = static_cast<dim_t>(options.group_size);
       decoding_options.sampling_seeds = options.sampling_seeds;
+      decoding_options.sampling_temperatures = options.sampling_temperatures;
 
       for (const auto& id : options.suppress_tokens) {
         if (id >= 0)
@@ -409,6 +410,8 @@ namespace ctranslate2 {
 
       std::vector<WhisperGenerationResult> final_results;
       final_results.reserve(results.size());
+      // Temperature variants: an input's results, one a variant, share its no speech probability.
+      const size_t variants = std::max<size_t>(options.sampling_temperatures.size(), 1);
 
       for (size_t i = 0; i < results.size(); ++i) {
         auto& result = results[i];
@@ -419,7 +422,7 @@ namespace ctranslate2 {
         final_result.scores = std::move(result.scores);
         final_result.logits = std::move(result.logits_vocab);
         if (options.return_no_speech_prob)
-          final_result.no_speech_prob = no_speech_probs[i];
+          final_result.no_speech_prob = no_speech_probs[i / variants];
 
         final_results.emplace_back(std::move(final_result));
       }
@@ -739,7 +742,8 @@ namespace ctranslate2 {
                       std::vector<std::vector<std::string>> prompts,
                       WhisperOptions options) {
       CT2_NVTX_RANGE(range, "submit generate");   // the input copy runs on this thread
-      const size_t batch_size = features.dim(0);
+      // A result per input, or per input and temperature variant (WhisperOptions::sampling_temperatures).
+      const size_t batch_size = features.dim(0) * std::max<size_t>(options.sampling_temperatures.size(), 1);
       return post_batch<WhisperGenerationResult>(
         [features = features.sync_copy(),
          prompts = std::move(prompts),
@@ -755,7 +759,8 @@ namespace ctranslate2 {
                       std::vector<std::vector<size_t>> prompts,
                       WhisperOptions options) {
       CT2_NVTX_RANGE(range, "submit generate");   // the input copy runs on this thread
-      const size_t batch_size = features.dim(0);
+      // A result per input, or per input and temperature variant (WhisperOptions::sampling_temperatures).
+      const size_t batch_size = features.dim(0) * std::max<size_t>(options.sampling_temperatures.size(), 1);
       return post_batch<WhisperGenerationResult>(
         [features = features.sync_copy(),
          prompts = std::move(prompts),
