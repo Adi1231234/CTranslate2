@@ -118,9 +118,9 @@ namespace ctranslate2 {
 
     class CudaStream {
     public:
-      CudaStream(bool low = false) {
+      CudaStream(bool low = false, bool side = false) {
         apply_schedule_flags();
-        if (is_main_thread && !low && !graphs_enabled()) {   // graphs capture created streams only (graph.h)
+        if (is_main_thread && !low && !side && !graphs_enabled()) {   // graphs capture created streams only (graph.h)
           is_main_thread = false;
           _stream = cudaStreamDefault;
         } else {
@@ -190,14 +190,35 @@ namespace ctranslate2 {
     // when the thread exits.
 
     static thread_local bool low_priority_stream = false;
+    static thread_local int side_stream = -1;
 
     cudaStream_t get_cuda_stream() {
       static thread_local CudaStream cuda_stream;
+      if (side_stream >= 0) {
+        static thread_local std::vector<std::unique_ptr<CudaStream>> sides;
+        while (static_cast<int>(sides.size()) <= side_stream)
+          sides.push_back(std::make_unique<CudaStream>(/*low=*/false, /*side=*/true));
+        return sides[side_stream]->get();
+      }
       if (low_priority_stream) {
         static thread_local CudaStream low_stream(/*low=*/true);
         return low_stream.get();
       }
       return cuda_stream.get();
+    }
+
+    UseSideStreamInScope::UseSideStreamInScope(int index)
+      : _previous_index(side_stream) {
+      side_stream = index;
+    }
+
+    UseSideStreamInScope::~UseSideStreamInScope() {
+      side_stream = _previous_index;
+    }
+
+    int side_streams() {
+      static const int count = read_int_from_env("CT2_SIDE_STREAMS", 0);
+      return count;
     }
 
     UseLowPriorityStreamInScope::UseLowPriorityStreamInScope()
@@ -213,6 +234,14 @@ namespace ctranslate2 {
     // workspace, and a worker that alternated between its streams (Whisper's encoder on the low-priority one)
     // then waited for the device, i.e. for the other threads' queued kernels, before its next job could start.
     cublasHandle_t get_cublas_handle() {
+      if (side_stream >= 0) {                                       // each made while its side stream is active
+        static thread_local std::vector<std::unique_ptr<CublasHandle>> sides;
+        while (static_cast<int>(sides.size()) <= side_stream) {
+          const UseSideStreamInScope scope(static_cast<int>(sides.size()));
+          sides.push_back(std::make_unique<CublasHandle>());
+        }
+        return sides[side_stream]->get();
+      }
       if (low_priority_stream) {
         static thread_local CublasHandle low_handle;                // made while the low stream is active
         return low_handle.get();

@@ -152,6 +152,20 @@ namespace ctranslate2 {
       const bool _previous_value;
     };
 
+    // Work of the calling thread goes to its side stream `index` while an instance lives, with a cuBLAS handle of
+    // that stream's own (configured as every handle): independent work of one step side by side on the GPU
+    // (layers/joint_step.h). Only when the GPU takes up kernels changes; the caller orders the streams with events.
+    class UseSideStreamInScope {
+    public:
+      explicit UseSideStreamInScope(int index);
+      ~UseSideStreamInScope();
+    private:
+      const int _previous_index;
+    };
+
+    // CT2_SIDE_STREAMS: how many side streams a joint decoding step may use (0, default: none).
+    int side_streams();
+
     class UseTrueFp16GemmInScope {
     public:
       UseTrueFp16GemmInScope(const bool use)

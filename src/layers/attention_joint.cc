@@ -1,5 +1,6 @@
 #include "ctranslate2/layers/attention.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 #include "ctranslate2/ops/ops.h"
@@ -12,6 +13,7 @@
 #  include "cuda/cache_reorder.h"
 #  include "cuda/clip_groups.h"
 #  include "cuda/copy_parts.h"
+#  include "cuda/utils.h"
 #endif
 
 namespace ctranslate2 {
@@ -160,9 +162,32 @@ namespace ctranslate2 {
       split_heads_with_bias(fused_proj, _linear[0].bias(), {&all_queries, &all_keys, &all_values}, _num_heads);
       append_parts(joint, all_keys, all_values);
 
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      // The parts' attentions are independent: on side streams (CT2_SIDE_STREAMS), after the cache update, and
+      // joined back before their contexts are (cuda/utils.h).
+      const int sides = std::min<int>(cuda::side_streams(), static_cast<int>(joint.parts.size()));
+      static thread_local std::vector<cudaEvent_t> events;
+      while (static_cast<int>(events.size()) < sides + 1) {
+        cudaEvent_t event;
+        CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        events.push_back(event);
+      }
+      cudaStream_t main_stream = cuda::get_cuda_stream();
+      if (sides > 1)
+        CUDA_CHECK(cudaEventRecord(events[sides], main_stream));
+#endif
       std::vector<StorageView> contexts;
       contexts.reserve(joint.parts.size());
-      for (const auto& part : joint.parts) {
+      for (size_t p = 0; p < joint.parts.size(); ++p) {
+        const auto& part = joint.parts[p];
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+        std::unique_ptr<cuda::UseSideStreamInScope> side;
+        if (sides > 1) {
+          side = std::make_unique<cuda::UseSideStreamInScope>(static_cast<int>(p % sides));
+          if (p < static_cast<size_t>(sides))
+            CUDA_CHECK(cudaStreamWaitEvent(cuda::get_cuda_stream(), events[sides], 0));
+        }
+#endif
         StorageView queries_proj = rows_view(all_queries, part.row_begin, part.rows);
         StorageView& cached_keys = *part.self_keys[joint.layer];
         StorageView& cached_values = *part.self_values[joint.layer];
@@ -177,6 +202,15 @@ namespace ctranslate2 {
                                                           nullptr, nullptr);
         combine_heads(part_context, _num_heads, nullptr, 1, heads_combined);
       }
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      for (int s = 0; sides > 1 && s < sides; ++s) {
+        {
+          const cuda::UseSideStreamInScope side(s);
+          CUDA_CHECK(cudaEventRecord(events[s], cuda::get_cuda_stream()));
+        }
+        CUDA_CHECK(cudaStreamWaitEvent(main_stream, events[s], 0));
+      }
+#endif
       join_rows(contexts, context);
     }
 
