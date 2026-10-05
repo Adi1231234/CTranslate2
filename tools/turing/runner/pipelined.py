@@ -24,8 +24,9 @@ from resume import ResumeCheck
 class PipelinedBatchedInferencePipeline(ResumeCheck):
     def _encode(self, features, group_size):
         """WhisperModel.encode (faster-whisper 1.2.1) with each group of the batch encoded on its own."""
-        to_cpu = self.model.device == "cuda" and len(self.model.device_index) > 1
-        return self.model.model.encode(get_ctranslate2_storage(features), to_cpu=to_cpu, group_size=group_size)
+        whisper = self.model.model                            # the ctranslate2 model
+        to_cpu = whisper.device == "cuda" and len(whisper.device_index) > 1
+        return whisper.encode(get_ctranslate2_storage(features), to_cpu=to_cpu, group_size=group_size)
 
     def _batched_segments_generator(self, features, tokenizer, chunks_metadata, batch_size, options, log_progress):
         groups = int(os.environ.get("PIPE_GROUPS", "1"))
