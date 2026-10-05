@@ -115,6 +115,22 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
   172.8 against 180.1 kJ, 90.3x at the batched path's power. The ladders are ~21% of all decoding row-steps
   (up to 448 steps x 25 sampled rows a window), so their energy is mostly the work itself.
 
+**Where it stopped (5.10 night, Adi's call; every row IDENTICAL to production's; g6e.xlarge only):**
+- Best package pyct2-l41p (6d2c3ee5): the batched path alone 112.8-113.5x; the full run with the seeded, joined
+  ladders and their temperature variants 89.6-90.5x (`RUN_FALLBACK_SPEC_CLIPS=2`: 1 clip a search 877-889 J a
+  ladder, 2 788-832, 4 816, 8 867, 16 939; 4 also runs the GPU out of memory beside the batched path). At ~90x the
+  3,186 h take ~35 h on one g6e.xlarge, ~$66.
+- The ceiling, measured: the encoder alone (`../scale/encoder_bench.py`) runs 263-274x at 347-349 W, ~7 J a clip;
+  the batched path ~16 J a clip, so decoding is ~9 J (56%), most of it the cross-attention re-reading each clip's
+  ~246 MB of memory keys and values every step. 140x needs ~13 J a clip, i.e. decoding a third cheaper with the same
+  bits; no exact change found comes near (each below 1%).
+- Measured and not adopted: 7 batches a stream (112.9 against 112.8x); the encoder's first feed-forward on the CUTLASS
+  replica with bias and GELU fused at 256 x 128 (`CT2_ENC_GEMM=cutlass CT2_ENC_GEMM_CFG=256x128k32s3`, rows identical,
+  +0-1%, inside the noise); the fork's CUDA graphs on the ladders (same bits now, more energy).
+- On the branch, not packaged: a354d1bf, the encoder attention's loops split where its row layout jumps (bit checks
+  TOTAL 0): 20% fewer instructions (Nsight Compute, `box/ncu_probe.sh`) but only 3% less energy for the kernel: its
+  energy is the math and the shared-memory traffic, not the instruction count.
+
 **Beside other AWS work in the account** (the asr-training Batch queues): a standalone box, never their queues;
 no resource named `asr-train*` (their submit uses the newest `asr-train` job definition); another AZ than their
 running box; everything tagged. Their queues take g6e.xlarge in us-east-1 and us-east-2, and the account's on-demand
