@@ -1,0 +1,4 @@
+# Where the encoder attention's instructions go (energy_probe: 1.65 J a step, ~678M warp instructions a launch, about
+# twice what its arithmetic needs by count): Nsight Compute's per-SASS-line counts of exact_attention_kernel at 8
+# clips (exact_attention_check, line info, sm_86 SASS as the L40S runs it).
+scriptn|scripts/ncu_probe.sh|probes/probes-ea-lineinfo-bf57dd6d.tgz|exact_attention_check|exact_attention_kernel|1
