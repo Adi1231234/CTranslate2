@@ -42,14 +42,15 @@ namespace ctranslate2 {
       }
     };
 
-    // Tile x Tile outputs per block, KTile of k per stage, 4 warps of Tile/2 x Tile/2 x KTile (any of these keeps
-    // each output's chain over k: 16 at a time in increasing order, no k split inside or across blocks).
-    template <int Tile, int KTile, int Stages, typename Op>
+    // Tile x Tile outputs per block, KTile of k per stage, 4 warps of Tile/2 x Tile/2 x KTile, mma.sync m16n8kInstK
+    // (any of these keeps each output's chain over k: InstK at a time in increasing order, no k split inside or
+    // across blocks; InstK is the chain's width: 16 as cuBLAS's s16816 kernels, 8 as its s1688 ones).
+    template <int Tile, int KTile, int Stages, typename Op, int InstK = 16>
     using EncGemmKernel = typename cutlass::gemm::kernel::DefaultGemm<
       EncHalf, cutlass::layout::RowMajor, 8, EncHalf, cutlass::layout::ColumnMajor, 8,
       EncHalf, cutlass::layout::RowMajor, float, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
       cutlass::gemm::GemmShape<Tile, Tile, KTile>, cutlass::gemm::GemmShape<Tile / 2, Tile / 2, KTile>,
-      cutlass::gemm::GemmShape<16, 8, 16>, Op, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>,
+      cutlass::gemm::GemmShape<16, 8, InstK>, Op, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>,
       Stages, false, cutlass::arch::OpMultiplyAdd>::GemmKernel;
 
     template <typename K>
@@ -92,6 +93,34 @@ namespace ctranslate2 {
         if (tn < tiles_n)
           enc_gemm_tile<K>(params, shared, r / 8, tn);
       }
+    }
+
+    // c = a w^T (a [m, k], w [n, k], c [m, n] row-major; with bias, c = gelu(bias + c) as EncBiasGeluOp) on
+    // `stream`: a block per tile, or with a work counter (zero, cuda/persistent.h) `blocks` blocks taking them.
+    template <int Tile, int KTile, int Stages, typename Op, int InstK>
+    inline void enc_gemm_launch(const __half* a, const __half* w, __half* c, int m, int n, int k, const __half* bias,
+                                cudaStream_t stream, unsigned* counter = nullptr, int blocks = 0) {
+      using K = EncGemmKernel<Tile, KTile, Stages, Op, InstK>;
+      using RefA = typename K::Mma::IteratorA::TensorRef;
+      using RefB = typename K::Mma::IteratorB::TensorRef;
+      using RefC = typename K::Epilogue::OutputTileIterator::TensorRef;
+      auto half_ptr = [](const __half* p) { return reinterpret_cast<EncHalf*>(const_cast<__half*>(p)); };
+      const cutlass::gemm::GemmCoord problem(m, n, k), tiles((m + Tile - 1) / Tile, (n + Tile - 1) / Tile, 1);
+      const typename K::Params params(problem, tiles,
+                                      RefA(half_ptr(a), cutlass::layout::RowMajor(k)),
+                                      RefB(half_ptr(w), cutlass::layout::ColumnMajor(k)),
+                                      RefC(half_ptr(bias ? bias : c), cutlass::layout::RowMajor(bias ? 0 : n)),
+                                      RefC(reinterpret_cast<EncHalf*>(c), cutlass::layout::RowMajor(n)));
+      const int items = 8 * tiles.m() * ((tiles.n() + 7) / 8);
+      const int smem = int(sizeof (typename K::SharedStorage));
+      static const bool configured = cudaFuncSetAttribute(enc_gemm_kernel<K>,
+                                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                                          smem) == cudaSuccess;
+      (void)configured;
+      if (counter)
+        enc_gemm_kernel<K><<<blocks, K::kThreadCount, smem, stream>>>(params, counter, items);
+      else
+        enc_gemm_kernel<K><<<items, K::kThreadCount, smem, stream>>>(params, nullptr, items);
     }
 
   }

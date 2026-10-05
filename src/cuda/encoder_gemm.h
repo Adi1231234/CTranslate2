@@ -10,6 +10,8 @@ namespace ctranslate2 {
     // (cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_tn): each output one mma.sync m16n8k16 chain
     // over k from zero, activations as the A operand, then rounded to fp16. The kernel is CUTLASS's own 64x64x32
     // tile of that configuration, so every output is computed as cuBLAS computes it, whatever the grid.
+    // On sm_89 (L40S) cuBLAS runs the first feed-forward (5120 x 1280) as an 8-wide chain (s1688), and so does the
+    // kernel there (mma.sync m16n8k8); the other products keep cuBLAS on sm_89 (encoder_gemm.cu: replica_width).
     // Off by default: cuBLAS runs them, as in every speed and equality measurement of the store PC's pipe8
     // (38.4x, 26.9). CT2_ENC_GEMM=cutlass runs this kernel; CT2_ENC_GEMM_BLOCKS=<n> runs it persistent with n
     // blocks per SM (cuda/persistent.h); CT2_ENC_GEMM_CFG=<tile>x<k tile>s<stages> another tile shape and pipeline (the list is

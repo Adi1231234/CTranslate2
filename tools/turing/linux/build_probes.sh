@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build kernel probes (../kernels/*.cu) on Linux as ../kernels/build_probe.ps1 does on Windows: nvcc against the
-# library's headers and thrust/cub, linked to cuBLAS. Default code: sm_86 SASS, what the 8.6+PTX library runs on
-# sm_86 and sm_89 GPUs (AWS A10G, L4, L40S). Output: <out>/probes.tgz with one executable per probe; at run time
+# library's headers, thrust/cub and CUTLASS (cutlass_overrides first, as the library builds encoder_gemm.cu),
+# linked to cuBLAS. Default code: sm_86 SASS, what the 8.6+PTX library runs on sm_86 and sm_89 GPUs (AWS A10G,
+# L4, L40S). Output: <out>/probes.tgz with one executable per probe; at run time
 # put the production venv's nvidia/cublas/lib on LD_LIBRARY_PATH (the cuBLAS build the replicas are checked on).
 # usage: build_probes.sh <source checkout> <out dir> <probe> [probe ...]     (after setup_env.sh)
 set -euo pipefail
@@ -12,6 +13,7 @@ BIN="$OUT/probes"; rm -rf "$BIN"; mkdir -p "$BIN"
 for name in "$@"; do
   /usr/local/cuda/bin/nvcc -O3 -std=c++17 $GENCODE --expt-relaxed-constexpr -diag-suppress 2219 \
     -I "$CCCL/cub" -I "$CCCL/thrust" -I "$CCCL/libcudacxx/include" -I "$SRC/src" -I "$SRC/include" \
+    -I "$SRC/src/cuda/cutlass_overrides" -I "$SRC/third_party/cutlass/include" \
     -o "$BIN/$name" "$SRC/tools/turing/kernels/$name.cu" -lcublas -lcublasLt
   echo "built $name"
 done

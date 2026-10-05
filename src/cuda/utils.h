@@ -133,8 +133,6 @@ namespace ctranslate2 {
     // and sm_89 with cuBLAS 12.9.2 (tools/turing/kernels/qk_hmma_probe.cu, av_hmma_probe.cu,
     // exact_attention_check.cu, cross_sweep.cu).
     bool hmma_replicas_verified();
-    // The encoder GEMM's CUTLASS replica (cuda/encoder_gemm.cu): sm_120 with cuBLAS 12.9.2 only.
-    bool encoder_gemm_replica_verified();
     // The device is sm_<major><minor> and cuBLAS is the build the fork's probes ran on (12.9.2), and the stock
     // kernels are not forced.
     bool cublas_verified_on(int major, int minor);

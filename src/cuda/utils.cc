@@ -437,13 +437,5 @@ namespace ctranslate2 {
 #endif
     }
 
-    bool encoder_gemm_replica_verified() {
-#ifdef CT2_USE_HIP
-      return false;
-#else
-      return replicas_verified_on(12, 0);   // sm_89's cuBLAS runs the encoder's FFN in 8-wide k steps (s1688)
-#endif
-    }
-
   }
 }
