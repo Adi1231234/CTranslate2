@@ -1,0 +1,5 @@
+# long1 again with the long engine's 2 workers (long1's hung: the stream's loop held the only worker), the long engine
+# first; each run's rows reach S3 as it ends and a run stops after 25 minutes. Before them, the chunked features
+# against faster-whisper's own on the box's numpy.
+scriptF|scripts/features_check.sh|runner-fa5cfaf3
+scriptL|scripts/longform.sh|runner-fa5cfaf3|long48:pyct2-l41p:list.txt:MODE=long,LONG_THREADS=48,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600|stockseq:stock:list_small.txt:MODE=seq,RUN_SEED=20261006,RUN_STOCK_FULL_CONTEXT=1,LONG_SECONDS=600|forkseq:pyct2-l41p:list_small.txt:MODE=seq,RUN_SEED=20261006,LONG_SECONDS=600
