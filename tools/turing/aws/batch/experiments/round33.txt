@@ -4,7 +4,7 @@
 # then the batched path: l41j, l41k, l41k with the second feed-forward's deeper pipeline and the encoder's first
 # feed-forward on 256x128 tiles, l41k again. First energy_probe: joules a launch of each heavy kernel (the runs sit at
 # the 350 W limit, so a kernel's cost is its energy).
-scripte|scripts/probes.sh|probes/probes-c7939946.tgz|energy_probe
+scripte|scripts/probes.sh|probes/probes-4668717b.tgz|energy_probe|mma_kperm_probe:2000
 scriptc|scripts/probes.sh|probes/probes-4ba8bb16.tgz|cache_reorder_check|exact_attention_check:10|softmax_parts_check
 j1|pyct2-l41j|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
 k1|pyct2-l41k|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
