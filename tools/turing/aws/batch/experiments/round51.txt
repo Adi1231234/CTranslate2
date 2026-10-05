@@ -1,0 +1,8 @@
+# The encoder attention after round49's instruction count (a354d1bf: the loops split where the row layout jumps, key
+# pointers, the softmax tail as -inf; same arithmetic, same order): its bit check against cuBLAS (TOTAL 0), the
+# softmax's on every row length, the cross-attention sweep (it shares the softmax), the energy probe before
+# (4668717b) and after, and Nsight Compute's per-SASS-line counts again.
+scripta|scripts/probes.sh|probes/probes-a354d1bf.tgz|exact_attention_check:10|softmax_check|cross_sweep
+scripto|scripts/probes.sh|probes/probes-4668717b.tgz|energy_probe
+scriptw|scripts/probes.sh|probes/probes-a354d1bf.tgz|energy_probe
+scriptn|scripts/ncu_probe.sh|probes/probes-a354d1bf.tgz|exact_attention_check|exact_attention_kernel|1
