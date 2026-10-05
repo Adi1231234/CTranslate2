@@ -111,7 +111,8 @@ namespace ctranslate2 {
     // Penalties are only applied to return scores consistent with the beam search.
     GreedySearch(const float length_penalty = 0,
                  const float coverage_penalty = 0,
-                 std::function<bool(DecodingStepResult)> callback = nullptr);
+                 std::function<bool(DecodingStepResult)> callback = nullptr,
+                 const dim_t group_size = 0);
 
     std::vector<DecodingResult>
     search(layers::Decoder& decoder,
@@ -135,6 +136,7 @@ namespace ctranslate2 {
     const float _length_penalty;
     const float _coverage_penalty;
     const std::function<bool(DecodingStepResult)> _callback;
+    const dim_t _group_size;
   };
 
 
@@ -160,8 +162,8 @@ namespace ctranslate2 {
     bool return_alternatives = false;
     bool return_prefix = true;
     float min_alternative_expansion_prob = 0;
-    // Beam search on CUDA: the batch is consecutive groups of this many inputs, each decoded with the arithmetic
-    // of a batch of its own (cuda/clip_groups.h); 0 = one batch.
+    // On CUDA: the batch is consecutive groups of this many inputs, each decoded with the arithmetic of a batch of
+    // its own (cuda/clip_groups.h), in beam search and in sampling; 0 = one batch.
     dim_t group_size = 0;
     std::vector<size_t> disable_ids;
     std::vector<size_t> disable_ids_begin;

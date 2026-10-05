@@ -1,6 +1,7 @@
 #include "cuda/shared_memory_rows.h"
 
 #include "ctranslate2/allocator.h"
+#include "cuda/clip_groups.h"
 #include "cuda/utils.h"
 #include "env.h"
 
@@ -43,20 +44,28 @@ namespace ctranslate2 {
     static void batched(bool trans_a, int m, int n, int k, float alpha, const __half* a, size_t a_stride, int lda,
                         const __half* b, size_t b_stride, int ldb, __half* c, size_t c_stride, int ldc, dim_t heads) {
       const SharedMemoryRows& rows = *shared_memory_rows();
-      const int entries = static_cast<int>(rows.rows * heads);
-      Allocator& allocator = get_allocator<Device::CUDA>();
-      void** pointers = static_cast<void**>(allocator.allocate(3 * entries * sizeof (void*)));
-      cudaStream_t stream = get_cuda_stream();
-      shared_rows_pointers<<<(entries + 127) / 128, 128, 0, stream>>>(
-        rows.row_clip, a, a_stride, b, b_stride, c, c_stride, static_cast<int>(heads), entries,
-        const_cast<const void**>(pointers), const_cast<const void**>(pointers + entries), pointers + 2 * entries);
-      const float beta = 0;
-      CUBLAS_CHECK(cublasGemmBatchedEx(get_cublas_handle(), trans_a ? CUBLAS_OP_T : CUBLAS_OP_N, CUBLAS_OP_N,
-                                       m, n, k, &alpha, const_cast<const void**>(pointers), CUDA_R_16F, lda,
-                                       const_cast<const void**>(pointers + entries), CUDA_R_16F, ldb, &beta,
-                                       pointers + 2 * entries, CUDA_R_16F, ldc, entries, CUBLAS_COMPUTE_32F,
-                                       CUBLAS_GEMM_DEFAULT));
-      allocator.free(pointers);                                // stream-ordered, after the product
+      // Rows [first, first + count) as one product of count x heads entries.
+      const auto product = [&](dim_t first, dim_t count) {
+        const int entries = static_cast<int>(count * heads);
+        Allocator& allocator = get_allocator<Device::CUDA>();
+        void** pointers = static_cast<void**>(allocator.allocate(3 * entries * sizeof (void*)));
+        cudaStream_t stream = get_cuda_stream();
+        shared_rows_pointers<<<(entries + 127) / 128, 128, 0, stream>>>(
+          rows.row_clip + first, a, a_stride, b + first * heads * b_stride, b_stride, c + first * heads * c_stride,
+          c_stride, static_cast<int>(heads), entries, const_cast<const void**>(pointers),
+          const_cast<const void**>(pointers + entries), pointers + 2 * entries);
+        const float beta = 0;
+        CUBLAS_CHECK(cublasGemmBatchedEx(get_cublas_handle(), trans_a ? CUBLAS_OP_T : CUBLAS_OP_N, CUBLAS_OP_N,
+                                         m, n, k, &alpha, const_cast<const void**>(pointers), CUDA_R_16F, lda,
+                                         const_cast<const void**>(pointers + entries), CUDA_R_16F, ldb, &beta,
+                                         pointers + 2 * entries, CUDA_R_16F, ldc, entries, CUBLAS_COMPUTE_32F,
+                                         CUBLAS_GEMM_DEFAULT));
+        allocator.free(pointers);                              // stream-ordered, after the product
+      };
+      // Inputs decoded together (cuda/clip_groups.h, rows grouped by input): each group's entries as that input's
+      // own product would have them (cuBLAS's kernel for these products depends on the entry count).
+      if (!for_each_clip_group(rows.rows, product))
+        product(0, rows.rows);
     }
 
     // primitives<CUDA>::gemm_batch_strided's cuBLAS call for MatMul(queries, keys, trans_b): column-major

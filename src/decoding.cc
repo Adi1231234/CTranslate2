@@ -33,6 +33,20 @@ namespace ctranslate2 {
     const dim_t previous;
   };
 
+  // Likewise the rows of one group (group_size inputs x their hypotheses) for that search's groups
+  // (cuda/clip_groups.h); 0: the search's own group_size.
+  static thread_local dim_t greedy_group_rows = 0;
+
+  struct GreedyGroupRows {
+    explicit GreedyGroupRows(dim_t rows) : previous(greedy_group_rows) {
+      greedy_group_rows = rows;
+    }
+    ~GreedyGroupRows() {
+      greedy_group_rows = previous;
+    }
+    const dim_t previous;
+  };
+
   static void gather_beam_flat(StorageView& data, const StorageView& indices, dim_t beam_size) {
     merge_batch_beam(data);
     gather(data, indices);
@@ -806,10 +820,12 @@ namespace ctranslate2 {
 
   GreedySearch::GreedySearch(const float length_penalty,
                              const float coverage_penalty,
-                             std::function<bool(DecodingStepResult)> callback)
+                             std::function<bool(DecodingStepResult)> callback,
+                             const dim_t group_size)
     : _length_penalty(length_penalty)
     , _coverage_penalty(coverage_penalty)
     , _callback(std::move(callback))
+    , _group_size(group_size)
   {
   }
 
@@ -851,6 +867,7 @@ namespace ctranslate2 {
           repeat_batch(value, num_hypotheses);
       }
       const SharedMemoryHypotheses shared_memory(share ? static_cast<dim_t>(num_hypotheses) : 0);
+      const GreedyGroupRows group_rows(_group_size * static_cast<dim_t>(num_hypotheses));
 
       std::vector<size_t> repeat_start_ids = repeat_vector(start_ids, num_hypotheses);
       std::vector<std::vector<size_t>> repeat_prefix_ids;
@@ -955,10 +972,14 @@ namespace ctranslate2 {
       map_rows();
     }
 
+    const dim_t group_rows = greedy_group_rows ? greedy_group_rows : _group_size;
+
     for (dim_t step = 0; step < max_step; ++step) {
       convert_to_original_word_ids(decoder, sample_from);
       const StorageView step_ids = sample_from.to(device);
 #ifdef CT2_WITH_CUDA
+      // The groups' rows still decoding: each group's products as a batch of its own would run them.
+      const cuda::ClipGroupsScope clip_groups(cuda::make_clip_groups(batch_offset, group_rows));
       const cuda::SharedMemoryRows shared_rows{share ? row_input.data<int32_t>() : nullptr,
                                                static_cast<dim_t>(batch_offset.size()),
                                                static_cast<dim_t>(memory_inputs.size())};
@@ -1226,7 +1247,8 @@ namespace ctranslate2 {
     if (options.beam_size == 1 && options.prefix_bias_beta == 0)
       return std::make_unique<GreedySearch>(options.length_penalty,
                                             options.coverage_penalty,
-                                            options.callback);
+                                            options.callback,
+                                            options.group_size);
     else
       return std::make_unique<BeamSearch>(options.beam_size,
                                           options.length_penalty,
