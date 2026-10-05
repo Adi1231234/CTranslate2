@@ -24,7 +24,7 @@ NCU=$(ls /opt/nvidia/nsight-compute/*/ncu 2>/dev/null | sort -V | tail -1)
 echo "installed $NCU_PKG: $NCU"
 export RUN_CACHE=$B/cache HF_HOME=$B/hf PYTHONPATH=$B/$PKG
 export LD_LIBRARY_PATH=$B/venv/lib/python3.12/site-packages/nvidia/cublas/lib
-KERNELS=cross_attention_kernel:32,Kernel2:134,kernel:182,tiled_split_gemm_kernel:29,residual_norm_kernel:102,reorder_append_parts_kernel:32,copy_parts_kernel:32,split_heads_bias_kernel:64,warp_softmax_forward:177,bias_add_vec_kernel:36,topk_stage_1:5,gemv2N_kernel:32,exact_attention_kernel:3,exact_attention_layout:3,regex:^(ampere|sm8|cutlass).*gemm:3
+KERNELS='cross_attention_kernel:32,Kernel2:134,kernel:182,tiled_split_gemm_kernel:29,residual_norm_kernel:102,reorder_append_parts_kernel:32,copy_parts_kernel:32,split_heads_bias_kernel:64,warp_softmax_forward:177,bias_add_vec_kernel:36,topk_stage_1:5,gemv2N_kernel:32,exact_attention_kernel:3,exact_attention_layout:3,regex:^(ampere|sm8|cutlass).*gemm:3'
 for kv in "$@"; do export "$kv"; done
 R=$PWD/root; mkdir -p "$R"; cp $B/$RUNNER/*.py "$R/"; cp $B/runner/units.json "$R/"; ln -sf $B/hf "$R/hf"
 awk 'NF {print $1}' "$B/$LIST" | head -n "$N" > units.txt
