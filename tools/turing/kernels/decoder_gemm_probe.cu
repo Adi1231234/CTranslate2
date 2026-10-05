@@ -1,4 +1,4 @@
-// The Whisper decoder's products at the rows a step of several batches has (2..320): cuBLAS (one call, as
+﻿// The Whisper decoder's products at the rows a step of several batches has (2..320): cuBLAS (one call, as
 // CTranslate2 makes it) against src/cuda/tiled_split_gemm.cuh at several output tiles, for bits and time.
 // Row-independent products (3840 / 1280 / 5120 / 51872 x 1280, cuda/clip_groups.h): one chain over k, every M
 // 2..320 against the cuBLAS call, 2 fills. The second feed-forward (1280 x 5120): groups of rows with their own
@@ -17,10 +17,12 @@ using namespace ctranslate2::cuda;
 constexpr int MMAX = 320, KMAX = 5120, NMAX = 51872;
 
 struct Tile { int tm, tn; void (*run)(const __half*, const __half*, __half*, int, int, int, const SplitGroups&, cudaStream_t); };
-static const Tile tiles[] = {
+static const Tile tiles[] = {                               // 16-row tiles: the 4 warps side by side
+  {16, 64, tsg_launch<16, 64, 1>}, {16, 128, tsg_launch<16, 128, 1>},
   {32, 32, tsg_launch<32, 32>}, {32, 64, tsg_launch<32, 64>}, {64, 32, tsg_launch<64, 32>},
   {64, 64, tsg_launch<64, 64>}, {32, 128, tsg_launch<32, 128>}, {64, 128, tsg_launch<64, 128>},
 };
+constexpr int TILES = sizeof tiles / sizeof tiles[0];
 
 static SplitGroups split_groups(const std::vector<int64_t>& rows, int k) {
   SplitGroups g{};
@@ -53,13 +55,13 @@ int main() {
   unsigned long long total = 0;
   for (const auto& s : shapes) {
     const int n = s[0], k = s[1];
-    unsigned long long bad[6] = {};
+    unsigned long long bad[TILES] = {};
     for (int f = 0; f < 2; ++f) {
       fill<<<1024, 256>>>(A, (size_t)MMAX * k, 41u + 3 * f, -9 + 2 * f, 1 + f);
       fill<<<1024, 256>>>(W, (size_t)n * k, 59u + 5 * f, -15 + f, -3 + 2 * f);
       for (int m = 2; m <= MMAX; ++m) {
         cublas(m, n, k, A, R);
-        for (int t = 0; t < 6; ++t) {
+        for (int t = 0; t < TILES; ++t) {
           tiles[t].run(A, W, C, m, n, k, tsg_chain(m, k), 0);
           CK(cudaGetLastError());
           bad[t] += diff((size_t)m * n);
@@ -67,7 +69,7 @@ int main() {
       }
     }
     printf("%5d x %d, M 2..320 x 2 fills, mismatched values by tile:", n, k);
-    for (int t = 0; t < 6; ++t) { printf(" %dx%d %llu", tiles[t].tm, tiles[t].tn, bad[t]); total += bad[t]; }
+    for (int t = 0; t < TILES; ++t) { printf(" %dx%d %llu", tiles[t].tm, tiles[t].tn, bad[t]); total += bad[t]; }
     printf("\n");
   }
   {                                                          // the second feed-forward, groups of rows
@@ -75,7 +77,7 @@ int main() {
     fill<<<1024, 256>>>(A, (size_t)MMAX * k, 77u, -9, 1);
     fill<<<1024, 256>>>(W, (size_t)n * k, 91u, -15, -3);
     std::mt19937 rng(11);
-    unsigned long long bad[6] = {};
+    unsigned long long bad[TILES] = {};
     int sequences = 0;
     for (int c = 0; c < 400; ++c) {
       std::vector<int64_t> g; int m = 0;
@@ -87,14 +89,14 @@ int main() {
       }
       int row = 0;
       for (const int64_t r : g) { cublas((int)r, n, k, A + (size_t)row * k, R + (size_t)row * n); row += (int)r; }
-      for (int t = 0; t < 6; ++t) {
+      for (int t = 0; t < TILES; ++t) {
         tiles[t].run(A, W, C, m, n, k, split_groups(g, k), 0);
         bad[t] += diff((size_t)m * n);
       }
       ++sequences;
     }
     printf(" 1280 x 5120, %d group sequences, mismatched values by tile:", sequences);
-    for (int t = 0; t < 6; ++t) { printf(" %dx%d %llu", tiles[t].tm, tiles[t].tn, bad[t]); total += bad[t]; }
+    for (int t = 0; t < TILES; ++t) { printf(" %dx%d %llu", tiles[t].tm, tiles[t].tn, bad[t]); total += bad[t]; }
     printf("\n");
   }
 
@@ -114,7 +116,7 @@ int main() {
     printf("%5d x %d (%.1f MB): us at M = cuBLAS | 32x32 32x64 64x32 64x64 32x128 64x128\n", n, k, 2e-6 * n * k);
     for (const int m : ms) {
       printf("  M %3d: %7.1f |", m, timed([&] { cublas(m, n, k, A, C); }));
-      for (int t = 0; t < 6; ++t)
+      for (int t = 0; t < TILES; ++t)
         printf(" %7.1f", timed([&] { tiles[t].run(A, W, C, m, n, k, tsg_chain(m, k), 0); }));
       printf("\n");
     }
@@ -125,7 +127,7 @@ int main() {
     printf("  %d x 40: %7.1f |", groups, timed([&] {
       for (int i = 0; i < groups; ++i) cublas(40, 1280, 5120, A + (size_t)i * 40 * 5120, C + (size_t)i * 40 * 1280);
     }));
-    for (int t = 0; t < 6; ++t)
+    for (int t = 0; t < TILES; ++t)
       printf(" %7.1f", timed([&] { tiles[t].run(A, W, C, 40 * groups, 1280, 5120, split_groups(g, 5120), 0); }));
     printf("\n");
   }

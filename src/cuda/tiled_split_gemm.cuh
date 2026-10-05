@@ -4,7 +4,7 @@
 // group of rows with the arithmetic cuBLAS gives a call with that group alone: split-K in `slices` slices of
 // `slice` k, each slice one mma.sync m16n8k16 chain over its k in increasing 16-groups, rounded to half, the
 // slices summed in order in fp32, out = half(sum) (grouped_split_gemm.cuh's arithmetic; one slice of all of k is
-// cuBLAS's plain chain). Templated on the block's output tile TM x TN (4 warps, 2 x 2, each TM/2 x TN/2), so the
+// cuBLAS's plain chain). Templated on the block's output tile TM x TN (4 warps, WARPS_M x 4 / WARPS_M), so the
 // grid can have enough blocks for few rows: the arithmetic of an output does not depend on the tile.
 // A [M x K], W [N x K], C [M x N] row-major; K a multiple of 32.
 
@@ -17,17 +17,17 @@ namespace ctranslate2 {
 
     constexpr int tsg_kstep = 32, tsg_pitch = tsg_kstep + 8, tsg_stages = 4;   // halves a staged row
 
-    template <int TM, int TN>
+    template <int TM, int TN, int WARPS_M = 2>
     __global__ void __launch_bounds__(128)
     tiled_split_gemm_kernel(const __half* A, const __half* W, __half* C, int M, int N, int K, SplitGroups groups) {
 #if __CUDA_ARCH__ >= 800
-      constexpr int WM = TM / 2, WN = TN / 2, MT = WM / 16, NT = WN / 8;
+      constexpr int WARPS_N = 4 / WARPS_M, WM = TM / WARPS_M, WN = TN / WARPS_N, MT = WM / 16, NT = WN / 8;
       static_assert(MT >= 1 && NT >= 2 && NT % 2 == 0, "warp tile: 16 rows x 16 columns at least");
       extern __shared__ __align__(16) unsigned char tsg_smem[];
       __half* st = reinterpret_cast<__half*>(tsg_smem);
       constexpr int stage = (TM + TN) * tsg_pitch;           // A rows, then W rows
       const int warp = threadIdx.x / 32, lane = threadIdx.x % 32, lr = lane % 8, lm = lane / 8;
-      const int wm = warp / 2, wn = warp % 2;
+      const int wm = warp / WARPS_N, wn = warp % WARPS_N;
       const int m0 = blockIdx.y * TM, n0 = blockIdx.x * TN, steps = K / tsg_kstep;
       const int g = lane / 4, t = lane % 4;
       int slice[MT][2], left[MT][2];                         // this thread's rows: slice length, k to its end
@@ -128,16 +128,16 @@ namespace ctranslate2 {
 #endif
     }
 
-    template <int TM, int TN>
+    template <int TM, int TN, int WARPS_M = 2>
     inline void tsg_launch(const __half* a, const __half* w, __half* c, int m, int n, int k,
                            const SplitGroups& groups, cudaStream_t stream) {
       constexpr int smem = tsg_stages * (TM + TN) * tsg_pitch * sizeof (__half);
-      static const bool configured = cudaFuncSetAttribute(tiled_split_gemm_kernel<TM, TN>,
+      static const bool configured = cudaFuncSetAttribute(tiled_split_gemm_kernel<TM, TN, WARPS_M>,
                                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
                                                           smem) == cudaSuccess;
       (void)configured;
       const dim3 grid((n + TN - 1) / TN, (m + TM - 1) / TM);
-      tiled_split_gemm_kernel<TM, TN><<<grid, 128, smem, stream>>>(a, w, c, m, n, k, groups);
+      tiled_split_gemm_kernel<TM, TN, WARPS_M><<<grid, 128, smem, stream>>>(a, w, c, m, n, k, groups);
     }
 
     // One group of m rows, one chain over all of k (cuBLAS's arithmetic for the row-independent products).
