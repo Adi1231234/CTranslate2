@@ -67,11 +67,16 @@ namespace ctranslate2 {
       size_t end[CacheParts::max_parts];                    // each part's vectors (keys and values) end here
     };
 
+    // A part's vectors are counted in 32 bits (at most 2 x 320 rows x 20 heads x 449 steps x 8 per head): 64-bit
+    // divisions cost the kernel more issue slots than its loads and stores (round27 profile: issue 64%).
+    // HEAD_VECS: the vectors of a head's row at compile time (8, 64 fp16 dims), or 0 for head_vecs.
+    template <unsigned HEAD_VECS>
     __global__ void reorder_append_parts_kernel(CacheParts parts, PartRanges ranges, unsigned heads,
-                                                unsigned head_vecs, size_t total) {
-      size_t v = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-      if (v >= total)
+                                                unsigned head_vecs_any, size_t total) {
+      const size_t global = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (global >= total)
         return;
+      const unsigned head_vecs = HEAD_VECS ? HEAD_VECS : head_vecs_any;
       size_t begin = 0;
       unsigned time = 0, rows = 0;
       const void* cache[2] = {};
@@ -80,7 +85,7 @@ namespace ctranslate2 {
       const int32_t* order = nullptr;
       #pragma unroll
       for (int q = 0; q < CacheParts::max_parts; ++q)
-        if (q < parts.count && v < ranges.end[q] && (q == 0 || v >= ranges.end[q - 1])) {
+        if (q < parts.count && global < ranges.end[q] && (q == 0 || global >= ranges.end[q - 1])) {
           begin = q == 0 ? 0 : ranges.end[q - 1];
           time = unsigned(parts.time[q]);
           rows = unsigned(parts.rows[q]);
@@ -89,19 +94,19 @@ namespace ctranslate2 {
           out[0] = parts.out[q][0]; out[1] = parts.out[q][1];
           order = parts.order[q];
         }
-      v -= begin;
-      const unsigned out_time = time + 1;
-      const size_t per_cache = size_t(rows) * heads * out_time * head_vecs;
-      const unsigned c = unsigned(v / per_cache);
+      unsigned v = unsigned(global - begin);
+      const unsigned out_time = time + 1, row_vecs = out_time * head_vecs;
+      const unsigned per_cache = rows * heads * row_vecs;
+      const unsigned c = v >= per_cache;                      // keys, then values
       v -= c * per_cache;
-      const size_t rh = v / (size_t(out_time) * head_vecs);        // r * heads + h
-      const unsigned rest = unsigned(v - rh * out_time * head_vecs);
+      const unsigned rh = v / row_vecs;                       // r * heads + h
+      const unsigned rest = v - rh * row_vecs;
       const unsigned s = rest / head_vecs, i = rest - s * head_vecs;
-      const size_t r = rh / heads, h = rh - r * heads;
+      const unsigned r = rh / heads, h = rh - r * heads;
       const size_t from = order ? size_t(order[r]) : r;
       static_cast<uint4*>(c ? out[1] : out[0])[v] = s < time
         ? static_cast<const uint4*>(c ? cache[1] : cache[0])[((from * heads + h) * time + s) * head_vecs + i]
-        : static_cast<const uint4*>(c ? fresh[1] : fresh[0])[rh * head_vecs + i];
+        : static_cast<const uint4*>(c ? fresh[1] : fresh[0])[size_t(rh) * head_vecs + i];
     }
 
     void reorder_append_parts(const CacheParts& parts, dim_t heads, dim_t head_dim) {
@@ -115,8 +120,13 @@ namespace ctranslate2 {
       if (total == 0)
         return;
       constexpr unsigned threads = 256;
-      reorder_append_parts_kernel<<<(total + threads - 1) / threads, threads, 0, get_cuda_stream()>>>(
-        parts, ranges, heads, head_vecs, total);
+      const size_t blocks = (total + threads - 1) / threads;
+      if (head_vecs == 8)
+        reorder_append_parts_kernel<8><<<blocks, threads, 0, get_cuda_stream()>>>(parts, ranges, heads, head_vecs,
+                                                                                   total);
+      else
+        reorder_append_parts_kernel<0><<<blocks, threads, 0, get_cuda_stream()>>>(parts, ranges, heads, head_vecs,
+                                                                                   total);
     }
 
   }

@@ -63,12 +63,12 @@ namespace at {
     }
 
     // The queries head-split, [batch, n, depth], with their bias: 16-byte vector i of qs's rows in source order
-    // (clip, row, head, vector), so the reads are coalesced.
+    // (clip, row, head, vector), so the reads are coalesced. 32-bit index math (a Whisper encoder call has at
+    // most 8 x 20 x 1500 x 8 vectors): 64-bit divisions per vector cost more issue slots than the copy.
     __device__ __forceinline__ void eal_query_vector(const EalSource& qs, __half* q, int heads, int n, int depth,
-                                                     size_t i) {
-      const int vecs = depth / 8, chunk = int(i % vecs);
-      const size_t rest = i / vecs;
-      const int head = int(rest % heads), j = int((rest / heads) % n), b = int(rest / ((size_t)heads * n)) * heads + head;
+                                                     unsigned i) {
+      const unsigned vecs = depth / 8, chunk = i % vecs, rest = i / vecs;
+      const int head = int(rest % heads), j = int((rest / heads) % n), b = int(rest / (heads * n)) * heads + head;
       uint4 x = *reinterpret_cast<const uint4*>(eal_row(qs, b, heads, j) + 8 * chunk);
       if (qs.bias) {
         const uint4 bv = *reinterpret_cast<const uint4*>(qs.bias + head * depth + 8 * chunk);
@@ -82,32 +82,33 @@ namespace at {
     }
 
     // One thread per 16-byte vector of the head-split queries (when q is given), then per (batch entry,
-    // fragment, lane) of kf, then of vf.
+    // fragment, lane) of kf, then of vf; 32-bit index math as eal_query_vector's.
     static __global__ void exact_attention_layout(EalSource qs, __half* q, EalSource k, EalSource v, int heads,
                                                   uint2* kf, uint2* vf, int batch, int n, int depth) {
-      const int tiles = eal_key_tiles(n), groups = eal_groups(n), residue = n % 64;
-      const size_t q_count = q ? (size_t)batch * n * (depth / 8) : 0;
-      const size_t kf_count = (size_t)batch * tiles * 4 * eal_lanes;
-      const size_t vf_count = (size_t)batch * (depth / 8) * groups * eal_lanes;
+      const unsigned tiles = eal_key_tiles(n), groups = eal_groups(n);
+      const int residue = n % 64;
+      const unsigned q_count = q ? unsigned(batch) * n * (depth / 8) : 0;
+      const unsigned kf_count = unsigned(batch) * tiles * 4 * eal_lanes;
+      const unsigned vf_count = unsigned(batch) * (depth / 8) * groups * eal_lanes;
       const __half zero = __float2half(0.f);
-      for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < q_count + kf_count + vf_count;
-           i += (size_t)gridDim.x * blockDim.x) {
+      for (unsigned i = blockIdx.x * blockDim.x + threadIdx.x; i < q_count + kf_count + vf_count;
+           i += gridDim.x * blockDim.x) {
         if (i < q_count) {
           eal_query_vector(qs, q, heads, n, depth, i);
           continue;
         }
-        const size_t o = i - q_count;
+        const unsigned o = i - q_count;
         if (o < kf_count) {
           const int lane = o % eal_lanes, c = (o / eal_lanes) % 4, tile = (o / (4 * eal_lanes)) % tiles;
-          const int b = int(o / ((size_t)4 * eal_lanes * tiles));
+          const int b = int(o / (4 * eal_lanes * tiles));
           const int key = 8 * tile + lane / 4, d = 16 * c + 2 * (lane % 4);
           const __half* row = eal_row(k, b, heads, key);
           kf[o] = key < n ? make_uint2(eal_pair(k, row, b, heads, d, depth), eal_pair(k, row, b, heads, d + 8, depth))
                           : make_uint2(0u, 0u);
         } else {
-          const size_t p = o - kf_count;
-          const int lane = p % eal_lanes, G = (p / eal_lanes) % groups, dt = (p / ((size_t)eal_lanes * groups)) % (depth / 8);
-          const int b = int(p / ((size_t)eal_lanes * groups * (depth / 8)));
+          const unsigned p = o - kf_count;
+          const int lane = p % eal_lanes, G = (p / eal_lanes) % groups, dt = (p / (eal_lanes * groups)) % (depth / 8);
+          const int b = int(p / (eal_lanes * groups * (depth / 8)));
           const int s = G < 2 ? 16 * G : residue + 16 * (G - 2), end = G < 2 ? residue : n;
           const int d = 8 * dt + lane / 4;
           const __half vb = v.bias ? v.bias[(b % heads) * depth + d] : zero;

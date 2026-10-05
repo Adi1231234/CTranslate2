@@ -27,22 +27,24 @@ namespace ctranslate2 {
     }
 
     // One thread per 16-byte vector of x, in x order (coalesced reads); each head's vectors land
-    // contiguously in its output row.
+    // contiguously in its output row. Index: the vector counts' type, 32 bits whenever they fit (a 64-bit
+    // division per vector costs more issue slots than the copy).
+    template <typename Index>
     __global__ void split_heads_bias_kernel(const uint4* x, const uint4* bias, SplitOutputs out,
                                             unsigned time, unsigned heads, unsigned head_vecs,
-                                            unsigned row_vecs, size_t total) {
-      const size_t v = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+                                            unsigned row_vecs, Index total) {
+      const Index v = Index(blockIdx.x) * blockDim.x + threadIdx.x;
       if (v >= total)
         return;
-      const size_t rt = v / row_vecs;               // r * time + t
+      const Index rt = v / row_vecs;                // r * time + t
       const unsigned c = unsigned(v - rt * row_vecs);
       const unsigned part_vecs = heads * head_vecs;
       const unsigned part = c / part_vecs;
       const unsigned h = (c - part * part_vecs) / head_vecs;
       const unsigned i = c - part * part_vecs - h * head_vecs;
-      const size_t r = rt / time, t = rt - r * time;
+      const Index r = rt / time, t = rt - r * time;
       const uint4 value = bias ? add_bias8(x[v], bias[c]) : x[v];
-      out.p[part][((r * heads + h) * time + t) * head_vecs + i] = value;
+      out.p[part][((size_t(r) * heads + h) * time + t) * head_vecs + i] = value;
     }
 
     bool split_heads_bias_aligned(const void* p) {
@@ -61,9 +63,14 @@ namespace ctranslate2 {
         return;
       constexpr unsigned threads = 256;
       const size_t blocks = (total + threads - 1) / threads;
-      split_heads_bias_kernel<<<blocks, threads, 0, get_cuda_stream()>>>(
-        reinterpret_cast<const uint4*>(x), reinterpret_cast<const uint4*>(bias), outputs,
-        time, heads, head_vecs, row_vecs, total);
+      const auto* xv = reinterpret_cast<const uint4*>(x);
+      const auto* bv = reinterpret_cast<const uint4*>(bias);
+      if (total <= UINT32_MAX - threads)
+        split_heads_bias_kernel<unsigned><<<blocks, threads, 0, get_cuda_stream()>>>(
+          xv, bv, outputs, time, heads, head_vecs, row_vecs, unsigned(total));
+      else
+        split_heads_bias_kernel<size_t><<<blocks, threads, 0, get_cuda_stream()>>>(
+          xv, bv, outputs, time, heads, head_vecs, row_vecs, total);
     }
 
   }
