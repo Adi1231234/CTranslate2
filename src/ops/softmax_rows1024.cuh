@@ -103,7 +103,12 @@ namespace at {
       const unsigned tail = classes - 1024;                 // values past the first 1024
       const unsigned n1 = tail > C10_WARP_SIZE * lane
         ? min(tail - C10_WARP_SIZE * lane, unsigned(C10_WARP_SIZE)) : 0;
+      // A lane's second chunk past the row's end (n1 < 32) holds -inf: it changes no max, its exp is +0, and a legacy
+      // thread's 0 + e0 + 0 is its e0, so every lane runs the same instructions with no branch on n1.
       float e0[C10_WARP_SIZE], e1[C10_WARP_SIZE];
+      #pragma unroll
+      for (unsigned i = 0; i < C10_WARP_SIZE; ++i)
+        e1[i] = -std::numeric_limits<float>::infinity();
       rows1024_load(in0, C10_WARP_SIZE, e0, stride0);
       rows1024_load(in1, n1, e1, stride1);
 
@@ -111,8 +116,7 @@ namespace at {
       #pragma unroll
       for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {
         lane_max = MaxFloat<float, float>()(lane_max, e0[i]);
-        if (i < n1)
-          lane_max = MaxFloat<float, float>()(lane_max, e1[i]);
+        lane_max = MaxFloat<float, float>()(lane_max, e1[i]);
       }
       #pragma unroll
       for (unsigned offset = C10_WARP_SIZE / 2; offset > 0; offset /= 2)
@@ -122,13 +126,11 @@ namespace at {
       float warp_sum = 0.f;
       #pragma unroll
       for (unsigned i = 0; i < C10_WARP_SIZE; ++i) {       // legacy thread 32 * lane + i
-        float thread_sum = 0.f;
         e0[i] = std::exp(e0[i] - max_k);
-        thread_sum = thread_sum + e0[i];
-        if (i < n1) {
-          e1[i] = std::exp(e1[i] - max_k);
-          thread_sum = thread_sum + e1[i];
-        }
+        e1[i] = std::exp(e1[i] - max_k);
+        // The legacy thread's 0 + e0[i] (+ e1[i] where it has one) is e0[i] + e1[i]: an exp is never -0 (the one
+        // value 0 + x rounds to another), and e1[i] is +0 past the row's end.
+        const float thread_sum = e0[i] + e1[i];
         warp_sum = Add<float>()(warp_sum, thread_sum);
       }
       float sum = 0.f;

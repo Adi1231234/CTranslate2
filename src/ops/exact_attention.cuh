@@ -44,11 +44,16 @@ namespace at {
                                                                     + 2 * t) : 0u;
           }
       // The warp's tiles are 8 apart, so its keys i are 64 apart: 8 halves further within a part of the row
-      // (ea_slot), and at the one step where i enters the second part (kc) the place is that part's (no branch).
-      const int i0 = 8 * warp + 2 * t, kc = (1024 - i0 + 63) / 64, jump = ea_slot(i0 + 64 * kc, tail_lanes);
-      int place = ea_slot(i0, tail_lanes);
-      #pragma unroll 4
-      for (int k = 0, tile = warp; tile < tiles; ++k, tile += ea_warps) {  // scores of keys 8 tile .. 8 tile + 7
+      // (ea_slot). Every lane's first key i0 is below 64, so all enter the second part at step kc = 16, where the
+      // place is that part's; and only from step k_safe on can a key be past the row (n % 4 == 0: keys i and
+      // i + 1 share a slot). The loop is split there, so no step tests either (round49: the selects and tests
+      // were a third of the scores' instructions).
+      const int i0 = 8 * warp + 2 * t;
+      constexpr int kc = 16, k_safe = (m + 1) / 64;           // steps below k_safe: i0 + 64 k <= 62 + 64 k < n
+      static_assert((1024 + 63) / 64 == kc && (1024 - 62 + 63) / 64 == kc && kc <= k_safe, "row layout");
+      const int jump = ea_slot(i0 + 64 * kc, tail_lanes);
+      __half* rows = s + g * pitch + ea_slot(i0, tail_lanes);  // query row g's place of key i0
+      auto tile_scores = [&](int tile, bool store) {          // scores of keys 8 tile .. 8 tile + 7
         uint2 kfr[4];
         #pragma unroll
         for (int c = 0; c < 4; ++c)
@@ -59,13 +64,27 @@ namespace at {
           #pragma unroll
           for (int c = 0; c < 4; ++c)                           // 16-dim groups in increasing order
             ea_mma(d, a[r][c][0], a[r][c][1], a[r][c][2], a[r][c][3], kfr[c]);
-          if (i0 + 64 * k < n) {                                // n % 4 == 0: keys i and i + 1 share a slot
-            __half* rows = s + (16 * r + g) * pitch + place;
-            *reinterpret_cast<__half2*>(rows) = __floats2half2_rn(alpha * d[0], alpha * d[1]);
-            *reinterpret_cast<__half2*>(rows + 8 * pitch) = __floats2half2_rn(alpha * d[2], alpha * d[3]);
+          if (store) {
+            *reinterpret_cast<__half2*>(rows + 16 * r * pitch) = __floats2half2_rn(alpha * d[0], alpha * d[1]);
+            *reinterpret_cast<__half2*>(rows + (16 * r + 8) * pitch) = __floats2half2_rn(alpha * d[2], alpha * d[3]);
           }
         }
-        place = k + 1 == kc ? jump : place + 8;
+      };
+      int ks = 0, tile = warp;                                  // step, tile
+      #pragma unroll 4
+      for (; ks < kc - 1; ++ks, tile += ea_warps) {
+        tile_scores(tile, true);
+        rows += 8;
+      }
+      tile_scores(tile, true);                                  // step kc - 1, then the second part
+      rows = s + g * pitch + jump;
+      for (++ks, tile += ea_warps; ks < k_safe && tile < tiles; ++ks, tile += ea_warps) {
+        tile_scores(tile, true);
+        rows += 8;
+      }
+      for (; tile < tiles; ++ks, tile += ea_warps) {
+        tile_scores(tile, i0 + 64 * ks < n);
+        rows += 8;
       }
       __syncthreads();
       for (int r = warp; r < ea_rows * RT; r += ea_warps) {    // softmax in place (rows past m are unused)
@@ -90,36 +109,60 @@ namespace at {
         }
       }
       // From group 2 on, groups G and G + 2 read keys 32 apart: within a part of the row (ea_slot) that is
-      // 4 halves further, and at the one step where a key enters the second part (kc) its place is that part's,
-      // selected without a branch (same loads, fewer instructions).
-      int off[2][2], jump_to[2][2], k_in[2][2];                 // [G parity][keys i, i + 8]
+      // 4 halves further, and at the one step where a key enters the second part (k_in, 31 or 32 for every lane
+      // and key at Whisper's n) its place is that part's. Each of the four keys is a pointer into query row g
+      // (row g + 8 and the other tiles at constant offsets), moved 4 halves a step, and only the steps around
+      // the entry select (round49: the index scaling, selects and tests were half the products' instructions).
+      constexpr int k_first = (1024 - (residue + 30) + 31) / 32, k_last = (1024 - residue + 31) / 32;
+      const __half* key_at[2][2];                               // [G parity][keys i, i + 8]
+      const __half* jump_to[2][2];
+      int k_in[2][2];
       #pragma unroll
       for (int p = 0; p < 2; ++p)
         #pragma unroll
         for (int h = 0; h < 2; ++h) {
           const int key0 = residue + 16 * p + 8 * h + 2 * t;
-          off[p][h] = ea_slot(key0, tail_lanes);
+          key_at[p][h] = s0 + ea_slot(key0, tail_lanes);
           k_in[p][h] = (1024 - key0 + 31) / 32;
-          jump_to[p][h] = ea_slot(key0 + 32 * k_in[p][h], tail_lanes);
+          jump_to[p][h] = s0 + ea_slot(key0 + 32 * k_in[p][h], tail_lanes);
         }
-      #pragma unroll 2
-      for (int k = 0; 2 + 2 * k < groups; ++k) {
+      auto word = [](const __half* p, int halves) { return *reinterpret_cast<const unsigned*>(p + halves); };
+      auto pair_products = [&](int k) {                         // groups 2 + 2k and 3 + 2k
         #pragma unroll
         for (int p = 0; p < 2; ++p)
           if (2 + 2 * k + p < groups) {
             const uint2 vfr = vb[(2 + 2 * k + p) * C10_WARP_SIZE];
             #pragma unroll
-            for (int r = 0; r < RT; ++r) {
-              const __half* r0 = s0 + 16 * r * pitch;
-              const __half* r8 = s8 + 16 * r * pitch;
-              ea_mma(acc[r], at(r0, off[p][0]), at(r8, off[p][0]), at(r0, off[p][1]), at(r8, off[p][1]), vfr);
-            }
+            for (int r = 0; r < RT; ++r)
+              ea_mma(acc[r], word(key_at[p][0], 16 * r * pitch), word(key_at[p][0], (16 * r + 8) * pitch),
+                     word(key_at[p][1], 16 * r * pitch), word(key_at[p][1], (16 * r + 8) * pitch), vfr);
           }
+      };
+      auto advance = [&]() {
         #pragma unroll
         for (int p = 0; p < 2; ++p)
           #pragma unroll
           for (int h = 0; h < 2; ++h)
-            off[p][h] = k + 1 == k_in[p][h] ? jump_to[p][h] : off[p][h] + 4;
+            key_at[p][h] += 4;
+      };
+      int k = 0;
+      #pragma unroll 2
+      for (; k < k_first - 1; ++k) {
+        pair_products(k);
+        advance();
+      }
+      for (; k < k_last; ++k) {
+        pair_products(k);
+        #pragma unroll
+        for (int p = 0; p < 2; ++p)
+          #pragma unroll
+          for (int h = 0; h < 2; ++h)
+            key_at[p][h] = k + 1 == k_in[p][h] ? jump_to[p][h] : key_at[p][h] + 4;
+      }
+      #pragma unroll 2
+      for (; 2 + 2 * k < groups; ++k) {
+        pair_products(k);
+        advance();
       }
       const int clip = entry / heads, head = entry % heads;     // o is [clip, query, head, dim]
       #pragma unroll
