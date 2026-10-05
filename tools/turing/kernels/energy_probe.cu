@@ -3,12 +3,12 @@
 // encoder, at production shapes (27 clips of 5 beams = 135 decoder rows; encoder batches of 8 clips), runs alone
 // in a loop for ~1.5 s with NVML's energy counter read around it: watts, microseconds and millijoules a launch,
 // and millijoules a decoding step (launches a step from the round23 profile: encoder work is ~2.5 layer-batches
-// a step).
+// a step). NVML comes from the driver at run time (dlopen; the build machine has no GPU driver).
 // usage: energy_probe
 #include <cstdio>
+#include <dlfcn.h>
 #include <functional>
 #include <vector>
-#include <nvml.h>
 #include "probe_common.h"
 #include "probe_data.cuh"
 #include "cuda/tiled_split_gemm.cuh"
@@ -23,9 +23,20 @@ namespace ctranslate2 {
   }
 }
 
-static nvmlDevice_t device;
+// The three NVML calls the probe makes (nvml.h's signatures; a device handle is an opaque pointer).
+static void* device;
+static int (*nvml_energy)(void*, unsigned long long*);
+static void nvml_open() {
+  void* lib = dlopen("libnvidia-ml.so.1", RTLD_NOW);
+  if (!lib) { fprintf(stderr, "no libnvidia-ml.so.1\n"); exit(1); }
+  auto init = reinterpret_cast<int (*)()>(dlsym(lib, "nvmlInit_v2"));
+  auto handle = reinterpret_cast<int (*)(unsigned, void**)>(dlsym(lib, "nvmlDeviceGetHandleByIndex_v2"));
+  nvml_energy = reinterpret_cast<int (*)(void*, unsigned long long*)>(
+    dlsym(lib, "nvmlDeviceGetTotalEnergyConsumption"));
+  CK(init()); CK(handle(0, &device));
+}
 static unsigned long long energy_mj() {
-  unsigned long long e = 0; CK(nvmlDeviceGetTotalEnergyConsumption(device, &e)); return e;
+  unsigned long long e = 0; CK(nvml_energy(device, &e)); return e;
 }
 
 struct Row { const char* name; double per_step, watts, us, mj; };
@@ -50,7 +61,7 @@ static void measure(const char* name, double per_step, const std::function<void(
 }
 
 int main() {
-  CK(nvmlInit()); CK(nvmlDeviceGetHandleByIndex(0, &device));
+  nvml_open();
   cublasHandle_t h; CK(cublasCreate(&h));
   const int dm = 135, em = 12000, heads = 20, clips = 27, beams = 5;
   __half *A, *W, *C, *B; CK(cudaMalloc(&A, 2ull * em * 5120)); CK(cudaMalloc(&W, 2ull * 51872 * 1280));
@@ -120,6 +131,5 @@ int main() {
   double total = 0; for (const Row& r : rows) total += r.mj * r.per_step;
   printf("sum of the kernels above: %.1f mJ a step (at the measured ~31.6 steps a second the GPU draws ~340 W)\n",
          total);
-  nvmlShutdown();
   return 0;
 }
