@@ -11,7 +11,7 @@ for p in "$PKG" "$RUNNER"; do
   [ -d "$B/$p" ] || aws s3 cp --only-show-errors "$S3/$p.tgz" - | tar xz -C "$B"
 done
 nvidia-cuda-mps-control -d
-nsys profile --trace=cuda,nvtx,osrt --sample=process-tree --sampling-frequency=2000 --backtrace=fp \
+nsys profile --trace=cuda,nvtx,osrt --sample=process-tree --backtrace=fp \
   --cpuctxsw=process-tree --delay="$DELAY" --duration="$WIN" --force-overwrite=true -o report \
   bash "$B/src/tools/turing/aws/box/run.sh" "$LABEL" "$PKG" "$RUNNER" "$LIST" "$N" "$@" > nsys.out 2>&1
 echo quit | nvidia-cuda-mps-control
