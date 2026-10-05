@@ -1,7 +1,9 @@
 """Where the fallback clips (the full temperature ladder) run, with each clip's ladder time in the log.
 'inline' (default): right away on the caller's thread, so a ladder never needs GPU memory at the same time as a
 batch; 'async' (RUN_FALLBACK=async): a side thread and its own CTranslate2 worker, next to the batched path. On the
-store PC's 8 GB GPU async paged 760-860 MB to system memory and ran 30 real units at 21.1x, inline 26.1x (26.9)."""
+store PC's 8 GB GPU async paged 760-860 MB to system memory and ran 30 real units at 21.1x, inline 26.1x (26.9).
+'skip' (measurement only, never production): no ladder at all, the row says so (path "fallback_skipped"), to time
+the batched path alone."""
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 
@@ -33,6 +35,16 @@ class InlinePool:
         return done
 
 
+class SkipPool:
+    def submit(self, fn, model, uuid, wav):
+        done = Future()
+        done.set_result({"uuid": uuid, "dur_s": len(wav) / 16000, "text": None, "segments": [],
+                         "path": "fallback_skipped"})
+        return done
+
+
 def make_pool(kind, log):
     """The pool for RUN_FALLBACK=kind, and how many CTranslate2 workers it needs of its own."""
+    if kind == "skip":
+        return SkipPool(), 0
     return (InlinePool(log), 0) if kind == "inline" else (AsyncPool(log), 1)
