@@ -1,0 +1,11 @@
+# The evening's exact changes together (pyct2-l41l, b7d3a40e: the second feed-forward on 5 stages of 64 k, the joint
+# step's softmax in one launch, the cache reorder a block per head row, 32-bit index math, each part's values product
+# in its own rows of the context) against pyct2-l41d (the afternoon's best), alternately on one machine, then the full
+# exact run on l41l (the fallback ladders joined: T=0 attempts only, wa6p2; and with the sampled attempts joined too,
+# seeded, ws6p2).
+d1|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+l1|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+d2|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+l2|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+la|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+ls|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
