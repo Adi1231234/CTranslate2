@@ -1,0 +1,11 @@
+# A/B on one machine: pyct2-l41b (3ae700a4) against pyct2-l41d (e2a96bf4: the joint self-attention's head split once,
+# the parts' cache updates and contexts each in one launch, no per-thread local copy of the part table; round22 l41c,
+# with that copy, 102.19x against l41b's 108.49x on another machine). The stream check first (bit for bit, timed),
+# then the batched path alternately, twice each, and two 3-batch streams a process (STREAM_COUNT=2).
+scripts|scripts/stream_check.sh|pyct2-l41d|800|8:320|1:40|6:240
+b1|pyct2-l41b|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+d1|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+b2|pyct2-l41b|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+d2|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+c2|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=3|STREAM_COUNT=2|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scriptc|scripts/profile_cpu.sh|pc6|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|80|10|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|CT2_CUDA_SCHEDULE=blocking

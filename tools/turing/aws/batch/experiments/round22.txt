@@ -1,0 +1,7 @@
+# pyct2-l41c (88dfac05: the joint self-attention's head split once for all rows, every part's cache update in one
+# launch) + runner-a31eb938. The stream against generate per batch (bit for bit, three limits), then three passes: the batched
+# path (2 x 6; l41b: 108.49x wall, 113.0 steady) and the full run with seeded, joined fallback ladders (exact; round19
+# ws6p2 on l41a: 80.79x, rows equal to the ladders alone).
+scripts|scripts/stream_check.sh|pyct2-l41c|800|8:320|1:40|6:240
+w6p2|pyct2-l41c|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+ws6p2|pyct2-l41c|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking

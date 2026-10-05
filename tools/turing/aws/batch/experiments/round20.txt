@@ -1,0 +1,10 @@
+# pyct2-l41b (3ae700a4: the encoder attention's work items of 32 queries, CT2_EA_ROWS=32) + runner-4f4894c5. Profile pw6 (round19):
+# 27.4 clips a decoding step (9.2 before the stream), cross-attention 18%, decoder cuBLAS 18%, encoder attention 13%,
+# the second feed-forward kernel 8%; ~1400 small kernels a step. Its bits and time first (exact_attention_check: 16
+# and 32 queries), then the batched path (three passes) at other stream sizes and process counts, and with the 32-query
+# encoder attention, against w6p2 (106.57x wall, 111.0 steady).
+scripta|scripts/probes.sh|probes/probes-3ae700a4.tgz|exact_attention_check:20
+w8p2|pyct2-l41b|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=8|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+w4p3|pyct2-l41b|runner-4f4894c5|src/tools/turing/scale/units_real.txt|3|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=4|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+e6p2|pyct2-l41b|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|CT2_EA_ROWS=32|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+w6p2|pyct2-l41b|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking

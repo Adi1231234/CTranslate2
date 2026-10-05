@@ -1,0 +1,9 @@
+# Side streams (pyct2-l41e, 15c7ac54: CT2_SIDE_STREAMS=n puts the parts' self-attentions of a joint step on n side
+# streams, events before and after) on one machine against pyct2-l41d (round23 on another: d1 103.31x, b1 l41b
+# 101.11x). The stream check with 4 side streams (bit for bit, timed), then the batched path: d, 2 and 4 side
+# streams, d again.
+scripts|scripts/stream_check.sh|pyct2-l41e|CT2_SIDE_STREAMS=4|800|8:320|1:40|6:240
+d1|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+s2|pyct2-l41e|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_SIDE_STREAMS=2
+s4|pyct2-l41e|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_SIDE_STREAMS=4
+d2|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking

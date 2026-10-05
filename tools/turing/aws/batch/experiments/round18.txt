@@ -1,0 +1,14 @@
+# pyct2-l40y (4f4894c5) + runner-4f4894c5. The decoder products against the tiled exact kernel (decoder_gemm_probe 2d13a6c3);
+# the Whisper stream against generate per batch on 800 real clips (bit for bit, three limits); the fallback's calls
+# joined against alone, now also sampled with each clip's own seed (sampling_seeds). Then three passes over the 30
+# units (RUN_REPEAT=3, 13.1 h): the stream (2 x 6 batches, 1 x 12) against the old grouped call (v6p2: 89.98x wall,
+# 96.1 steady on one pass), and the full run with seeded fallback ladders, sampled attempts alone (wa) and joined (ws):
+# their rows, sampled ones too, must be the same.
+scriptg|scripts/probes.sh|probes/probes-2d13a6c3.tgz|decoder_gemm_probe
+scripts|scripts/stream_check.sh|pyct2-l40y|800|8:320|1:40|16:640
+scriptv|scripts/sampled_check.sh|pyct2-l40y|fallback_uuids_real30.txt
+w6p2|pyct2-l40y|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+v6p2|pyct2-l40y|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+w12p1|pyct2-l40y|runner-4f4894c5|src/tools/turing/scale/units_real.txt|1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=12|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+wa6p2|pyct2-l40y|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+ws6p2|pyct2-l40y|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking

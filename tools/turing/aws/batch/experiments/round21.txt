@@ -1,0 +1,10 @@
+# g6e.2xlarge (8 vCPU, the same L40S; 2.24 against 1.86 USD an hour): the stream's decoding loop is host-bound on the
+# g6e.xlarge (round19 profile: each process's decoder stream idle 31% of the time, ~139k gaps under 0.1 ms between
+# ~1350 kernels a step). CPU sampling of the 2 x 6 run first (pyct2-l41b + runner-a31eb938), then the batched path (three passes)
+# with the host work on more threads: 2 x 6 (as w6p2 on the xlarge: 106.57x), 3 x 4, 4 x 3, and 2 processes of two
+# 3-batch streams each (STREAM_COUNT=2). Cheaper per audio hour than the xlarge if more than 1.2x faster.
+scriptc|scripts/profile_cpu.sh|pc6|pyct2-l41b|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|80|10|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|CT2_CUDA_SCHEDULE=blocking
+x6p2|pyct2-l41b|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|STREAM_BATCHES=6
+x4p3|pyct2-l41b|runner-a31eb938|src/tools/turing/scale/units_real.txt|3|MPS=1|MODE=stream8|RUN_FALLBACK=skip|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|STREAM_BATCHES=4
+x3p4|pyct2-l41b|runner-a31eb938|src/tools/turing/scale/units_real.txt|4|MPS=1|MODE=stream8|RUN_FALLBACK=skip|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|STREAM_BATCHES=3
+x3c2p2|pyct2-l41b|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|STREAM_BATCHES=3|STREAM_COUNT=2

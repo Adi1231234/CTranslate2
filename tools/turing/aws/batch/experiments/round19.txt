@@ -1,0 +1,9 @@
+# pyct2-l41a (5baaead3: a one-row group is never in a joined product, cuBLAS runs a gemv for it alone) + runner-4f4894c5.
+# The seeded sampling joined against alone again (round18b: 2-3 of 15 clips; the last hypothesis of a clip alone);
+# where the stream's time goes (2 MPS processes x 6 batches, 25 s after 80 s); and the full runs with seeded
+# fallback ladders, sampled attempts alone (wa) and joined (ws): their rows, sampled ones too, must be the same
+# (round18b on l40z: 73.12x and 82.71x, 2904 of 2906 rows equal).
+scriptj|scripts/joined_check.sh|pyct2-l41a|fallback_uuids_real30.txt
+scriptq|scripts/profile_mps.sh|pw6|pyct2-l41a|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|80|25|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|CT2_CUDA_SCHEDULE=blocking
+wa6p2|pyct2-l41a|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+ws6p2|pyct2-l41a|runner-4f4894c5|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking

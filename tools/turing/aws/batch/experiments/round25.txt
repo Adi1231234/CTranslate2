@@ -1,0 +1,4 @@
+# Nsight Compute on the stream's main path (pyct2-l41d, one process, no MPS: each kernel measured alone, so its time
+# and throughput are its own, not shared with another process's kernels): 8 units, each heavy kernel's launches
+# past about 300 decoding steps, 40 of each.
+scriptn|scripts/ncu_run.sh|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|8|300|40|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|CT2_CUDA_SCHEDULE=blocking
