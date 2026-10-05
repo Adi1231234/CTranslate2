@@ -1,0 +1,11 @@
+# A locked SM clock under the 350 W limit (clock_lock.sh, privileged): GPU Boost moves the clock between ~1500 and
+# 2520 MHz (p50 ~1800) as the kernels change; power grows faster than the clock, so a steady one may do the same
+# work with less energy, and the memory-bound cross-attention (28% of a step's energy) loses nothing at a lower one.
+# pyct2-l41l: the default, locked at 1800 and at 1600 MHz, released, the default again.
+w1|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scripta|scripts/clock_lock.sh|1800|1800
+c1800|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scriptb|scripts/clock_lock.sh|1600|1600
+c1600|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scriptc|scripts/clock_lock.sh
+w2|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
