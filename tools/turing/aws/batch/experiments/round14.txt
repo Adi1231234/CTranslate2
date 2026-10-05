@@ -1,0 +1,7 @@
+# pyct2-l40n (1b8c140c): + memory slots (no compaction copies when clips finish). Seeded sampled check (repeated vs
+# shared memory, the 15 fallback clips x 5 temperatures); the batched path alone grouped (against f3 83.84x); the
+# full production run grouped and ungrouped. Deterministic rows compared with fullctx.
+scriptv|scripts/sampled_check.sh|pyct2-l40n|fallback_uuids_real30.txt
+n3|pyct2-l40n|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
+n3a|pyct2-l40n|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=async|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
+n4a|pyct2-l40n|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=blocking
