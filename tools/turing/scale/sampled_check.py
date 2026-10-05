@@ -26,9 +26,9 @@ from faster_whisper.audio import pad_or_trim
 feats = np.stack([pad_or_trim(model.feature_extractor(w)[..., :-1]) for _, w in clips]).astype(np.float32)
 kw = dict(max_length=448, return_scores=True, return_no_speech_prob=True, suppress_blank=True,
           suppress_tokens=[-1], max_initial_timestamp_index=50)
-record = lambda uuid, t, r: out.append({"uuid": uuid, "t": t, "ids": r.sequences_ids,
-                                        "scores": [float(s).hex() for s in r.scores],
-                                        "no_speech": float(r.no_speech_prob).hex()})
+entry = lambda r: {"ids": r.sequences_ids, "scores": [float(s).hex() for s in r.scores],
+                   "no_speech": float(r.no_speech_prob).hex()}
+record = lambda uuid, t, r: out.append({"uuid": uuid, "t": t, **entry(r)})
 if os.environ.get("CHECK") == "joined":
     # The sampling path without random draws (temperature 0: the best token of each step, 5 hypotheses as sampling
     # repeats them): every clip alone, then all clips in one call
@@ -46,6 +46,28 @@ if os.environ.get("CHECK") == "joined":
         alone = {o["uuid"]: o for o in out if o["t"] == name + " alone"}
         same = sum({**o, "t": 0} == {**alone[o["uuid"]], "t": 0} for o in out if o["t"] == name + " joined")
         print(f"{name}: {same} of {len(clips)} clips joined identical to alone")
+    # Sampling with each clip's own seed (sampling_seeds): every temperature of the ladder, each clip alone, then
+    # all clips joined with their seeds, then alone again (a repeat must draw the same).
+    for t in (0.2, 0.6, 1.0):
+        opts = dict(beam_size=1, num_hypotheses=5, sampling_topk=0, sampling_temperature=t)
+        seeds = [(int.from_bytes(uuid.encode("utf-8")[:8].ljust(8, b"\0"), "little") + i) % 2 ** 64 for i, (uuid, _) in
+                 enumerate(clips)]
+        runs = {}
+        for name in ("alone", "joined", "again"):
+            if name == "joined":
+                enc = model.model.encode(get_ctranslate2_storage(feats), to_cpu=False, group_size=1)
+                runs[name] = [entry(r) for (u, _), r in zip(
+                    clips, model.model.generate(enc, [prompt] * len(clips), group_size=1, sampling_seeds=seeds,
+                                                **opts, **kw))]
+            else:
+                runs[name] = []
+                for i, (uuid, _) in enumerate(clips):
+                    enc = model.model.encode(get_ctranslate2_storage(feats[i:i + 1]), to_cpu=False)
+                    r = model.model.generate(enc, [prompt], sampling_seeds=[seeds[i]], **opts, **kw)[0]
+                    runs[name].append(entry(r))
+        same = sum(a == b for a, b in zip(runs["joined"], runs["alone"]))
+        again = sum(a == b for a, b in zip(runs["again"], runs["alone"]))
+        print(f"seeded T={t}: {same} of {len(clips)} clips joined identical to alone, {again} repeat alone")
 else:
     ctranslate2.set_random_seed(1234)
     for i, (uuid, _) in enumerate(clips):

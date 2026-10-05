@@ -48,16 +48,18 @@ class BatchedPool:
         self.log, self.proxies, self.waiting, self.lock, self.timer = log, {}, [], threading.Lock(), None
 
     def submit(self, fn, model, uuid, wav):
+        from fallback_batch import Broker, ladder_of
         if id(model) not in self.proxies:
-            from fallback_batch import Broker
             proxy = copy.copy(model)
-            proxy.model = Broker(model.model, os.environ.get("RUN_FALLBACK_SAMPLING") == "batched")
+            proxy.model = Broker(model.model, os.environ.get("RUN_FALLBACK_SAMPLING") == "batched",
+                                 os.environ.get("RUN_FALLBACK_SEEDS") == "1")
             self.proxies[id(model)] = proxy
         proxy, done = self.proxies[id(model)], Future()
 
         def ladder():
             try:
-                done.set_result(_timed(self.log, fn, proxy, uuid, wav))
+                with ladder_of(uuid):
+                    done.set_result(_timed(self.log, fn, proxy, uuid, wav))
             except Exception as e:                         # the writer raises it
                 done.set_exception(e)
             finally:

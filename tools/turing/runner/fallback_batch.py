@@ -5,10 +5,33 @@ arithmetic of a call of its own (cuda/clip_groups.h), and the decoder reads its 
 The beam attempts (T=0) are then exactly what each clip gets alone. Sampled attempts (T>0) draw other random
 numbers when joined (a row's random state is its place in the batch), as they do on any other run; they are joined
 only with RUN_FALLBACK_SAMPLING=batched, otherwise each runs alone as before.
+RUN_FALLBACK_SEEDS=1: every sampled attempt draws from streams seeded by its clip and its place in the clip's ladder
+(CTranslate2's sampling_seeds, the ladder-probe fork): a clip then samples the same alone or joined, and on every
+run, so joined sampled attempts are exactly what each clip gets alone too.
 RUN_FALLBACK_THREADS (default 8): clips whose ladders run at once."""
-import threading, time
+import contextlib, hashlib, threading, time
 import numpy as np
 import ctranslate2
+
+_ladder = threading.local()                                 # the clip whose ladder runs on this thread
+
+
+@contextlib.contextmanager
+def ladder_of(uuid):
+    """While a clip's ladder runs on this thread: its sampled calls take the clip's seeds, in call order."""
+    _ladder.uuid, _ladder.calls = uuid, 0
+    try:
+        yield
+    finally:
+        _ladder.uuid = None
+
+
+def _next_seed():
+    """The seed of the running ladder's next sampled call: its clip and the call's number in the ladder."""
+    n = _ladder.calls
+    _ladder.calls += 1
+    digest = hashlib.blake2b(f"{_ladder.uuid}|{n}".encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "little")
 
 
 class _Encoded:
@@ -27,8 +50,8 @@ class _Call:
 class Broker:
     """Stands in for the ctranslate2 Whisper model of the fallback threads."""
 
-    def __init__(self, model, join_sampled, wait_s=0.2):
-        self._m, self._join_sampled, self._wait = model, join_sampled, wait_s
+    def __init__(self, model, join_sampled, seeded=False, wait_s=0.2):
+        self._m, self._join_sampled, self._seeded, self._wait = model, join_sampled, seeded, wait_s
         self._cv = threading.Condition()
         self._pending, self._busy = [], 0
         threading.Thread(target=self._dispatch, daemon=True).start()
@@ -55,7 +78,9 @@ class Broker:
         key = ("generate", tuple(prompts[0]), tuple(sorted((k, str(v)) for k, v in kw.items())))
         if sampled and not self._join_sampled:
             key += (object(),)                                 # alone, as faster-whisper calls it
-        return self._call(_Call("generate", key, encoder_output.array, prompts[0]), kw)
+        call = _Call("generate", key, encoder_output.array, prompts[0])
+        call.seed = _next_seed() if sampled and self._seeded else None
+        return self._call(call, kw)
 
     def _call(self, call, kw=None):
         call.kw = kw
@@ -96,6 +121,7 @@ class Broker:
             for i, c in enumerate(group):
                 c.result = np.array(out[i:i + 1])
         else:
-            results = self._m.generate(data, [c.prompt for c in group], group_size=1, **group[0].kw)
+            seeds = {} if group[0].seed is None else {"sampling_seeds": [c.seed for c in group]}
+            results = self._m.generate(data, [c.prompt for c in group], group_size=1, **group[0].kw, **seeds)
             for c, r in zip(group, results):
                 c.result = [r]
