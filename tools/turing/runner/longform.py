@@ -5,7 +5,8 @@ CTranslate2 calls go through LongBroker: encoder calls and sampled attempts as f
 window's arithmetic its own), and each window's beam search (T=0) a batch of one in a Whisper stream, decoded with the
 other recordings' windows, each exactly as generate() alone decodes it (Whisper.open_stream, the ladder-probe fork).
 LONG_PENDING (default 2): windows submitted and not yet decoding. RUN_FALLBACK_SEEDS/SAMPLING/SPECULATE/SPEC_CLIPS as
-in fallback_batch.py."""
+in fallback_batch.py. The model needs 2 CTranslate2 workers: the stream's decoding loop holds one while the stream is
+open, and with one only, every encoder call waited for it forever (long1, 6.10.2026)."""
 import copy, os, threading
 from concurrent.futures import ThreadPoolExecutor
 import ctranslate2
@@ -85,6 +86,8 @@ class LongEngine:
     ~0.4 GB of samples and features."""
 
     def __init__(self, model):
+        if model.model.num_workers < 2:   # the stream's decoding loop holds a worker as long as the stream is open
+            raise ValueError("LongEngine needs a model of 2 workers: the stream's and the encoder's and ladders'")
         threads = int(os.environ.get("LONG_THREADS", "48"))
         speculate = ([t for t in engine.EXACT["temperature"] if t > 0]
                      if os.environ.get("RUN_FALLBACK_SPECULATE") == "1" else None)

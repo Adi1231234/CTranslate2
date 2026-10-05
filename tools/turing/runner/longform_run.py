@@ -18,7 +18,8 @@ items = [line.rstrip("\n").split("\t") for line in open(listing, encoding="utf-8
 if os.environ.get("RUN_SEED"):                  # before the model: its workers seed their sampler states from it
     import ctranslate2
     ctranslate2.set_random_seed(int(os.environ["RUN_SEED"]))
-model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default", num_workers=1,
+model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
+                     num_workers=2 if mode == "long" else 1,   # long: the stream's loop holds one (longform.py)
                      cpu_threads=1)
 if os.environ.get("RUN_STOCK_FULL_CONTEXT") == "1":
     from stock_context import full_context
