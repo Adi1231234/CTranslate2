@@ -4,7 +4,8 @@ Idempotent.
 usage: python provision.py"""
 import time
 from botocore.exceptions import ClientError
-from settings import ECR_REPO, FLEETS, LAUNCH_TEMPLATE, LOG_GROUP, MAX_VCPUS, ROOT_GB, TAGS, client, fleet_name, tag_list
+from settings import (ECR_REPO, FLEET_ALSO, FLEETS, LAUNCH_TEMPLATE, LOG_GROUP, MAX_VCPUS, MAX_VCPUS_ALSO, ROOT_GB,
+                      TAGS, client, fleet_name, tag_list)
 import iam
 
 
@@ -63,10 +64,11 @@ def compute_and_queue(profile, fleet):
     """The fleet's compute environment and its job queue, both named fleet_name(fleet)."""
     b, name, itype = client("batch"), fleet_name(fleet), FLEETS[fleet][0]
     subnets, sg = network(itype)
+    types, max_vcpus = [itype, *FLEET_ALSO.get(fleet, [])], MAX_VCPUS_ALSO if fleet in FLEET_ALSO else MAX_VCPUS
     if not b.describe_compute_environments(computeEnvironments=[name])["computeEnvironments"]:
         b.create_compute_environment(computeEnvironmentName=name, type="MANAGED", state="ENABLED", tags=TAGS,
             computeResources={"type": "EC2", "allocationStrategy": "BEST_FIT_PROGRESSIVE", "minvCpus": 0,
-                "maxvCpus": MAX_VCPUS, "instanceTypes": [itype], "subnets": subnets,
+                "maxvCpus": max_vcpus, "instanceTypes": types, "subnets": subnets,
                 "securityGroupIds": [sg], "instanceRole": profile, "tags": {**TAGS, "Name": name},
                 "ec2Configuration": [{"imageType": "ECS_AL2023_NVIDIA"}],
                 "launchTemplate": {"launchTemplateName": LAUNCH_TEMPLATE, "version": "$Default"}})
