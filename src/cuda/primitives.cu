@@ -30,6 +30,7 @@
 #include "cuda/attention_scores_k64.cuh"
 #include "cuda/clip_groups.h"
 #include "cuda/encoder_gemm.h"
+#include "cuda/decoder_gemm.h"
 #include "cuda/grouped_split_gemm.h"
 #include "cuda/graph_host_copy.h"
 #endif
@@ -548,9 +549,15 @@ namespace ctranslate2 {
       for (const dim_t clips : cuda::clip_groups()->clips)
         if (clips > 0)
           rows.push_back(clips * (m / cuda::clip_groups()->total));
-      if (cuda::grouped_split_gemm(a, b, c, n, k, rows, cuda::get_cuda_stream()))
+      if (n == 1280 && k == 5120 && (cuda::decoder_gemm(a, b, c, m, n, k, rows, cuda::get_cuda_stream())
+                                     || cuda::grouped_split_gemm(a, b, c, n, k, rows, cuda::get_cuda_stream())))
         return;
     }
+    // The decoder's other products in the tiled kernel where CT2_DECODER_TILES names a tile (cuda/decoder_gemm.h):
+    // a row-independent product in one chain, or one batch's second feed-forward with its split.
+    if (plain && (cuda::rows_independent_product(m, n, k) || (!cuda::clip_groups() && n == 1280 && k == 5120))
+        && cuda::decoder_gemm(a, b, c, m, n, k, {m}, cuda::get_cuda_stream()))
+      return;
     if (!transpose_a && !(transpose_b && lda == k && ldb == k && ldc == n
                           && cuda::rows_independent_product(m, n, k))
         && cuda::for_each_clip_group(m, [&](dim_t row, dim_t rows) {
