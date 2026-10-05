@@ -1,0 +1,11 @@
+# pyct2-l41j (1bb74266): the joint step's self-attention softmax in one launch (always on), and the encoder's first
+# feed-forward on CUTLASS tiles of cuBLAS's 256x128 shape (round30: 128x128 tiles no faster than cuBLAS + BiasAdd).
+# The probes first (encoder_ffn1_check: bits and time of the new tiles; softmax_parts_check), then the batched path:
+# l41i (the softmax part by part), l41j, l41j with the second feed-forward's deeper pipeline, the same with the
+# encoder's first feed-forward on 256x128 tiles, l41j again.
+scripte|scripts/probes.sh|probes/probes-1bb74266.tgz|encoder_ffn1_check:20|softmax_parts_check
+i1|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+j1|pyct2-l41j|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+jf|pyct2-l41j|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_DECODER_TILES=ffn2=64x64k64/5
+je|pyct2-l41j|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_DECODER_TILES=ffn2=64x64k64/5|CT2_ENC_GEMM=cutlass|CT2_ENC_GEMM_CFG=256x128k32s3
+j2|pyct2-l41j|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
