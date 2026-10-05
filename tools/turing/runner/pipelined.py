@@ -21,6 +21,28 @@ from tqdm import tqdm
 from resume import ResumeCheck
 
 
+def make_segment(segment, seg_idx, options):
+    """_batched_segments_generator's Segment of one of forward()'s segments (faster-whisper 1.2.1)."""
+    return Segment(
+        seek=segment["seek"], id=seg_idx, text=segment["text"],
+        start=round(segment["start"], 3), end=round(segment["end"], 3),
+        words=None if not options.word_timestamps else [Word(**w) for w in segment["words"]],
+        tokens=segment["tokens"], avg_logprob=segment["avg_logprob"],
+        no_speech_prob=segment["no_speech_prob"], compression_ratio=segment["compression_ratio"],
+        temperature=options.temperatures[0])
+
+
+def generate_outputs(results, length_penalty):
+    """generate_segment_batched's outputs of a batch's generate() results (faster-whisper 1.2.1)."""
+    output = []
+    for result in results:
+        seq_len = len(result.sequences_ids[0])
+        cum_logprob = result.scores[0] * (seq_len ** length_penalty)
+        output.append(dict(avg_logprob=cum_logprob / (seq_len + 1), no_speech_prob=result.no_speech_prob,
+                           tokens=result.sequences_ids[0]))
+    return output
+
+
 class PipelinedBatchedInferencePipeline(ResumeCheck):
     def _encode(self, features, group_size):
         """WhisperModel.encode (faster-whisper 1.2.1) with each group of the batch encoded on its own."""
@@ -77,13 +99,7 @@ class PipelinedBatchedInferencePipeline(ResumeCheck):
             for result in done[i]:
                 for segment in result:
                     seg_idx += 1
-                    yield Segment(
-                        seek=segment["seek"], id=seg_idx, text=segment["text"],
-                        start=round(segment["start"], 3), end=round(segment["end"], 3),
-                        words=None if not options.word_timestamps else [Word(**w) for w in segment["words"]],
-                        tokens=segment["tokens"], avg_logprob=segment["avg_logprob"],
-                        no_speech_prob=segment["no_speech_prob"], compression_ratio=segment["compression_ratio"],
-                        temperature=options.temperatures[0])
+                    yield make_segment(segment, seg_idx, options)
                 pbar.update(1)
         pbar.close()
         self.last_speech_timestamp = 0.0
@@ -117,10 +133,4 @@ class PipelinedBatchedInferencePipeline(ResumeCheck):
             repetition_penalty=options.repetition_penalty, no_repeat_ngram_size=options.no_repeat_ngram_size,
             **({"group_size": self._group_size} if getattr(self, "_group_size", 0) else {}))
         marks.append(time.perf_counter())
-        output = []
-        for result in results:
-            seq_len = len(result.sequences_ids[0])
-            cum_logprob = result.scores[0] * (seq_len ** options.length_penalty)
-            output.append(dict(avg_logprob=cum_logprob / (seq_len + 1), no_speech_prob=result.no_speech_prob,
-                               tokens=result.sequences_ids[0]))
-        return encoder_output, self._keep_tokens(output)
+        return encoder_output, self._keep_tokens(generate_outputs(results, options.length_penalty))

@@ -4,6 +4,7 @@ usage: python transcribe_run.py <front|back> <mode: exact2|batch8>
 Producer thread streams row groups from HF and decodes audio; the GPU side never waits on I/O.
 RUN_CACHE=<dir>: row groups kept in a local folder (fetch.py), so a benchmark repeats on the same bytes.
 RUN_FALLBACK=async: fallback clips on a side thread beside the batches (default inline, fallback.py).
+Mode stream<N>: the batches of N through one CTranslate2 Whisper stream across units (stream_engine.py).
 Each finished unit is written atomically to out/<unit_id>.jsonl, so a restart skips it.
 """
 import os, sys, json, time, queue, threading
@@ -63,8 +64,10 @@ def _produce():
 
 threading.Thread(target=producer, daemon=True).start()
 BATCHED = MODE != "exact2"
+STREAM = MODE.startswith("stream")
 pool, own = make_pool(os.environ.get("RUN_FALLBACK", "inline"), log) if BATCHED else (None, 0)
-workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith("pipe")) + own   # own: the async fallback's worker
+# own: the async fallback's worker; pipe: the encoder's; stream: the encoder's beside the stream's
+workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith(("pipe", "stream"))) + own
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers, cpu_threads=1,   # the OpenMP threads of the default only spin
                      flash_attention=MODE.endswith("-fa"))
@@ -92,6 +95,9 @@ def _write_loop():
         log(f"{uid} ok | units {stats['units']} | audio {stats['audio']/3600:.2f}h | {stats['audio']/el:.2f}x")
 
 wt = threading.Thread(target=writer); wt.start()
+if STREAM:
+    from stream_engine import StreamEngine
+    streamed = StreamEngine(model, pool, done, log, int(MODE[6:]))
 log(f"START direction={DIRECTION} mode={MODE} units={len(units)} workers={workers}")
 try:
     while True:
@@ -100,7 +106,12 @@ try:
         uid, clips = item
         why = should_stop(ROOT, uid)
         if why: log(f"STOP ({why}) at {uid}, prefetched units dropped"); break
-        done.put((uid, transcribe_unit(model, clips, MODE, pool)))
+        if STREAM:
+            streamed.add_unit(uid, clips)        # its rows reach the writer once its batches are decoded
+        else:
+            done.put((uid, transcribe_unit(model, clips, MODE, pool)))
+    if STREAM:
+        streamed.close()                         # every unit's batches decoded and handed to the writer
 except Exception as e:                          # write what finished, then exit non-zero for a restart
     log(f"MAIN CRASHED: {type(e).__name__}: {e}")
     if hasattr(pool, "flush"): pool.flush()     # fallback ladders still gathering (fallback.BatchedPool)

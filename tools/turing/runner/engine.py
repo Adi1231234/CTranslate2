@@ -46,14 +46,32 @@ def _exact2(model, clips):
     [t.start() for t in ts]; [t.join() for t in ts]
     return [out[i] for i in range(len(clips))]
 
-def _batch8(model, clips, bs=8, pipelined=False, pool=None):
-    """Clips are batched shortest-first (similar lengths decode in lockstep), then put back in order.
-    With a pool, fallback clips (full temperature ladder) run there and the row holds a Future."""
-    order = sorted(range(len(clips)), key=lambda i: len(clips[i][1]))
-    rows = _batch8_ordered(model, [clips[i] for i in order], bs, pipelined, pool)
-    out = [None] * len(clips)
+def length_order(clips):
+    """Clips are batched shortest-first (similar lengths decode in lockstep)."""
+    return sorted(range(len(clips)), key=lambda i: len(clips[i][1]))
+
+def unsort(order, rows):
+    """The rows of length_order's clips back in the clips' order."""
+    out = [None] * len(rows)
     for i, r in zip(order, rows): out[i] = r
     return out
+
+def _batch8(model, clips, bs=8, pipelined=False, pool=None):
+    """With a pool, fallback clips (full temperature ladder) run there and the row holds a Future."""
+    order = length_order(clips)
+    return unsort(order, _batch8_ordered(model, [clips[i] for i in order], bs, pipelined, pool))
+
+def unit_audio(model, clips):
+    """The clips one after the other, GAP of silence after each (one audio for transcribe), their spans
+    (clip_timestamps), and their features computed ahead."""
+    pieces, ts, off = [], [], 0
+    for _, w in clips:
+        pieces += [w, np.zeros(GAP, "float32")]
+        ts.append({"start": off / SR, "end": (off + len(w)) / SR}); off += len(w) + GAP
+    audio = np.concatenate(pieces)
+    # transcribe's own slices of the clips (int(seconds * rate)), so it gets their precomputed features
+    feature_cache(model).prefetch([audio[int(t["start"] * SR):int(t["end"] * SR)] for t in ts])
+    return audio, ts
 
 def _batch8_ordered(model, clips, bs, pipelined=False, pool=None):
     if (id(model), pipelined) not in _bp:
@@ -62,19 +80,18 @@ def _batch8_ordered(model, clips, bs, pipelined=False, pool=None):
             from pipelined import PipelinedBatchedInferencePipeline as cls
         _bp[(id(model), pipelined)] = cls(model=model)
     bp = _bp[(id(model), pipelined)]
-    pieces, ts, off = [], [], 0
-    for _, w in clips:
-        pieces += [w, np.zeros(GAP, "float32")]
-        ts.append({"start": off / SR, "end": (off + len(w)) / SR}); off += len(w) + GAP
-    audio = np.concatenate(pieces)
-    # transcribe's own slices of the clips (int(seconds * rate)), so it gets their precomputed features
-    feature_cache(model).prefetch([audio[int(t["start"] * SR):int(t["end"] * SR)] for t in ts])
+    audio, ts = unit_audio(model, clips)
     bp.unfinished.clear()
     segs, _ = bp.transcribe(audio, batch_size=bs, clip_timestamps=ts, **EXACT)
+    return unit_rows(model, clips, ts, segs, bp.unfinished, pool)
+
+def unit_rows(model, clips, ts, segs, unfinished, pool):
+    """The rows of a unit's clips from its batched segments: a clip fails to the fallback when its pass fails the
+    thresholds or stopped before its end (unfinished: the offsets ResumeCheck recorded as segs were made)."""
     per = [[] for _ in clips]
     for s in segs:
         per[max(j for j, t in enumerate(ts) if s.start >= t["start"] - 1e-3)].append(s)
-    cut = [any(abs(o - t["start"]) < 1e-3 for o in bp.unfinished) for t in ts]    # filled once segs are consumed
+    cut = [any(abs(o - t["start"]) < 1e-3 for o in unfinished) for t in ts]    # filled once segs are consumed
     rows = []
     for (uuid, w), t, ss, unfinished in zip(clips, ts, per, cut):
         text = " ".join(s.text for s in ss).strip()
