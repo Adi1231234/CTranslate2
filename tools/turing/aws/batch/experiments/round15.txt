@@ -1,0 +1,8 @@
+# pyct2-l40p (41f5f7e6, group_size in sampling too) + runner-0349137c (RUN_FALLBACK=batched): fallback ladders
+# gathered and their CTranslate2 calls joined, each clip with group_size=1 (its own arithmetic). First the checks:
+# seeded repeated vs shared memory, and joined vs alone without random draws (temperature 0, beam). Then the full run
+# with only the beam attempts joined (exact), and with the sampled attempts joined too (other random draws, as any
+# other run; Adi's decision). Gather 3 / 60 s for this short run (production: 8 / 600 s). Against n3a 61.97x.
+scriptv|scripts/sampled_check.sh|pyct2-l40p|fallback_uuids_real30.txt
+b3t|pyct2-l40p|runner-0349137c|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=batched|RUN_FALLBACK_GATHER=3|RUN_FALLBACK_GATHER_S=60|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
+b3s|pyct2-l40p|runner-0349137c|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=batched|RUN_FALLBACK_SAMPLING=batched|RUN_FALLBACK_GATHER=3|RUN_FALLBACK_GATHER_S=60|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
