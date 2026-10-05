@@ -11,6 +11,7 @@
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/cache_reorder.h"
 #  include "cuda/clip_groups.h"
+#  include "cuda/copy_parts.h"
 #endif
 
 namespace ctranslate2 {
@@ -85,6 +86,40 @@ namespace ctranslate2 {
       }
     }
 
+    // The parts' outputs one after the other along the rows: one launch where it applies (CUDA), where ops::Concat
+    // copies each part on its own.
+    static void join_rows(std::vector<StorageView>& parts, StorageView& out) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      bool fused = !parts.empty() && parts.size() <= static_cast<size_t>(cuda::CopyParts::max_parts);
+      cuda::CopyParts copy;
+      dim_t rows = 0;
+      for (const StorageView& part : parts) {
+        fused = fused && part.device() == Device::CUDA && part.dtype() == parts[0].dtype()
+          && part.rank() == parts[0].rank() && part.size() / part.dim(0) == parts[0].size() / parts[0].dim(0)
+          && cuda::copy_parts_supported(part.buffer(), part.size() * part.item_size());
+        if (!fused)
+          break;
+        copy.src[copy.count] = part.buffer();
+        copy.bytes[copy.count++] = part.size() * part.item_size();
+        rows += part.dim(0);
+      }
+      if (fused) {
+        Shape shape = parts[0].shape();
+        shape[0] = rows;
+        out.resize(std::move(shape));
+        if (cuda::copy_parts_supported(out.buffer(), out.size() * out.item_size())) {
+          cuda::copy_parts(copy, out.buffer());
+          return;
+        }
+      }
+#endif
+      std::vector<const StorageView*> inputs;
+      inputs.reserve(parts.size());
+      for (const auto& part : parts)
+        inputs.push_back(&part);
+      ops::Concat(0)(inputs, out);
+    }
+
     void MultiHeadAttention::joint_attention(const JointStep& joint, StorageView& fused_proj, bool fused_q,
                                              StorageView& context) const {
       if (!fused_q || _num_heads_kv != _num_heads || _merge_time_and_head_dims || _q_norm || _k_norm || _v_norm
@@ -142,11 +177,7 @@ namespace ctranslate2 {
                                                           nullptr, nullptr);
         combine_heads(part_context, _num_heads, nullptr, 1, heads_combined);
       }
-      std::vector<const StorageView*> inputs;
-      inputs.reserve(contexts.size());
-      for (const auto& part_context : contexts)
-        inputs.push_back(&part_context);
-      ops::Concat(0)(inputs, context);
+      join_rows(contexts, context);
     }
 
   }
