@@ -18,6 +18,7 @@ namespace ctranslate2 {
 
     class RotaryEmbeddings;
     class Alibi;
+    struct JointStep;
 
     class MultiHeadAttention : public AttentionLayer
     {
@@ -105,6 +106,12 @@ namespace ctranslate2 {
 
       void apply_qk_norm(StorageView& queries_proj,
                           StorageView& keys_proj) const;
+
+      // A decoding step of several searches' rows (layers/joint_step.h): from the queries' projection of all the
+      // rows (without its bias when fused_q), each part's attention as its own step would compute it, the
+      // contexts of all the rows into context (attention_joint.cc).
+      void joint_attention(const JointStep& joint, StorageView& fused_proj, bool fused_q,
+                           StorageView& context) const;
 
       const StorageView* _relative_attention_bias;
       const StorageView* _relative_position_keys;

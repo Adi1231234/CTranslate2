@@ -13,6 +13,8 @@
 #include "kv_cache.h"
 #include "attention_fused.h"
 #include "cross_attention_fused.h"
+#include "dot_product_attention.h"
+#include "joint_step.h"
 #include "split_heads_fused.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/memory_slots.h"
@@ -230,7 +232,7 @@ namespace ctranslate2 {
     }
 
     // True when output holds the heads combined ([batch, time, heads, depth] under the queries' shape).
-    static bool dot_product_attention(const StorageView& queries,
+    bool dot_product_attention(const StorageView& queries,
                                       const StorageView& keys,
                                       const StorageView& values,
                                       const StorageView* values_lengths,
@@ -595,6 +597,14 @@ namespace ctranslate2 {
         _linear[0].compute_without_bias(*q, fused_proj);
       else
         _linear[0](*q, fused_proj);
+
+      // The rows of several searches (layers/joint_step.h): one projection for all of them, the attention per part.
+      if (const JointStep* joint = joint_step()) {
+        StorageView context(dtype, device);
+        joint_attention(*joint, fused_proj, fused_q, context);
+        output_projection(queries, context, output, next);
+        return;
+      }
 
       // Whisper's encoder self-attention straight from the projection: the bias add and head split happen as the
       // attention kernels read it (attention_fused.h), bit for bit the split, cache-free path below.

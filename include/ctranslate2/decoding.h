@@ -81,8 +81,8 @@ namespace ctranslate2 {
            const std::vector<std::vector<size_t>>* prefix_ids = nullptr) const override;
 
     // The same search a step at a time, the decoder step being the caller's (search() runs it to the end), so that
-    // several searches can share one decoder call (WhisperReplica::generate_groups). The run keeps references to
-    // its arguments.
+    // several searches can share one decoder call (WhisperReplica::decode_stream). The run keeps references to
+    // its arguments, but for end_ids and logits_processors, which it copies.
     std::unique_ptr<BeamSearchRun>
     start(layers::Decoder& decoder,
           layers::DecoderState& state,
@@ -102,7 +102,6 @@ namespace ctranslate2 {
           const std::vector<std::vector<size_t>>* prefix_ids) const;
 
   private:
-    friend class BeamSearchRun;
     const dim_t _beam_size;
     const float _length_penalty;
     const float _coverage_penalty;
@@ -229,5 +228,38 @@ namespace ctranslate2 {
          std::vector<std::vector<size_t>> start_tokens,
          std::vector<size_t> end_ids,
          DecodingOptions options = DecodingOptions());
+
+  // decode()'s beam search a step at a time (start_decode): the BeamSearchRun with what decode() builds for it
+  // (the strategy, sampler and logits processors), so that several can share decoder steps.
+  class DecodeRun {
+  public:
+    BeamSearchRun& search() {
+      return *_run;
+    }
+    // The results as decode() returns them.
+    std::vector<DecodingResult> finish();
+
+  private:
+    friend std::unique_ptr<DecodeRun> start_decode(layers::Decoder&, layers::DecoderState&,
+                                                   std::vector<std::vector<size_t>>, std::vector<size_t>,
+                                                   DecodingOptions);
+    DecodeRun() = default;
+    layers::Decoder* _decoder = nullptr;
+    DecodingOptions _options;
+    std::vector<size_t> _end_ids;
+    std::vector<size_t> _start_ids;
+    std::vector<std::vector<size_t>> _prefix_ids;
+    std::unique_ptr<const BeamSearch> _strategy;
+    std::unique_ptr<const Sampler> _sampler;
+    std::vector<std::shared_ptr<LogitsProcessor>> _processors;
+    std::unique_ptr<BeamSearchRun> _run;
+  };
+
+  // decode() for a beam search (beam_size > 1, no alternatives) up to its first step.
+  std::unique_ptr<DecodeRun> start_decode(layers::Decoder& decoder,
+                                          layers::DecoderState& state,
+                                          std::vector<std::vector<size_t>> start_tokens,
+                                          std::vector<size_t> end_ids,
+                                          DecodingOptions options);
 
 }

@@ -1,11 +1,85 @@
 #include "module.h"
 
 #include <ctranslate2/models/whisper.h>
+#include <ctranslate2/models/whisper_stream.h>
 
 #include "replica_pool.h"
 
 namespace ctranslate2 {
   namespace python {
+
+    static models::WhisperOptions whisper_options(size_t beam_size,
+                                                  float patience,
+                                                  size_t num_hypotheses,
+                                                  float length_penalty,
+                                                  float repetition_penalty,
+                                                  size_t no_repeat_ngram_size,
+                                                  size_t max_length,
+                                                  bool return_scores,
+                                                  bool return_logits_vocab,
+                                                  bool return_no_speech_prob,
+                                                  size_t max_initial_timestamp_index,
+                                                  bool suppress_blank,
+                                                  const std::optional<std::vector<int>>& suppress_tokens,
+                                                  size_t sampling_topk,
+                                                  float sampling_temperature,
+                                                  size_t group_size) {
+      models::WhisperOptions options;
+      options.beam_size = beam_size;
+      options.patience = patience;
+      options.length_penalty = length_penalty;
+      options.repetition_penalty = repetition_penalty;
+      options.no_repeat_ngram_size = no_repeat_ngram_size;
+      options.sampling_topk = sampling_topk;
+      options.sampling_temperature = sampling_temperature;
+      options.max_length = max_length;
+      options.num_hypotheses = num_hypotheses;
+      options.return_scores = return_scores;
+      options.return_logits_vocab = return_logits_vocab;
+      options.return_no_speech_prob = return_no_speech_prob;
+      options.max_initial_timestamp_index = max_initial_timestamp_index;
+      options.suppress_blank = suppress_blank;
+      options.group_size = group_size;
+
+      if (suppress_tokens)
+        options.suppress_tokens = suppress_tokens.value();
+      else
+        options.suppress_tokens.clear();
+      return options;
+    }
+
+    // models::WhisperStream for Python: batches in, finished batches out; closed when dropped.
+    class WhisperStreamWrapper {
+    public:
+      explicit WhisperStreamWrapper(std::shared_ptr<models::WhisperStream> stream)
+        : _stream(std::move(stream)) {
+      }
+      WhisperStreamWrapper(WhisperStreamWrapper&&) = default;
+      WhisperStreamWrapper(const WhisperStreamWrapper&) = delete;
+      ~WhisperStreamWrapper() {
+        if (_stream)
+          _stream->close();
+      }
+
+      void submit(uint64_t tag, const StorageView& encoder_output, BatchIds prompts) {
+        _stream->submit(tag, encoder_output.sync_copy(), std::move(prompts));
+      }
+
+      std::optional<std::pair<uint64_t, std::vector<models::WhisperGenerationResult>>> next() {
+        uint64_t tag = 0;
+        std::vector<models::WhisperGenerationResult> results;
+        if (!_stream->next(tag, results))
+          return std::nullopt;
+        return std::make_pair(tag, std::move(results));
+      }
+
+      void close() {
+        _stream->close();
+      }
+
+    private:
+      std::shared_ptr<models::WhisperStream> _stream;
+    };
 
     class WhisperWrapper : public ReplicaPoolHelper<models::Whisper> {
     public:
@@ -50,27 +124,10 @@ namespace ctranslate2 {
                size_t group_size) {
         std::vector<std::future<models::WhisperGenerationResult>> futures;
 
-        models::WhisperOptions options;
-        options.beam_size = beam_size;
-        options.patience = patience;
-        options.length_penalty = length_penalty;
-        options.repetition_penalty = repetition_penalty;
-        options.no_repeat_ngram_size = no_repeat_ngram_size;
-        options.sampling_topk = sampling_topk;
-        options.sampling_temperature = sampling_temperature;
-        options.max_length = max_length;
-        options.num_hypotheses = num_hypotheses;
-        options.return_scores = return_scores;
-        options.return_logits_vocab = return_logits_vocab;
-        options.return_no_speech_prob = return_no_speech_prob;
-        options.max_initial_timestamp_index = max_initial_timestamp_index;
-        options.suppress_blank = suppress_blank;
-        options.group_size = group_size;
-
-        if (suppress_tokens)
-          options.suppress_tokens = suppress_tokens.value();
-        else
-          options.suppress_tokens.clear();
+        const models::WhisperOptions options = whisper_options(
+          beam_size, patience, num_hypotheses, length_penalty, repetition_penalty, no_repeat_ngram_size,
+          max_length, return_scores, return_logits_vocab, return_no_speech_prob, max_initial_timestamp_index,
+          suppress_blank, suppress_tokens, sampling_topk, sampling_temperature, group_size);
         std::shared_lock lock(_mutex);
         assert_model_is_ready();
 
@@ -80,6 +137,32 @@ namespace ctranslate2 {
           futures = _pool->generate(features, std::get<BatchIds>(prompts), options);
 
         return maybe_wait_on_futures(std::move(futures), asynchronous);
+      }
+
+      WhisperStreamWrapper open_stream(size_t max_batches,
+                                       size_t max_rows,
+                                       size_t max_pending,
+                                       size_t beam_size,
+                                       float patience,
+                                       size_t num_hypotheses,
+                                       float length_penalty,
+                                       float repetition_penalty,
+                                       size_t no_repeat_ngram_size,
+                                       size_t max_length,
+                                       bool return_scores,
+                                       bool return_no_speech_prob,
+                                       size_t max_initial_timestamp_index,
+                                       bool suppress_blank,
+                                       const std::optional<std::vector<int>>& suppress_tokens) {
+        models::WhisperOptions options = whisper_options(
+          beam_size, patience, num_hypotheses, length_penalty, repetition_penalty, no_repeat_ngram_size,
+          max_length, return_scores, /*return_logits_vocab=*/false, return_no_speech_prob,
+          max_initial_timestamp_index, suppress_blank, suppress_tokens, /*sampling_topk=*/1,
+          /*sampling_temperature=*/1, /*group_size=*/0);
+        const models::WhisperStreamLimits limits{max_batches, max_rows, max_pending};
+        std::shared_lock lock(_mutex);
+        assert_model_is_ready();
+        return WhisperStreamWrapper(_pool->open_stream(std::move(options), limits));
       }
 
       std::vector<std::vector<std::pair<std::string, float>>>
@@ -156,6 +239,37 @@ namespace ctranslate2 {
             + ", text_token_probs=" + std::string(py::repr(py::cast(result.text_token_probs)))
             + ")";
         })
+        ;
+
+      py::class_<WhisperStreamWrapper>(
+        m, "WhisperStream",
+        R"pbdoc(
+            Batches decoded together by one worker of a :class:`Whisper` model, each exactly as
+            :meth:`Whisper.generate` decodes it alone, a batch joining as soon as there is room
+            (:meth:`Whisper.open_stream`).
+        )pbdoc")
+        .def("submit", &WhisperStreamWrapper::submit,
+             py::arg("tag"),
+             py::arg("encoder_output"),
+             py::arg("prompts"),
+             py::call_guard<py::gil_scoped_release>(),
+             R"pbdoc(
+                 Queues a batch; blocks while ``max_pending`` batches wait.
+
+                 Arguments:
+                   tag: The batch's number, returned with its results.
+                   encoder_output: Its encoder output (:meth:`Whisper.encode`, on the model's device).
+                   prompts: Its prompts, as token IDs.
+             )pbdoc")
+        .def("next", &WhisperStreamWrapper::next,
+             py::call_guard<py::gil_scoped_release>(),
+             R"pbdoc(
+                 Waits for a finished batch: ``(tag, results)`` as :meth:`Whisper.generate` returns them,
+                 or ``None`` once the stream is closed and every batch returned.
+             )pbdoc")
+        .def("close", &WhisperStreamWrapper::close,
+             py::call_guard<py::gil_scoped_release>(),
+             "No more batches.")
         ;
 
       py::class_<WhisperWrapper>(
@@ -303,6 +417,39 @@ namespace ctranslate2 {
 
                  Returns:
                    A list of generation results.
+             )pbdoc")
+
+        .def("open_stream", &WhisperWrapper::open_stream,
+             py::kw_only(),
+             py::arg("max_batches")=8,
+             py::arg("max_rows")=320,
+             py::arg("max_pending")=2,
+             py::arg("beam_size")=5,
+             py::arg("patience")=1,
+             py::arg("num_hypotheses")=1,
+             py::arg("length_penalty")=1,
+             py::arg("repetition_penalty")=1,
+             py::arg("no_repeat_ngram_size")=0,
+             py::arg("max_length")=448,
+             py::arg("return_scores")=false,
+             py::arg("return_no_speech_prob")=false,
+             py::arg("max_initial_timestamp_index")=50,
+             py::arg("suppress_blank")=true,
+             py::arg("suppress_tokens")=std::vector<int>{-1},
+             py::call_guard<py::gil_scoped_release>(),
+             R"pbdoc(
+                 Opens a stream of batches decoded together with a beam search on one worker (it keeps
+                 that worker until closed): every batch gets exactly what :meth:`generate` with these
+                 options returns for it alone, while each decoding step runs once for every batch in flight.
+
+                 Arguments:
+                   max_batches: Batches decoding at once.
+                   max_rows: Rows (inputs x beams) decoding when a batch may join.
+                   max_pending: Batches submitted and not yet decoding.
+                   The other arguments: as in :meth:`generate`.
+
+                 Returns:
+                   A :class:`WhisperStream`.
              )pbdoc")
 
         .def("detect_language", &WhisperWrapper::detect_language,

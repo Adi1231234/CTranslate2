@@ -1,5 +1,6 @@
 #include "cross_attention_fused.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 
@@ -104,6 +105,38 @@ namespace ctranslate2 {
 #else
       (void)keys; (void)values; (void)scale; (void)residue;
       throw std::logic_error("cross_attention_fused requires CUDA");
+#endif
+    }
+
+    void cross_attention_joint(const StorageView& queries, const void* const* memory,
+                               const std::vector<dim_t>& part_clips, float scale, StorageView& output) {
+      output.resize(queries.shape());
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      const dim_t heads = queries.dim(1), m = queries.dim(2), depth = queries.dim(3);
+      const dim_t per_clip = heads * m * depth;
+      const auto* kv = reinterpret_cast<const float16_t* const*>(memory);
+      dim_t clip = 0;
+      // A launch for every max_groups parts, each part with its own batch's residue.
+      for (size_t first = 0; first < part_clips.size(); first += cuda::CrossResidues::max_groups) {
+        const size_t end = std::min(part_clips.size(), first + cuda::CrossResidues::max_groups);
+        cuda::CrossResidues residues;
+        dim_t clips = 0;
+        for (size_t p = first; p < end; ++p) {
+          const int residue = cuda::cross_attention_residue(m, part_clips[p] * heads, 1500, depth);
+          if (residue < 0)
+            throw std::logic_error("No cross-attention kernel for a joint decoding step's part");
+          clips += part_clips[p];
+          residues.clip_end[residues.count] = static_cast<int>(clips);
+          residues.residue[residues.count++] = residue;
+        }
+        cuda::cross_attention(queries.data<float16_t>() + clip * per_clip, nullptr, nullptr,
+                              output.data<float16_t>() + clip * per_clip, clips, heads, m, scale,
+                              residues.residue[0], nullptr, nullptr, nullptr, 0, nullptr, residues, kv + 2 * clip);
+        clip += clips;
+      }
+#else
+      (void)memory; (void)part_clips; (void)scale;
+      throw std::logic_error("cross_attention_joint requires CUDA");
 #endif
     }
 

@@ -132,6 +132,7 @@ set(SOURCES
   src/generator.cc
   src/layers/attention_layer.cc
   src/layers/attention.cc
+  src/layers/attention_joint.cc
   src/layers/flash_attention.cc
   src/layers/common.cc
   src/layers/attention_fused.cc
@@ -139,8 +140,10 @@ set(SOURCES
   src/layers/cross_attention_fused.cc
   src/layers/split_heads_fused.cc
   src/layers/decoder.cc
+  src/layers/joint_step.cc
   src/layers/kv_cache.cc
   src/layers/transformer.cc
+  src/layers/transformer_joint.cc
   src/layers/wav2vec2.cc
   src/layers/wav2vec2bert.cc
   src/layers/whisper.cc
@@ -154,6 +157,7 @@ set(SOURCES
   src/models/wav2vec2.cc
   src/models/wav2vec2bert.cc
   src/models/whisper.cc
+  src/models/whisper_stream.cc
   src/ops/activation.cc
   src/ops/add.cc
   src/ops/alibi_add.cc

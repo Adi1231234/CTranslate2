@@ -221,6 +221,18 @@ namespace ctranslate2 {
         return true;
       }
 
+      // One decoding step for several independent beam searches (BeamSearchRun), their rows concatenated in part
+      // order into one batch: each part gets what its own step would compute (the products as its own batch would
+      // run them, cuda/clip_groups.h; its own caches, layers/joint_step.h), while the weights are read once. The
+      // Whisper decoder's layout, every part past its prompt. logits: [rows, vocabulary].
+      struct JointPart {
+        dim_t step;                          // the part's decoder step (position)
+        const StorageView* ids;              // its rows' ids, on the device
+        DecoderState* state;
+        std::vector<dim_t> memory_entries;   // for each input still decoding, its entry in the memory keys and values
+      };
+      void decode_joint(const std::vector<JointPart>& parts, StorageView& logits);
+
     protected:
       Dense& output_layer() override {
         return _proj;

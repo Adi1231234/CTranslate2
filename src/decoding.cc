@@ -1634,19 +1634,14 @@ namespace ctranslate2 {
     return new_ids;
   }
 
-  std::vector<DecodingResult>
-  decode(layers::Decoder& decoder,
-         layers::DecoderState& state,
-         std::vector<std::vector<size_t>> start_tokens,
-         std::vector<size_t> end_ids,
-         DecodingOptions options) {
+  // decode()'s checks, and its ids mapped to the output layer's.
+  static void prepare_decode(const layers::Decoder& decoder,
+                             std::vector<std::vector<size_t>>& start_tokens,
+                             std::vector<size_t>& end_ids,
+                             DecodingOptions& options) {
     validate_decoding_options(options, decoder.device());
-    const size_t batch_size = start_tokens.size();
-
-    if (batch_size == 0)
+    if (start_tokens.empty())
       throw std::invalid_argument("No decoder start tokens are set");
-
-    std::vector<DecodingResult> results;
 
     if (decoder.output_layer_is_updated()) {
       end_ids = map_to_output_word_ids(decoder, end_ids);
@@ -1659,6 +1654,30 @@ namespace ctranslate2 {
       options.disable_ids = map_to_output_word_ids(decoder, options.disable_ids);
       options.disable_ids_begin = map_to_output_word_ids(decoder, options.disable_ids_begin);
     }
+  }
+
+  // The results' original word ids.
+  static void restore_word_ids(const layers::Decoder& decoder, std::vector<DecodingResult>& results) {
+    if (decoder.output_layer_is_updated()) {
+      for (auto& result : results) {
+        for (auto& hypothesis : result.hypotheses) {
+          for (auto& id : hypothesis)
+            id = decoder.to_original_word_id(id);
+        }
+      }
+    }
+  }
+
+  std::vector<DecodingResult>
+  decode(layers::Decoder& decoder,
+         layers::DecoderState& state,
+         std::vector<std::vector<size_t>> start_tokens,
+         std::vector<size_t> end_ids,
+         DecodingOptions options) {
+    prepare_decode(decoder, start_tokens, end_ids, options);
+    const size_t batch_size = start_tokens.size();
+
+    std::vector<DecodingResult> results;
 
     if (options.return_alternatives) {
       results.reserve(batch_size);
@@ -1697,16 +1716,51 @@ namespace ctranslate2 {
                                         prefix_ids.empty() ? nullptr : &prefix_ids);
     }
 
-    if (decoder.output_layer_is_updated()) {
-      // Restore original word ids.
-      for (auto& result : results) {
-        for (auto& hypothesis : result.hypotheses) {
-          for (auto& id : hypothesis)
-            id = decoder.to_original_word_id(id);
-        }
-      }
-    }
+    restore_word_ids(decoder, results);
+    return results;
+  }
 
+  std::unique_ptr<DecodeRun> start_decode(layers::Decoder& decoder,
+                                          layers::DecoderState& state,
+                                          std::vector<std::vector<size_t>> start_tokens,
+                                          std::vector<size_t> end_ids,
+                                          DecodingOptions options) {
+    prepare_decode(decoder, start_tokens, end_ids, options);
+    if (options.return_alternatives || (options.beam_size == 1 && options.prefix_bias_beta == 0))
+      throw std::invalid_argument("A decoding a step at a time is a beam search without alternatives");
+
+    auto run = std::unique_ptr<DecodeRun>(new DecodeRun());
+    run->_decoder = &decoder;
+    run->_options = std::move(options);
+    run->_end_ids = std::move(end_ids);
+    std::tie(run->_start_ids, run->_prefix_ids) = split_start_tokens(start_tokens);
+    const DecodingOptions& o = run->_options;
+    run->_strategy = std::make_unique<BeamSearch>(o.beam_size, o.length_penalty, o.coverage_penalty,
+                                                  o.prefix_bias_beta, o.patience, o.group_size);
+    run->_sampler = make_sampler(o);
+    run->_processors = make_logits_processors(o);
+    run->_run = run->_strategy->start(decoder,
+                                      state,
+                                      *run->_sampler,
+                                      run->_start_ids,
+                                      run->_end_ids,
+                                      o.start_step,
+                                      o.max_length,
+                                      o.min_length,
+                                      o.return_scores,
+                                      o.return_attention,
+                                      o.return_logits_vocab,
+                                      o.return_prefix,
+                                      o.num_hypotheses,
+                                      o.include_eos_in_hypotheses,
+                                      run->_processors,
+                                      run->_prefix_ids.empty() ? nullptr : &run->_prefix_ids);
+    return run;
+  }
+
+  std::vector<DecodingResult> DecodeRun::finish() {
+    std::vector<DecodingResult> results = _run->finish();
+    restore_word_ids(*_decoder, results);
     return results;
   }
 

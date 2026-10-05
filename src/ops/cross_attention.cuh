@@ -35,13 +35,14 @@ namespace at {
     };
 
     // entry = clip * heads + head; k, v: [entries][1500][64]; o: [clips][m][heads][64]. With slot (cuda/memory_slots.h),
-    // clip c's keys and values are the cache's entry slot[c] * heads + head.
+    // clip c's keys and values are the cache's entry slot[c] * heads + head; with kv (clips of several searches,
+    // layers/joint_step.h), they start at kv[2c] and kv[2c + 1], [heads][1500][64] each.
     // 5 blocks per SM (registers for it): 8 clips x 20 heads = 160 blocks then fit the RTX 5060 Ti's 36 SMs at
     // once; at 4 (128 registers) a tail of 16 blocks ran after the rest.
     static __global__ void __launch_bounds__(ca_warps * 32, 5)
     cross_attention_kernel(CaQueries queries, const __half* k, const __half* v, __half* o, int heads, int m,
                            int rows_per_pass, int residue, float alpha, int ahead, const int* slot,
-                           ctranslate2::cuda::CrossResidues residues) {
+                           ctranslate2::cuda::CrossResidues residues, const __half* const* kv) {
       extern __shared__ __align__(16) unsigned char ca_smem[];
       __half* p = reinterpret_cast<__half*>(ca_smem);        // [rows_per_pass][ca_pitch] scores, probabilities
       __half* qs = p + rows_per_pass * ca_pitch;             // [rows_per_pass][ca_qpitch] projected queries
@@ -53,8 +54,10 @@ namespace at {
         }
       const int warp = threadIdx.x / 32, lane = threadIdx.x % 32, g = lane / 4, t = lane % 4;
       const size_t kv_entry = slot ? (size_t)slot[clip] * heads + head : (size_t)entry;
-      const __half* ke = k + kv_entry * ca_keys * ca_depth;
-      const __half* ve = v + kv_entry * ca_keys * ca_depth + 16 * warp + 2 * g;
+      const size_t per_head = (size_t)ca_keys * ca_depth;
+      const __half* ke = kv ? kv[2 * clip] + head * per_head : k + kv_entry * per_head;
+      const __half* vh = kv ? kv[2 * clip + 1] + head * per_head : v + kv_entry * per_head;   // this head's values
+      const __half* ve = vh + 16 * warp + 2 * g;
       for (int j0 = 0; j0 < m; j0 += rows_per_pass) {
         const int rows = min(rows_per_pass, m - j0);
         if (queries.x) {
@@ -98,7 +101,7 @@ namespace at {
           #pragma unroll
           for (int i = 0; i < 4; ++i)
             asm volatile("prefetch.global.L2 [%0];"
-                         :: "l"(v + (kv_entry * ca_keys + threadIdx.x + i * ca_warps * 32) * ca_depth));
+                         :: "l"(vh + (threadIdx.x + i * ca_warps * 32) * ca_depth));
         __syncthreads();
         for (int r = warp; r < rows; r += ca_warps) {        // softmax in place, a row per warp
           __half* row = p + r * ca_pitch;
@@ -111,7 +114,7 @@ namespace at {
         auto group = [&](int s, int end) {                  // keys s .. s + 15, zero from `end`
           const int ahead_key = s + 16 * ahead + 4 * warp + lane;   // group `ahead` on: 4 rows per warp into L2
           if (ahead && lane < 4 && ahead_key < ca_keys)
-            asm volatile("prefetch.global.L2 [%0];" :: "l"(v + (kv_entry * ca_keys + ahead_key) * ca_depth));
+            asm volatile("prefetch.global.L2 [%0];" :: "l"(vh + (size_t)ahead_key * ca_depth));
           const int i = s + 2 * t;
           unsigned x[4];                                    // V[i], V[i + 1], V[i + 8], V[i + 9] at dims 16w + 2g, +1
           #pragma unroll

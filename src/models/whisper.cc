@@ -271,22 +271,36 @@ namespace ctranslate2 {
 #ifdef CT2_WITH_CUDA
       const cuda::UseTrueFp16GemmInScope use_true_fp16_gemm(false);
 #endif
+      const auto scoped_device_setter = _model->get_scoped_device_setter();
+      Prepared prepared = prepare_generation(std::move(features), prompts, options);
 
+      std::vector<DecodingResult> results;
+      {
+        CT2_NVTX_RANGE(decode_range, "decode");
+        results = decode(*_decoder, prepared.state, prepared.start_tokens, {_eot_id}, prepared.decoding_options);
+      }
+      return finish_generation(std::move(results), prepared, options);
+    }
+
+    WhisperReplica::Prepared
+    WhisperReplica::prepare_generation(StorageView features,
+                                       const std::vector<std::vector<size_t>>& prompts,
+                                       const WhisperOptions& options) {
       size_t sot_index = 0;
       size_t prompt_length = 0;  // Length of the prompt before the text tokens.
       check_prompts(prompts, _sot_id, _no_timestamps_id, sot_index, prompt_length);
 
       const auto& vocabulary = _model->get_vocabulary();
-      const auto scoped_device_setter = _model->get_scoped_device_setter();
 
-      layers::DecoderState state = _decoder->initial_state();
+      Prepared prepared;
+      layers::DecoderState& state = prepared.state;
+      state = _decoder->initial_state();
       state.emplace("memory", maybe_encode(std::move(features)));
 
       _decoder->update_output_layer(_model->preferred_size_multiple());
 
       const bool sot_is_start_token = (sot_index == prompt_length - 1);
-      std::vector<std::vector<size_t>> start_tokens;
-      std::vector<float> no_speech_probs;
+      std::vector<std::vector<size_t>>& start_tokens = prepared.start_tokens;
       dim_t start_step = 0;
 
       if (prompt_length == 1) {
@@ -324,7 +338,7 @@ namespace ctranslate2 {
           StorageView sot_index_batch({inputs.dim(0)}, int32_t(sot_index), device);
           StorageView logits(dtype, device);
           _decoder->compute_logits_for_steps(outputs, sot_index_batch, logits);
-          no_speech_probs = get_no_speech_probs_from_logits(logits, _no_speech_id);
+          prepared.no_speech_probs = get_no_speech_probs_from_logits(logits, _no_speech_id);
         }
 
         start_step = inputs.dim(1);
@@ -332,7 +346,7 @@ namespace ctranslate2 {
 
       const dim_t total_max_length = options.max_length;
 
-      DecodingOptions decoding_options;
+      DecodingOptions& decoding_options = prepared.decoding_options;
       decoding_options.start_step = start_step;
       decoding_options.beam_size = options.beam_size;
       decoding_options.patience = options.patience;
@@ -362,11 +376,10 @@ namespace ctranslate2 {
           decoding_options.disable_ids_begin.push_back(id);
       }
 
-      std::shared_ptr<GetNoSpeechProbs> no_speech_probs_processor;
       if (options.return_no_speech_prob && sot_is_start_token) {
         // If SOT is the start token, we need to get the no speech prob in the first decoding loop.
-        no_speech_probs_processor = std::make_shared<GetNoSpeechProbs>(_no_speech_id);
-        decoding_options.logits_processors.emplace_back(no_speech_probs_processor);
+        prepared.no_speech_processor = std::make_shared<GetNoSpeechProbs>(_no_speech_id);
+        decoding_options.logits_processors.emplace_back(prepared.no_speech_processor);
       }
 
       if (prompts[0][prompt_length - 1] != _no_timestamps_id) {
@@ -381,14 +394,17 @@ namespace ctranslate2 {
                                                 max_initial_timestamp_id));
       }
 
-      std::vector<DecodingResult> results;
-      {
-        CT2_NVTX_RANGE(decode_range, "decode");
-        results = decode(*_decoder, state, start_tokens, {_eot_id}, decoding_options);
-      }
+      return prepared;
+    }
 
-      if (no_speech_probs_processor)
-        no_speech_probs = no_speech_probs_processor->get_no_speech_probs();
+    std::vector<WhisperGenerationResult>
+    WhisperReplica::finish_generation(std::vector<DecodingResult> results,
+                                      Prepared& prepared,
+                                      const WhisperOptions& options) {
+      const auto& vocabulary = _model->get_vocabulary();
+      std::vector<float>& no_speech_probs = prepared.no_speech_probs;
+      if (prepared.no_speech_processor)
+        no_speech_probs = static_cast<const GetNoSpeechProbs&>(*prepared.no_speech_processor).get_no_speech_probs();
 
       std::vector<WhisperGenerationResult> final_results;
       final_results.reserve(results.size());

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ctranslate2/decoding.h"
 #include "ctranslate2/generation.h"
 #include "ctranslate2/layers/whisper.h"
 #include "ctranslate2/models/model.h"
@@ -78,6 +79,9 @@ namespace ctranslate2 {
       }
     };
 
+    class WhisperStream;
+    struct WhisperStreamLimits;
+
     struct WhisperAlignmentResult {
       std::vector<std::pair<dim_t, dim_t>> alignments;
       std::vector<float> text_token_probs;
@@ -144,7 +148,25 @@ namespace ctranslate2 {
             std::vector<size_t> num_frames,
             dim_t median_filter_width);
 
+      // Decodes the stream's batches until it is closed and drained (whisper_stream.h).
+      void decode_stream(WhisperStream& stream);
+
     private:
+      // generate() for one batch up to its decoding, and after it.
+      struct Prepared {
+        layers::DecoderState state;
+        std::vector<std::vector<size_t>> start_tokens;
+        DecodingOptions decoding_options;
+        std::vector<float> no_speech_probs;
+        std::shared_ptr<LogitsProcessor> no_speech_processor;   // when the first decoding step gives them
+      };
+      Prepared prepare_generation(StorageView features,
+                                  const std::vector<std::vector<size_t>>& prompts,
+                                  const WhisperOptions& options);
+      std::vector<WhisperGenerationResult> finish_generation(std::vector<DecodingResult> results,
+                                                             Prepared& prepared,
+                                                             const WhisperOptions& options);
+
       const std::shared_ptr<const WhisperModel> _model;
       const std::unique_ptr<layers::WhisperEncoder> _encoder;
       const std::unique_ptr<layers::WhisperDecoder> _decoder;
@@ -190,6 +212,9 @@ namespace ctranslate2 {
             std::vector<std::vector<size_t>> text_tokens,
             std::vector<size_t> num_frames,
             dim_t median_filter_width);
+
+      // A stream decoded by one of the pool's workers until it is closed (whisper_stream.h).
+      std::shared_ptr<WhisperStream> open_stream(WhisperOptions options, WhisperStreamLimits limits);
 
     };
 
