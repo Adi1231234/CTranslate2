@@ -1,4 +1,4 @@
-﻿// The Whisper decoder's products at the rows a step of several batches has (2..320): cuBLAS (one call, as
+// The Whisper decoder's products at the rows a step of several batches has (2..320): cuBLAS (one call, as
 // CTranslate2 makes it) against src/cuda/tiled_split_gemm.cuh at several output tiles, for bits and time.
 // Row-independent products (3840 / 1280 / 5120 / 51872 x 1280, cuda/clip_groups.h): one chain over k, every M
 // 2..320 against the cuBLAS call, 2 fills. The second feed-forward (1280 x 5120): groups of rows with their own
@@ -113,7 +113,9 @@ int main() {
   const int ms[] = {40, 80, 120, 160, 200, 240, 280, 320};
   for (const auto& s : shapes) {
     const int n = s[0], k = s[1];
-    printf("%5d x %d (%.1f MB): us at M = cuBLAS | 32x32 32x64 64x32 64x64 32x128 64x128\n", n, k, 2e-6 * n * k);
+    printf("%5d x %d (%.1f MB): us at M = cuBLAS | tiles", n, k, 2e-6 * n * k);
+    for (int t = 0; t < TILES; ++t) printf(" %dx%d", tiles[t].tm, tiles[t].tn);
+    printf("\n");
     for (const int m : ms) {
       printf("  M %3d: %7.1f |", m, timed([&] { cublas(m, n, k, A, C); }));
       for (int t = 0; t < TILES; ++t)
