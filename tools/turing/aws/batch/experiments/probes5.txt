@@ -1,0 +1,2 @@
+# The second feed-forward's arithmetic at 1..16 rows (wider split-K candidates).
+scriptp|scripts/probes.sh|probes/probes-41e9976d.tgz|ffn2_probe:16

@@ -1,0 +1,7 @@
+# pyct2-l40f (85562816): grouped decoding with the second feed-forward in one pass for all groups (each group's
+# cuBLAS split, grouped_split_check first). Batched path alone against kh3 83.21x (88.2 steady) / kh2 79.5x; and
+# the full production run against h2p3 56.55x. Rows of f3a compared with fullctx.
+scriptp|scripts/probes.sh|probes/probes-85562816.tgz|grouped_split_check
+f3|pyct2-l40f|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
+f2|pyct2-l40f|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=4|CT2_CUDA_SCHEDULE=blocking
+f3a|pyct2-l40f|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=async|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
