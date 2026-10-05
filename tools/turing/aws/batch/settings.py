@@ -20,7 +20,9 @@ ECR_REPO, CODEBUILD, LOG_GROUP = NAME, f"{NAME}-image", f"/{NAME}"
 FLEETS = {"g6e": ("g6e.xlarge", 4, 28 * 1024), "g6e2x": ("g6e.2xlarge", 8, 56 * 1024),
           "g7e": ("g7e.2xlarge", 8, 56 * 1024)}
 # Larger sizes of the same single GPU a fleet may also take when its own type is sold out (more vCPU, dearer).
-FLEET_ALSO = {"g7e": ["g7e.4xlarge"]}
+# Set 5.10 on the g7e fleets and the eu-north-1 / eu-central-1 g6e fleets (the us-east g6e ones stay g6e.xlarge:
+# the asr-train queues wait for that capacity there).
+FLEET_ALSO = {"g7e": ["g7e.4xlarge"], "g6e": ["g6e.2xlarge"]}
 MAX_VCPUS = 8                                   # per fleet: two g6e.xlarge or one g6e.2xlarge at most
 MAX_VCPUS_ALSO = 16                             # a fleet with larger sizes: one of them at most
 ROOT_GB = 100                                   # the image (~6 GB) and its layers, the cache, the outputs
