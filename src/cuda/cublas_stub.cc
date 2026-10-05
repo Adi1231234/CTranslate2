@@ -283,4 +283,48 @@ extern "C" {
     return func(handle, transa, transb, m, n, k, alpha, A, Atype, lda, strideA, B, Btype, ldb, strideB, beta, C, Ctype, ldc, strideC, batchCount, computeType, algo);
   }
 
+  cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
+                                     cublasOperation_t transa,
+                                     cublasOperation_t transb,
+                                     int m,
+                                     int n,
+                                     int k,
+                                     const void *alpha,
+                                     const void *const Aarray[],
+                                     cudaDataType Atype,
+                                     int lda,
+                                     const void *const Barray[],
+                                     cudaDataType Btype,
+                                     int ldb,
+                                     const void *beta,
+                                     void *const Carray[],
+                                     cudaDataType Ctype,
+                                     int ldc,
+                                     int batchCount,
+                                     cublasComputeType_t computeType,
+                                     cublasGemmAlgo_t algo) {
+    using Signature = cublasStatus_t(*)(cublasHandle_t,
+                                        cublasOperation_t,
+                                        cublasOperation_t,
+                                        int,
+                                        int,
+                                        int,
+                                        const void*,
+                                        const void *const[],
+                                        cudaDataType,
+                                        int,
+                                        const void *const[],
+                                        cudaDataType,
+                                        int,
+                                        const void*,
+                                        void *const[],
+                                        cudaDataType,
+                                        int,
+                                        int,
+                                        cublasComputeType_t,
+                                        cublasGemmAlgo_t);
+    static auto func = ctranslate2::load_symbol<Signature>("cublasGemmBatchedEx");
+    return func(handle, transa, transb, m, n, k, alpha, Aarray, Atype, lda, Barray, Btype, ldb, beta, Carray, Ctype, ldc, batchCount, computeType, algo);
+  }
+
 }
