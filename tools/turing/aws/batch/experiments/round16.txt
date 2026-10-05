@@ -1,0 +1,13 @@
+# Toward 140x (Adi 5.10 night). pyct2-l40q (f430cd10): one cross-attention launch for all groups, the second
+# feed-forward kernel up to 320 rows. Probes (FFN2 kernel at 320 rows; does self-attention depend on the batch
+# count), the exactness checks (seeded repeated vs shared memory; joined vs alone, sampling at T=0 and beam), then
+# bigger groups on fewer processes, the batched path alone (against n3 86.57x), and full runs with the fallback
+# ladders joined (beam only = exact; and sampled too).
+scriptp|scripts/probes.sh|probes/probes-f430cd10.tgz|grouped_split_check selfattn_probe
+scriptv|scripts/sampled_check.sh|pyct2-l40q|fallback_uuids_real30.txt
+q3|pyct2-l40q|runner-0349137c|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
+q4p2|pyct2-l40q|runner-0349137c|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=4|CT2_CUDA_SCHEDULE=blocking
+q8p1|pyct2-l40q|runner-0349137c|src/tools/turing/scale/units_real.txt|1|RUN_FALLBACK=skip|PIPE_GROUPS=8|CT2_CUDA_SCHEDULE=blocking
+q6p2|pyct2-l40q|runner-0349137c|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=6|CT2_CUDA_SCHEDULE=blocking
+qa3|pyct2-l40q|runner-0349137c|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=batched|RUN_FALLBACK_GATHER=3|RUN_FALLBACK_GATHER_S=60|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
+qs3|pyct2-l40q|runner-0349137c|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=batched|RUN_FALLBACK_SAMPLING=batched|RUN_FALLBACK_GATHER=3|RUN_FALLBACK_GATHER_S=60|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
