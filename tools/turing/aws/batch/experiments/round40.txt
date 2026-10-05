@@ -1,0 +1,11 @@
+# ECC off against on (box/ecc_mode.sh, privileged; a GPU reset applies it): the L40S's GDDR6 ECC is inline, 46068
+# of 49140 MiB with it on and its check bits read with the data; the cross-attention moved 225 MB from DRAM a launch
+# for 192 MB of keys and values. pyct2-l41n, off and on alternately, twice each; on again at the end.
+scriptoff1|scripts/ecc_mode.sh|0
+f1|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scripton1|scripts/ecc_mode.sh|1
+e1|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scriptoff2|scripts/ecc_mode.sh|0
+f2|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scripton2|scripts/ecc_mode.sh|1
+e2|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
