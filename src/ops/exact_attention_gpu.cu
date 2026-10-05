@@ -7,6 +7,7 @@
 #include "exact_attention_launch.cuh"
 #include "cuda/persistent.h"
 #include "cuda/utils.h"
+#include "env.h"
 
 namespace ctranslate2 {
   namespace cuda {
@@ -24,6 +25,12 @@ namespace ctranslate2 {
       return at::native::exact_attention_workspace(static_cast<int>(batch), static_cast<int>(n));
     }
 
+    // CT2_EA_ROWS=32: work items of 32 queries (exact_attention.cuh), else 16.
+    static int ea_rows() {
+      static const int rows = read_int_from_env("CT2_EA_ROWS", 16) == 32 ? 32 : 16;
+      return rows;
+    }
+
     // CT2_EA_BLOCKS=<n>: persistent, n blocks per SM (cuda/persistent.h).
     void exact_attention(const float16_t* q, const float16_t* k, const float16_t* v, void* workspace,
                          float16_t* o, dim_t batch, dim_t heads, dim_t m, dim_t n, float alpha) {
@@ -33,7 +40,7 @@ namespace ctranslate2 {
                                   reinterpret_cast<const __half*>(v), workspace,
                                   reinterpret_cast<__half*>(o), static_cast<int>(batch), static_cast<int>(heads),
                                   static_cast<int>(m), static_cast<int>(n), alpha, stream,
-                                  per_sm > 0 ? work_counter(stream) : nullptr, per_sm * sm_count());
+                                  per_sm > 0 ? work_counter(stream) : nullptr, per_sm * sm_count(), ea_rows());
     }
 
     static bool aligned16(const void* p) {
@@ -56,7 +63,7 @@ namespace ctranslate2 {
       at::native::exact_attention_qkv(reinterpret_cast<const __half*>(x), reinterpret_cast<const __half*>(bias),
                                       workspace, reinterpret_cast<__half*>(o), static_cast<int>(clips),
                                       static_cast<int>(heads), static_cast<int>(n), alpha, stream,
-                                      per_sm > 0 ? work_counter(stream) : nullptr, per_sm * sm_count());
+                                      per_sm > 0 ? work_counter(stream) : nullptr, per_sm * sm_count(), ea_rows());
     }
 
   }

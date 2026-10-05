@@ -50,20 +50,26 @@ int main(int argc, char** argv) {
                                     batch, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
     };
     auto fused = [&] { at::native::exact_attention(p.dQ, p.dK, V, W, F, batch, 1, m, n, alpha, 0); };
-    unsigned long long bad = 0;
+    auto fused32 = [&] { at::native::exact_attention(p.dQ, p.dK, V, W, F, batch, 1, m, n, alpha, 0, nullptr, 0, 32); };
+    unsigned long long bad = 0, bad32 = 0;
     for (int f = 0; f < 3; ++f) {
       fill<<<1024, 256>>>(p.dQ, (size_t)batch * m * d, 23u * f + batch, -6 + f, 1 + f);
       fill<<<1024, 256>>>(p.dK, (size_t)batch * n * d, 211u * f + batch, -7 + f, 1 + f);
       fill<<<1024, 256>>>(V, (size_t)batch * n * d, 307u * f + batch, -8 + 2 * f, 2 + f);
-      three_steps(); fused();
-      CK(cudaGetLastError());
-      CK(cudaMemset(dc, 0, 8)); count_diff<<<1024, 256>>>(O, F, (size_t)batch * m * d, dc);
-      unsigned long long x; CK(cudaMemcpy(&x, dc, 8, cudaMemcpyDeviceToHost)); bad += x;
+      three_steps();
+      for (int rows : {16, 32}) {
+        if (rows == 16) fused(); else fused32();
+        CK(cudaGetLastError());
+        CK(cudaMemset(dc, 0, 8)); count_diff<<<1024, 256>>>(O, F, (size_t)batch * m * d, dc);
+        unsigned long long x; CK(cudaMemcpy(&x, dc, 8, cudaMemcpyDeviceToHost));
+        (rows == 16 ? bad : bad32) += x;
+      }
     }
-    total += bad;
-    const float tt = time_us(three_steps, reps), tf = time_us(fused, reps);
-    printf("batch %3d: %llu of %llu mismatched, MatMul + SoftMax + MatMul %8.1f us, fused %8.1f us (%.2fx)\n",
-           batch, bad, 3ull * batch * m * d, tt, tf, tt / tf);
+    total += bad + bad32;
+    const float tt = time_us(three_steps, reps), tf = time_us(fused, reps), t32 = time_us(fused32, reps);
+    printf("batch %3d: %llu / %llu (32 rows) of %llu mismatched, MatMul + SoftMax + MatMul %8.1f us, fused %8.1f us"
+           " (%.2fx), 32 rows %8.1f us (%.2fx)\n", batch, bad, bad32, 3ull * batch * m * d, tt, tf, tt / tf, t32,
+           tt / t32);
   }
   // exact_attention_qkv against the path above on the same projection: 20 heads, 1..8 clips, a bias whose key
   // part is zero (as Whisper's; the add still turns -0 into +0).
@@ -79,14 +85,19 @@ int main(int argc, char** argv) {
       at::native::exact_attention(p.dQ, p.dK, V, W, O, clips * heads, heads, m, n, alpha, 0);
     };
     auto qkv_path = [&] { at::native::exact_attention_qkv(X, B, W, F, clips, heads, n, alpha, 0); };
-    split_path(); qkv_path();
-    CK(cudaGetLastError());
-    CK(cudaMemset(dc, 0, 8)); count_diff<<<1024, 256>>>(O, F, (size_t)clips * heads * m * d, dc);
-    unsigned long long x; CK(cudaMemcpy(&x, dc, 8, cudaMemcpyDeviceToHost));
+    auto qkv32 = [&] { at::native::exact_attention_qkv(X, B, W, F, clips, heads, n, alpha, 0, nullptr, 0, 32); };
+    split_path();
+    unsigned long long x = 0;
+    for (int rows : {16, 32}) {
+      if (rows == 16) qkv_path(); else qkv32();
+      CK(cudaGetLastError());
+      CK(cudaMemset(dc, 0, 8)); count_diff<<<1024, 256>>>(O, F, (size_t)clips * heads * m * d, dc);
+      unsigned long long y; CK(cudaMemcpy(&y, dc, 8, cudaMemcpyDeviceToHost)); x += y;
+    }
     total += x;
-    const float ts = time_us(split_path, reps), tq = time_us(qkv_path, reps);
-    printf("qkv %d clips: %llu of %llu mismatched, split + fused %8.1f us, from the projection %8.1f us\n",
-           clips, x, (unsigned long long)clips * heads * m * d, ts, tq);
+    const float ts = time_us(split_path, reps), tq = time_us(qkv_path, reps), t32 = time_us(qkv32, reps);
+    printf("qkv %d clips: %llu of %llu mismatched (both), split + fused %8.1f us, from the projection %8.1f us,"
+           " 32 rows %8.1f us\n", clips, x, 2ull * clips * heads * m * d, ts, tq, t32);
   }
   printf("TOTAL %llu mismatches\n", total);
   return 0;

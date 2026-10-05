@@ -33,5 +33,9 @@ namespace at {
       static constexpr int row_tiles = (N + ea_rows - 1) / ea_rows;                   // blocks' work per entry
     };
 
+    // Work items per entry when an item is RT tiles of 16 queries.
+    template <int N, int RT>
+    constexpr int ea_items_per_entry = (N + RT * ea_rows - 1) / (RT * ea_rows);
+
   }
 }
