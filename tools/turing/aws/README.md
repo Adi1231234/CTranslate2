@@ -51,8 +51,28 @@ long run). The batched path alone (`RUN_FALLBACK=skip`, measurement only) 86.6x,
   one pass with each group's split (`src/cuda/grouped_split_gemm.cuh`, `../kernels/grouped_split_check.cu`).
   L2 reuse of weights between separate calls did not happen under MPS.
 - Memory slots (`src/cuda/memory_slots.h`): finished clips no longer compact the memory keys and values.
-- Open: batching the fallback's sampled attempts across clips (per-clip arithmetic exact, only the random draws
-  differ, which they already do between runs).
+
+**The stream and seeded sampling (5.10 afternoon; three passes over the 30 units, `RUN_REPEAT=3` = 13.1 h, so the
+model load and the last fallback ladders weigh little; rows IDENTICAL to production's):**
+- `Whisper.open_stream` (runner `MODE=stream8`, `../runner/stream_engine.py`): batches decoded together, a batch
+  joining as soon as there is room, across units; each batch exactly as `generate()` alone decodes it
+  (`TransformerDecoder::decode_joint`, `BeamSearchRun`; `../scale/stream_check.py`: 800 of 800 clips identical,
+  decoding 1.74x faster than batch by batch). A decoding step now has ~27 clips (9.2 before). The batched path
+  2 x 6 batches: 106.6-108.5x against 90.2x for `PIPE_GROUPS=6`; 8 batches, 3 processes, a 32-query encoder
+  attention (`CT2_EA_ROWS=32`, exact but slower alone): no gain.
+- `sampling_seeds` (`src/cuda/row_random.h`; runner `RUN_FALLBACK_SEEDS=1`): every sampled hypothesis draws from a
+  Philox stream of its own, seeded by its clip and its place in the ladder, so a clip samples the same alone or
+  joined, and on every run (before, a row's random state was its place in the batch). With it, the full run with
+  the fallback ladders joined (`RUN_FALLBACK_SAMPLING=batched`) gives the same rows, sampled ones too, as the ladders
+  alone (2,906 of 2,906): exact, 80.8-82.7x, against 72.5-73.1x alone. A joined product must leave a group of one
+  row to its own call (cuBLAS runs a gemv for one row; `rows_independent_product`).
+- What limits it now (`box/profile_mps.sh` + gap analysis of the report): each process's decoding stream is idle
+  ~31% of the time, in ~140k gaps under 0.1 ms between ~1,350 kernels and ~250 copies a step: per-op latency and
+  host time, not DRAM (decoder weights 47 GB/s, cross-attention 199 GB/s). Fewer ops a step is the lever.
+- The tiled exact GEMM (`src/cuda/tiled_split_gemm.cuh`, `../kernels/decoder_gemm_probe.cu`): every tile bit for
+  bit cuBLAS, but cuBLAS is faster on every decoder product; only an opt-in (`CT2_DECODER_TILES`).
+- `batch/` runs in other regions too (`WB_REGION`, the image and bucket stay in us-east-1) and `race.py` keeps the
+  first of several copies of a job to start: g6e capacity was often sold out in us-east-1.
 
 **Beside other AWS work in the account** (the asr-training Batch queues): a standalone box, never their queues;
 no resource named `asr-train*` (their submit uses the newest `asr-train` job definition); another AZ than their
