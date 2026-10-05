@@ -76,7 +76,8 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
 
 **What bounds it: the 350 W power limit (5.10 evening; rows IDENTICAL to production's in every change below):**
 - The batched path runs at the L40S's power limit, 350 W, which is also the board's maximum (`box/power_limit.sh`);
-  the SM clock sits at ~1800-1900 of 2520 MHz. The same run at 350 / 300 / 250 W: 110.6 / 100.2 / 80.0x
+  the SM clock sits at ~2100-2200 of 2520 MHz (8-14% of the samples at 2520: the moments it is not power-bound).
+  The same run at 350 / 300 / 250 W: 110.6 / 100.2 / 80.0x
   (round32). So a kernel's cost is its energy, not its time: one process with 12 batches 100.4x against two with 6;
   side streams -3% (removed); the second feed-forward 45% faster alone, +0-1.3% on the run.
 - Energy a decoding step (`../kernels/energy_probe.cu`, each kernel alone at production shapes, NVML's counter;
@@ -95,6 +96,20 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
   128 queries in three passes (exact, 18% more instructions, -3%).
 - `mma.sync m16n8k16` gives the same bits only when the k positions within a pair are swapped; any other order of
   the 16 changes them (`../kernels/mma_kperm_probe.cu`).
+- Later (each A/B alternately on one machine, twice each; one machine's runs differ by up to ~2%): the joint step's
+  cross-attention reading its queries from their Dense output, the bias added in the kernel (+1.4%); the encoder's
+  first feed-forward on a pinned cuBLASLt algorithm with cuBLAS's bits and 20% less energy alone (`src/cuda/
+  encoder_lt.cc`, `../kernels/encoder_algo_search.cu`; +0.35%, inside the noise); the cross-attention's L2 prefetch
+  distance 1 on sm_89 (`../kernels/cross_ahead_probe.cu`: 74.2 against 79.5 mJ a launch; +0.3%). The batched path
+  now 113-114x. No gain: the SM clock locked at 1800 / 1600 MHz (`box/clock_lock.sh`): 5% less energy an audio hour
+  but -2.6% / -4.6% speed. Not possible here: ECC off (`box/ecc_mode.sh`): the GPU reset that applies it fails in a
+  Batch container, the mode stays pending (ECC on: 46,068 MiB).
+- The full exact run (`RUN_FALLBACK=batched`, seeded, round34 on pyct2-l41l): 74.2x with the sampled attempts alone,
+  83.9x with them joined (rows IDENTICAL; 85.7x if the ladders still running at the end had run beside the batched
+  path, as in a long run). The 15 fallback clips' ladders take ~24% of that run's energy, ~1 kJ a clip against
+  16 J for a clip of the batched path: up to 6 attempts of up to 448 steps, mostly all 6 (7 of the 15 end at
+  T = 1.0). Temperature variants (`sampling_temperatures`, runner `RUN_FALLBACK_SPECULATE=1`) sample a window's
+  attempts in one search, each exactly what its own seeded call samples (`../scale/sampled_check.py`, `CHECK=variants`).
 
 **Beside other AWS work in the account** (the asr-training Batch queues): a standalone box, never their queues;
 no resource named `asr-train*` (their submit uses the newest `asr-train` job definition); another AZ than their
