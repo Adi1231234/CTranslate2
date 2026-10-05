@@ -16,7 +16,9 @@ JOB_DEF, LAUNCH_TEMPLATE = NAME, NAME
 ECR_REPO, CODEBUILD, LOG_GROUP = NAME, f"{NAME}-image", f"/{NAME}"
 # One compute environment and one job queue (same name) per instance type, so a job always lands on the type it
 # asked for and every measurement is on a known machine. Job size: (vCPU, memory MiB) as ECS can place it.
-FLEETS = {"g6e": ("g6e.xlarge", 4, 28 * 1024), "g6e2x": ("g6e.2xlarge", 8, 56 * 1024)}
+# g7e: the RTX PRO 6000 Blackwell Server (sm_120, 96 GB GDDR7), the store PC's GPU generation.
+FLEETS = {"g6e": ("g6e.xlarge", 4, 28 * 1024), "g6e2x": ("g6e.2xlarge", 8, 56 * 1024),
+          "g7e": ("g7e.2xlarge", 8, 56 * 1024)}
 MAX_VCPUS = 8                                   # per fleet: two g6e.xlarge or one g6e.2xlarge at most
 ROOT_GB = 100                                   # the image (~6 GB) and its layers, the cache, the outputs
 

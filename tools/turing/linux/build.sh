@@ -2,12 +2,13 @@
 # Build this fork on Linux for one GPU arch, with the official wheel's CUDA flags minus the CPU backends,
 # as ../build_windows.ps1 does on Windows. The default arch 8.6+PTX matches what the official wheel runs on
 # sm_86 and sm_89 GPUs (AWS A10G, L4, L40S): its "Common" list stops at sm_86 SASS plus compute_86 PTX, and
-# such a GPU runs the sm_86 SASS. Output: <out>/ctranslate2, a drop-in package (put <out> first on sys.path);
-# the library sits next to the extension, which finds it through $ORIGIN.
+# such a GPU runs the sm_86 SASS. "8.6 12.0+PTX" adds Blackwell's own SASS (AWS g7e, the store PC's sm_120).
+# Output: <out>/ctranslate2, a drop-in package (put <out> first on sys.path); the library sits next to the
+# extension, which finds it through $ORIGIN.
 # usage: build.sh <source checkout> <out dir> [arch]      (after setup_env.sh)
 set -euo pipefail
 SRC=$(realpath "$1"); OUT=$2; ARCH=${3:-8.6+PTX}
-BUILD="$SRC/build-linux-sm${ARCH//[.+]/}"; INST="$BUILD/install"
+BUILD="$SRC/build-linux-sm${ARCH//[^0-9A-Za-z]/}"; INST="$BUILD/install"
 if [ ! -f "$BUILD/build.ninja" ]; then
   cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$INST" \
     -DCMAKE_CXX_FLAGS="-msse4.1" -DBUILD_CLI=OFF -DWITH_MKL=OFF -DOPENMP_RUNTIME=COMP \
