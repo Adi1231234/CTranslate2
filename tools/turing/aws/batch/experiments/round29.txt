@@ -1,0 +1,9 @@
+# The encoder's first feed-forward on the CUTLASS replica at an 8-wide chain with the bias and GELU in its epilogue
+# (f08ab071, pyct2-l41h; cuBLAS runs it as ampere_fp16_s1688gemm 128x128, then a separate BiasAdd GELU pass over
+# 12000 x 5120). encoder_ffn1_check first (bits against cuBLAS + BiasAdd, time), then the batched path: the
+# default, CT2_ENC_GEMM=cutlass at 128x32s4 and 64x64s4, the default again.
+scripte|scripts/probes.sh|probes/probes-f08ab071.tgz|encoder_ffn1_check:20
+d1|pyct2-l41h|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+e1|pyct2-l41h|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_ENC_GEMM=cutlass|CT2_ENC_GEMM_CFG=128x32s4
+e2|pyct2-l41h|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_ENC_GEMM=cutlass|CT2_ENC_GEMM_CFG=64x64s4
+d2|pyct2-l41h|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
