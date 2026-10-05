@@ -5,7 +5,8 @@
 // `slice` k, each slice one mma.sync m16n8k16 chain over its k in increasing 16-groups, rounded to half, the
 // slices summed in order in fp32, out = half(sum) (grouped_split_gemm.cuh's arithmetic; one slice of all of k is
 // cuBLAS's plain chain). Templated on the block's output tile TM x TN (4 warps, WARPS_M x 4 / WARPS_M), so the
-// grid can have enough blocks for few rows: the arithmetic of an output does not depend on the tile.
+// grid can have enough blocks for few rows, and on the depth of its cp.async pipeline (STAGES 32-k steps in
+// flight: a chain over k is as slow as the loads it waits for): the arithmetic of an output depends on neither.
 // A [M x K], W [N x K], C [M x N] row-major; K a multiple of 32.
 
 #include <cuda_fp16.h>
@@ -15,9 +16,9 @@
 namespace ctranslate2 {
   namespace cuda {
 
-    constexpr int tsg_kstep = 32, tsg_pitch = tsg_kstep + 8, tsg_stages = 4;   // halves a staged row
+    constexpr int tsg_kstep = 32, tsg_pitch = tsg_kstep + 8;   // halves a staged row
 
-    template <int TM, int TN, int WARPS_M = 2>
+    template <int TM, int TN, int WARPS_M = 2, int STAGES = 4>
     __global__ void __launch_bounds__(128)
     tiled_split_gemm_kernel(const __half* A, const __half* W, __half* C, int M, int N, int K, SplitGroups groups) {
 #if __CUDA_ARCH__ >= 800
@@ -43,7 +44,7 @@ namespace ctranslate2 {
           pad[mt][h] = grp >= 0 && groups.slices[grp] > (K + groups.slice[grp] - 1) / groups.slice[grp];
         }
       auto load = [&](int s) {
-        __half* dst = st + (s % tsg_stages) * stage;
+        __half* dst = st + (s % STAGES) * stage;
         for (int v = threadIdx.x; v < (TM + TN) * (tsg_kstep / 8); v += 128) {
           const int r = v / (tsg_kstep / 8), c = (v % (tsg_kstep / 8)) * 8;
           const bool is_a = r < TM;
@@ -53,7 +54,7 @@ namespace ctranslate2 {
                    valid);
         }
       };
-      for (int s = 0; s < tsg_stages - 1; ++s) {
+      for (int s = 0; s < STAGES - 1; ++s) {
         if (s < steps)
           load(s);
         asm volatile("cp.async.commit_group;");
@@ -67,12 +68,12 @@ namespace ctranslate2 {
           for (int e = 0; e < 4; ++e)
             sum[mt][nt][e] = -0.f;
       for (int s = 0; s < steps; ++s) {
-        asm volatile("cp.async.wait_group %0;" :: "n"(tsg_stages - 2));
+        asm volatile("cp.async.wait_group %0;" :: "n"(STAGES - 2));
         __syncthreads();
-        if (s + tsg_stages - 1 < steps)
-          load(s + tsg_stages - 1);
+        if (s + STAGES - 1 < steps)
+          load(s + STAGES - 1);
         asm volatile("cp.async.commit_group;");
-        const __half* base = st + (s % tsg_stages) * stage;
+        const __half* base = st + (s % STAGES) * stage;
         #pragma unroll
         for (int q = 0; q < tsg_kstep / 16; ++q) {
           unsigned a[MT][4], b[NT / 2][4];                   // b[p]: n8 tiles 2p (b0 b1) and 2p + 1 (b2 b3)
@@ -128,16 +129,16 @@ namespace ctranslate2 {
 #endif
     }
 
-    template <int TM, int TN, int WARPS_M = 2>
+    template <int TM, int TN, int WARPS_M = 2, int STAGES = 4>
     inline void tsg_launch(const __half* a, const __half* w, __half* c, int m, int n, int k,
                            const SplitGroups& groups, cudaStream_t stream) {
-      constexpr int smem = tsg_stages * (TM + TN) * tsg_pitch * sizeof (__half);
-      static const bool configured = cudaFuncSetAttribute(tiled_split_gemm_kernel<TM, TN, WARPS_M>,
+      constexpr int smem = STAGES * (TM + TN) * tsg_pitch * sizeof (__half);
+      static const bool configured = cudaFuncSetAttribute(tiled_split_gemm_kernel<TM, TN, WARPS_M, STAGES>,
                                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
                                                           smem) == cudaSuccess;
       (void)configured;
       const dim3 grid((n + TN - 1) / TN, (m + TM - 1) / TM);
-      tiled_split_gemm_kernel<TM, TN, WARPS_M><<<grid, 128, smem, stream>>>(a, w, c, m, n, k, groups);
+      tiled_split_gemm_kernel<TM, TN, WARPS_M, STAGES><<<grid, 128, smem, stream>>>(a, w, c, m, n, k, groups);
     }
 
     // One group of m rows, one chain over all of k (cuBLAS's arithmetic for the row-independent products).
