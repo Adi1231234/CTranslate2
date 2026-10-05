@@ -1,0 +1,8 @@
+# pyct2-l41m (cdd2fc6f): l41l with the joint step's cross-attention reading its queries from the Dense output (the
+# bias added in the kernel), one head split launch a layer fewer. energy_probe_decoder first (the step's small
+# kernels' energy), then l41l and l41m alternately, twice each (round33: runs on one machine differ by up to ~2%).
+scripte|scripts/probes.sh|probes/probes-19d8e6e1.tgz|energy_probe_decoder
+l1|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+m1|pyct2-l41m|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+l2|pyct2-l41l|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+m2|pyct2-l41m|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
