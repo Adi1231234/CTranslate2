@@ -1,8 +1,10 @@
 #include "./utils.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -88,9 +90,36 @@ namespace ctranslate2 {
       return (low != (mode == "encoder_high")) ? least : greatest;
     }
 
+    // CT2_CUDA_SCHEDULE=spin|yield|blocking: how a host thread waits for the GPU (cudaSetDeviceFlags), default the
+    // runtime's heuristic, which spins whenever the process has no more contexts than the machine has cores. Several
+    // processes sharing a GPU (MPS) on a few cores then spin away the cores their launching threads need: on a
+    // 4-core L40S box with 4 processes the threads spent 2.2 cores in waits (cudaMemcpyAsync to the host and
+    // cudaStreamSynchronize) and every launch took 13 us. Only how the host waits changes, never a result.
+    static void apply_schedule_flags() {
+#ifndef CT2_USE_HIP
+      static const std::string mode = read_string_from_env("CT2_CUDA_SCHEDULE", "auto");
+      if (mode == "auto")
+        return;
+      const unsigned flags = (mode == "spin" ? cudaDeviceScheduleSpin
+                              : mode == "yield" ? cudaDeviceScheduleYield
+                              : mode == "blocking" ? cudaDeviceScheduleBlockingSync
+                              : throw std::invalid_argument("CT2_CUDA_SCHEDULE: spin, yield, blocking or auto"));
+      static std::mutex mutex;
+      static std::vector<int> applied;
+      int device = 0;
+      CUDA_CHECK(cudaGetDevice(&device));
+      const std::lock_guard<std::mutex> lock(mutex);
+      if (std::find(applied.begin(), applied.end(), device) != applied.end())
+        return;
+      CUDA_CHECK(cudaSetDeviceFlags(flags));   // overwrites the flags of an initialized device (CUDA >= 11)
+      applied.push_back(device);
+#endif
+    }
+
     class CudaStream {
     public:
       CudaStream(bool low = false) {
+        apply_schedule_flags();
         if (is_main_thread && !low && !graphs_enabled()) {   // graphs capture created streams only (graph.h)
           is_main_thread = false;
           _stream = cudaStreamDefault;
