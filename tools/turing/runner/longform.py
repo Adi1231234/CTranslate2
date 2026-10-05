@@ -10,6 +10,7 @@ import copy, os, threading
 from concurrent.futures import ThreadPoolExecutor
 import ctranslate2
 import engine
+from chunked_features import ChunkedFeatures
 from fallback_batch import Broker, ladder_of
 
 STREAM_OPTIONS = ("beam_size", "patience", "length_penalty", "repetition_penalty", "no_repeat_ngram_size",
@@ -77,29 +78,43 @@ class LongBroker(Broker):
 
 
 class LongEngine:
-    """Recordings submitted one by one, transcribed LONG_THREADS at a time; submit(key, load) returns a Future of the
-    row, load() (run on the recording's thread) its 16 kHz samples."""
+    """Recordings submitted one by one, transcribed LONG_THREADS at a time; submit(key, load, hours) returns a Future
+    of the row, load() (run on the recording's thread) its 16 kHz samples. The features are the original's bytes in
+    less memory (chunked_features.py). LONG_MAX_HOURS (default 0, no limit): a recording waits to start while the
+    recordings in progress and it would hold more audio than that (a recording alone always starts); each hour holds
+    ~0.4 GB of samples and features."""
 
     def __init__(self, model):
         threads = int(os.environ.get("LONG_THREADS", "48"))
         speculate = ([t for t in engine.EXACT["temperature"] if t > 0]
                      if os.environ.get("RUN_FALLBACK_SPECULATE") == "1" else None)
         self.proxy = copy.copy(model)
+        self.proxy.feature_extractor = ChunkedFeatures(model.feature_extractor)
         self.proxy.model = LongBroker(
             model.model, threads, int(os.environ.get("LONG_PENDING", "2")),
             join_sampled=os.environ.get("RUN_FALLBACK_SAMPLING") == "batched",
             seeded=os.environ.get("RUN_FALLBACK_SEEDS") == "1", speculate=speculate,
             spec_clips=int(os.environ.get("RUN_FALLBACK_SPEC_CLIPS", "2")))
         self.executor = ThreadPoolExecutor(max_workers=threads)
+        self.budget, self.held, self.room = float(os.environ.get("LONG_MAX_HOURS", "0")), 0.0, threading.Condition()
 
-    def submit(self, key, load):
+    def submit(self, key, load, hours=0.0):
         def run():
-            wav = load()
-            self.proxy.model.ladder_started()
+            with self.room:
+                while self.budget and self.held and self.held + hours > self.budget:
+                    self.room.wait()
+                self.held += hours
             try:
-                with ladder_of(key):
-                    segments, _ = self.proxy.transcribe(wav, **engine.EXACT)
-                    return engine._row(key, wav, list(segments), "long")
+                wav = load()
+                self.proxy.model.ladder_started()
+                try:
+                    with ladder_of(key):
+                        segments, _ = self.proxy.transcribe(wav, **engine.EXACT)
+                        return engine._row(key, wav, list(segments), "long")
+                finally:
+                    self.proxy.model.ladder_finished()
             finally:
-                self.proxy.model.ladder_finished()
+                with self.room:
+                    self.held -= hours
+                    self.room.notify_all()
         return self.executor.submit(run)
