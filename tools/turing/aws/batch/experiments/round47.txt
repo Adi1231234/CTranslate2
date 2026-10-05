@@ -1,0 +1,11 @@
+# The measurements on one g6e.xlarge (rounds 45 and 46 folded, one boot), pyct2-l41p:
+# 1. where the encoder attention's instructions go: Nsight Compute's per-SASS-line counts of exact_attention_kernel
+#    at 8 clips (exact_attention_check, line info, sm_86 SASS as the L40S runs it);
+# 2. the encoder alone on every clip in the stream's batches of 8 (energy a clip, its own rate: the ceiling were
+#    decoding free), then the batched path alone (energy a clip in production) on the same machine;
+# 3. the 15 fallback ladders alone (energy a ladder, rows digest) without the temperature variants, with them over
+#    2, 4, 8 and 16 clips a search, and with 4 under the fork's CUDA graphs (CT2_CUDA_GRAPHS=1).
+scriptn|scripts/ncu_probe.sh|probes/probes-ea-lineinfo-bf57dd6d.tgz|exact_attention_check|exact_attention_kernel|1
+scripte|scripts/encoder_bench.sh|pyct2-l41p|runner-ee6fc199|2
+m6|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scriptl|scripts/ladder_bench.sh|pyct2-l41p|runner-ee6fc199|fallback_uuids_real30.txt|RUN_FALLBACK=batched,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_THREADS=16,RUN_FALLBACK_GATHER=16,RUN_FALLBACK_GATHER_S=600|RUN_FALLBACK=batched,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_THREADS=16,RUN_FALLBACK_GATHER=16,RUN_FALLBACK_GATHER_S=600,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2|RUN_FALLBACK=batched,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_THREADS=16,RUN_FALLBACK_GATHER=16,RUN_FALLBACK_GATHER_S=600,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=4|RUN_FALLBACK=batched,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_THREADS=16,RUN_FALLBACK_GATHER=16,RUN_FALLBACK_GATHER_S=600,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=8|RUN_FALLBACK=batched,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_THREADS=16,RUN_FALLBACK_GATHER=16,RUN_FALLBACK_GATHER_S=600,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=16|RUN_FALLBACK=batched,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_THREADS=16,RUN_FALLBACK_GATHER=16,RUN_FALLBACK_GATHER_S=600,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=4,CT2_CUDA_GRAPHS=1
