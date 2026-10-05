@@ -18,7 +18,7 @@
 namespace ctranslate2 {
   namespace cuda {
 
-    constexpr int gsg_max_groups = 16, gsg_stages = 3, gsg_kstep = 64, gsg_pitch = 72;
+    constexpr int gsg_max_groups = 16, gsg_stages = 3, gsg_max_rows = 320;
 
     struct SplitGroups {
       int count;
@@ -56,12 +56,14 @@ namespace ctranslate2 {
     }
 
     // Block: 16 columns, all M rows (MT 16-row tiles) shared by Warps warps (warp w: tiles w, w + Warps, ...), the
-    // block's weights and all rows of A staged once a 64-k step; A [M x K], W [N x K], C [M x N], row-major.
-    template <int MT, int Warps>
+    // block's weights and all rows of A staged once a KS-k step (64, or 32 for many rows: shared memory); A [M x K],
+    // W [N x K], C [M x N], row-major.
+    template <int MT, int Warps, int KS>
     __global__ void __launch_bounds__(Warps * 32)
     grouped_split_gemm_kernel(const __half* A, const __half* W, __half* C, int M, int N, int K, SplitGroups groups) {
 #if __CUDA_ARCH__ >= 800
       constexpr int TPW = (MT + Warps - 1) / Warps;         // row tiles a warp
+      constexpr int gsg_kstep = KS, gsg_pitch = KS + 8, chunks = KS / 8;   // halves a staged row; 16-byte loads
       extern __shared__ __align__(16) unsigned char gsg_smem[];
       __half* st = reinterpret_cast<__half*>(gsg_smem);
       constexpr int rows = MT * 16 + 16, stage = rows * gsg_pitch;
@@ -81,8 +83,8 @@ namespace ctranslate2 {
         }
       auto load = [&](int s) {
         __half* dst = st + (s % gsg_stages) * stage;
-        for (int v = threadIdx.x; v < rows * 8; v += Warps * 32) {
-          const int r = v / 8, c = (v % 8) * 8;
+        for (int v = threadIdx.x; v < rows * chunks; v += Warps * 32) {
+          const int r = v / chunks, c = (v % chunks) * 8;
           const bool is_a = r < MT * 16;
           const int row = is_a ? r : n0 + r - MT * 16;
           const bool valid = row < (is_a ? M : N);
@@ -169,21 +171,22 @@ namespace ctranslate2 {
     template <int MT>
     void gsg_launch(const __half* a, const __half* w, __half* c, int m, int n, int k, const SplitGroups& groups,
                     cudaStream_t stream) {
-      constexpr int warps = MT < 4 ? MT : 4;
-      constexpr int smem = gsg_stages * (MT * 16 + 16) * gsg_pitch * sizeof (__half);
-      static const bool configured = cudaFuncSetAttribute(grouped_split_gemm_kernel<MT, warps>,
+      constexpr int warps = MT < 4 ? MT : MT <= 10 ? 4 : 8, ks = MT <= 10 ? 64 : 32;
+      constexpr int smem = gsg_stages * (MT * 16 + 16) * (ks + 8) * sizeof (__half);
+      static const bool configured = cudaFuncSetAttribute(grouped_split_gemm_kernel<MT, warps, ks>,
                                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
                                                           smem) == cudaSuccess;
       (void)configured;
-      grouped_split_gemm_kernel<MT, warps><<<(n + 15) / 16, warps * 32, smem, stream>>>(a, w, c, m, n, k, groups);
+      grouped_split_gemm_kernel<MT, warps, ks><<<(n + 15) / 16, warps * 32, smem, stream>>>(a, w, c, m, n, k,
+                                                                                            groups);
     }
 
     // The second feed-forward for groups of rows (no device check): false, nothing launched, when a group's rows
-    // have no known split, there are more than 160 rows or more than gsg_max_groups groups, or k is no multiple
-    // of 64.
+    // have no known split, there are more than gsg_max_rows rows or more than gsg_max_groups groups, or k is no
+    // multiple of 64.
     inline bool gsg_run(const __half* a, const __half* w, __half* c, int n, int k,
                         const std::vector<int64_t>& group_rows, cudaStream_t stream) {
-      if (group_rows.empty() || group_rows.size() > static_cast<size_t>(gsg_max_groups) || k % gsg_kstep != 0)
+      if (group_rows.empty() || group_rows.size() > static_cast<size_t>(gsg_max_groups) || k % 64 != 0)
         return false;
       SplitGroups groups{};
       int m = 0;
@@ -208,6 +211,16 @@ namespace ctranslate2 {
       case 8: gsg_launch<8>(a, w, c, m, n, k, groups, stream); break;
       case 9: gsg_launch<9>(a, w, c, m, n, k, groups, stream); break;
       case 10: gsg_launch<10>(a, w, c, m, n, k, groups, stream); break;
+      case 11: gsg_launch<11>(a, w, c, m, n, k, groups, stream); break;
+      case 12: gsg_launch<12>(a, w, c, m, n, k, groups, stream); break;
+      case 13: gsg_launch<13>(a, w, c, m, n, k, groups, stream); break;
+      case 14: gsg_launch<14>(a, w, c, m, n, k, groups, stream); break;
+      case 15: gsg_launch<15>(a, w, c, m, n, k, groups, stream); break;
+      case 16: gsg_launch<16>(a, w, c, m, n, k, groups, stream); break;
+      case 17: gsg_launch<17>(a, w, c, m, n, k, groups, stream); break;
+      case 18: gsg_launch<18>(a, w, c, m, n, k, groups, stream); break;
+      case 19: gsg_launch<19>(a, w, c, m, n, k, groups, stream); break;
+      case 20: gsg_launch<20>(a, w, c, m, n, k, groups, stream); break;
       default: return false;
       }
       return true;

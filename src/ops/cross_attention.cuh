@@ -15,6 +15,7 @@
 // 16w + 2g + 1 (an output's arithmetic does not depend on its row), so the value loads are 32-bit pairs of dims.
 
 #include "cross_attention_q.cuh"
+#include "cuda/cross_attention.h"
 
 namespace at {
   namespace native {
@@ -39,11 +40,17 @@ namespace at {
     // once; at 4 (128 registers) a tail of 16 blocks ran after the rest.
     static __global__ void __launch_bounds__(ca_warps * 32, 5)
     cross_attention_kernel(CaQueries queries, const __half* k, const __half* v, __half* o, int heads, int m,
-                           int rows_per_pass, int residue, float alpha, int ahead, const int* slot) {
+                           int rows_per_pass, int residue, float alpha, int ahead, const int* slot,
+                           ctranslate2::cuda::CrossResidues residues) {
       extern __shared__ __align__(16) unsigned char ca_smem[];
       __half* p = reinterpret_cast<__half*>(ca_smem);        // [rows_per_pass][ca_pitch] scores, probabilities
       __half* qs = p + rows_per_pass * ca_pitch;             // [rows_per_pass][ca_qpitch] projected queries
       const int entry = blockIdx.x, clip = entry / heads, head = entry % heads;
+      for (int g = 0; g < residues.count; ++g)              // this clip's batch's residue (cuda/cross_attention.h)
+        if (clip < residues.clip_end[g]) {
+          residue = residues.residue[g];
+          break;
+        }
       const int warp = threadIdx.x / 32, lane = threadIdx.x % 32, g = lane / 4, t = lane % 4;
       const size_t kv_entry = slot ? (size_t)slot[clip] * heads + head : (size_t)entry;
       const __half* ke = k + kv_entry * ca_keys * ca_depth;

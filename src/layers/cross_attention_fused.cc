@@ -81,10 +81,26 @@ namespace ctranslate2 {
                               output.data<float16_t>() + clip * per_query_clip, clips, heads, m, scale, r,
                               nullptr, nullptr, nullptr, 0, slot ? slot + clip : nullptr);
       };
-      if (!cuda::for_each_clip_group(queries.dim(0), [&](dim_t clip, dim_t clips) {
-            launch(clip, clips, group_residue(queries, keys, clips));
-          }))
-        launch(0, queries.dim(0), residue);
+      // Several batches' clips: one launch over all of them, each group with its own batch's residue.
+      cuda::CrossResidues residues;
+      bool fits = true;
+      const bool grouped = cuda::for_each_clip_group(queries.dim(0), [&](dim_t clip, dim_t clips) {
+        if (residues.count == cuda::CrossResidues::max_groups) {
+          fits = false;
+          return;
+        }
+        residues.clip_end[residues.count] = static_cast<int>(clip + clips);
+        residues.residue[residues.count++] = group_residue(queries, keys, clips);
+      });
+      if (grouped && !fits) {
+        cuda::for_each_clip_group(queries.dim(0), [&](dim_t clip, dim_t clips) {
+          launch(clip, clips, group_residue(queries, keys, clips));
+        });
+        return;
+      }
+      cuda::cross_attention(queries.data<float16_t>(), keys.data<float16_t>(), values.data<float16_t>(),
+                            output.data<float16_t>(), queries.dim(0), heads, m, scale, residue, nullptr, nullptr,
+                            nullptr, 0, slot, residues);
 #else
       (void)keys; (void)values; (void)scale; (void)residue;
       throw std::logic_error("cross_attention_fused requires CUDA");

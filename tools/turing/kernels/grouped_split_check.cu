@@ -1,7 +1,7 @@
 // Bit-for-bit check and timing of src/cuda/grouped_split_gemm.cuh (the Whisper decoder's second feed-forward,
 // 1280 x 5120, for several batches' rows in one pass) against what it replaces: one cuBLAS call per group with
 // that group's rows (C = A W^T, fp16, COMPUTE_32F, as CTranslate2 calls it). Every sequence of 1..4 groups of
-// 5..40 rows (multiples of 5: 8 clips x 5 beams), 600 random sequences of 2..48-row groups up to 160 rows, and 16-row
+// 5..40 rows (multiples of 5: 8 clips x 5 beams), 600 random sequences of 2..48-row groups up to 320 rows, and 16-row
 // groups (the prompt); 3 fills each. Then timings with the weights read from DRAM (L2 flushed before each call).
 // usage: grouped_split_check -> must end with TOTAL 0
 #include <algorithm>
@@ -12,7 +12,7 @@
 #include "probe_data.cuh"
 #include "cuda/grouped_split_gemm.cuh"
 
-constexpr int N = 1280, K = 5120, MMAX = 160;
+constexpr int N = 1280, K = 5120, MMAX = 320;
 
 int main() {
   cublasHandle_t h; CK(cublasCreate(&h));
@@ -53,7 +53,8 @@ int main() {
     }
     if (!g.empty()) configs.push_back(g);
   }
-  for (int n = 1; n <= 10; ++n) configs.push_back(std::vector<int64_t>(n, 16));
+  for (int n = 1; n <= 16; ++n) configs.push_back(std::vector<int64_t>(n, 16));
+  for (int n = 5; n <= 8; ++n) configs.push_back(std::vector<int64_t>(n, 40));
   unsigned long long total_bad = 0, worst_config = 0;
   for (int f = 0; f < 3; ++f) {
     fill<<<1024, 256>>>(A, (size_t)MMAX * K, 41u + 3 * f, -9 + 2 * f, 1 + f);
@@ -83,7 +84,8 @@ int main() {
     }
     return best * 1000;
   };
-  for (auto g : std::vector<std::vector<int64_t>>{{40}, {40, 40}, {40, 40, 40, 40}, {35, 20, 10, 40}, {16, 16, 16, 16}}) {
+  for (auto g : std::vector<std::vector<int64_t>>{{40}, {40, 40}, {40, 40, 40, 40}, {35, 20, 10, 40}, {16, 16, 16, 16},
+                                                  {40, 40, 40, 40, 40, 40, 40, 40}, {40, 35, 30, 25, 20, 15, 10, 5}}) {
     int m = 0; for (auto x : g) m += (int)x;
     const float tc = timed([&] { reference(g); });
     const float tk = timed([&] { ctranslate2::cuda::gsg_run(A, W, C, N, K, g, 0); });

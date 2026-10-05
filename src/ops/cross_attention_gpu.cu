@@ -54,7 +54,7 @@ namespace ctranslate2 {
     void cross_attention(const float16_t* q, const float16_t* k, const float16_t* v, float16_t* o,
                          dim_t clips, dim_t heads, dim_t m, float alpha, int residue,
                          const float16_t* x, const float16_t* w, const float16_t* bias, dim_t k_inputs,
-                         const int32_t* slot) {
+                         const int32_t* slot, const CrossResidues& residues) {
       const int rows = static_cast<int>(std::min<dim_t>(m, 8));   // queries per pass (the mma's n)
       const int smem = rows * (at::native::ca_pitch + (x ? at::native::ca_qpitch : 0))
         * static_cast<int>(sizeof (__half));
@@ -65,7 +65,7 @@ namespace ctranslate2 {
       at::native::cross_attention_kernel<<<static_cast<unsigned>(clips * heads), at::native::ca_warps * 32, smem,
                                            get_cuda_stream()>>>(
         queries, h(k), h(v), reinterpret_cast<__half*>(o), static_cast<int>(heads), static_cast<int>(m), rows,
-        residue, alpha, ahead, slot);
+        residue, alpha, ahead, slot, residues);
     }
 
   }
