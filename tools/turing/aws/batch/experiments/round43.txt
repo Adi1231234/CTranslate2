@@ -1,0 +1,16 @@
+# The RTX PRO 6000 Blackwell Server (g7e.2xlarge: sm_120, 96 GB GDDR7, 8 vCPU; 3.36 against 1.86 USD an hour), the
+# store PC's GPU generation, where the fork's replicas were first built. First the GPU's limits and the probes, native
+# sm_120, of every exact path gated to sm_89 (row-independent decoder products, pointer-array hypotheses, the second
+# feed-forward's grouped split, the joint softmax, cache reorder, encoder attention, cross-attention residues and
+# prefetch, cuBLASLt algorithms by energy). Then the production reference on this GPU (pyct2-l40 as fullctx ran on
+# the L40S: 1 process, pipe8, inline fallback; the package's compute_86 PTX JIT-compiled, CUDA_CACHE_MAXSIZE keeps it),
+# the batched path alone with 2 and 3 MPS processes, and the full run (seeded, joined, temperature variants); rows
+# against the reference on this GPU (the L40S reference compared on the laptop).
+scriptp|scripts/power_limit.sh
+scriptk|scripts/probes.sh|probes/probes-sm120-52fcfb2e.tgz|rowinv2:3840,1280|rowinv2:1280,1280|rowinv2:5120,1280|rowinv2:51866,1280|rowinv2:51872,1280|ptrbatch_probe|grouped_split_check|ffn2_probe:48|softmax_parts_check|cache_reorder_check|exact_attention_check:3|cross_sweep|cross_ahead_probe|encoder_algo_search
+ref7|pyct2-l40|runner|src/tools/turing/scale/units_real.txt|1|CUDA_CACHE_MAXSIZE=4294967296
+m2|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CUDA_CACHE_MAXSIZE=4294967296
+m3|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|3|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CUDA_CACHE_MAXSIZE=4294967296
+v2|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|RUN_FALLBACK_SPECULATE=1|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CUDA_CACHE_MAXSIZE=4294967296
+compare|ref7|m2
+compare|ref7|v2
