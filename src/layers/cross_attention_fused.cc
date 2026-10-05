@@ -108,12 +108,17 @@ namespace ctranslate2 {
 #endif
     }
 
-    void cross_attention_joint(const StorageView& queries, const void* const* memory,
-                               const std::vector<dim_t>& part_clips, float scale, StorageView& output) {
-      output.resize(queries.shape());
+    void cross_attention_joint(const StorageView& proj, const StorageView* bias, dim_t heads,
+                               const void* const* memory, const std::vector<dim_t>& part_clips, float scale,
+                               StorageView& output) {
+      dim_t all_clips = 0;
+      for (const dim_t c : part_clips)
+        all_clips += c;
+      const dim_t m = proj.dim(0) / all_clips, depth = proj.dim(-1) / heads;
+      output.resize({all_clips, heads, m, depth});
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      const dim_t heads = queries.dim(1), m = queries.dim(2), depth = queries.dim(3);
       const dim_t per_clip = heads * m * depth;
+      const float16_t* q_bias = bias ? bias->data<float16_t>() : nullptr;
       const auto* kv = reinterpret_cast<const float16_t* const*>(memory);
       dim_t clip = 0;
       // A launch for every max_groups parts, each part with its own batch's residue.
@@ -129,13 +134,13 @@ namespace ctranslate2 {
           residues.clip_end[residues.count] = static_cast<int>(clips);
           residues.residue[residues.count++] = residue;
         }
-        cuda::cross_attention(queries.data<float16_t>() + clip * per_clip, nullptr, nullptr,
-                              output.data<float16_t>() + clip * per_clip, clips, heads, m, scale,
-                              residues.residue[0], nullptr, nullptr, nullptr, 0, nullptr, residues, kv + 2 * clip);
+        cuda::cross_attention(nullptr, nullptr, nullptr, output.data<float16_t>() + clip * per_clip, clips, heads, m,
+                              scale, residues.residue[0], nullptr, nullptr, q_bias, 0, nullptr, residues, kv + 2 * clip,
+                              proj.data<float16_t>() + clip * per_clip);
         clip += clips;
       }
 #else
-      (void)memory; (void)part_clips; (void)scale;
+      (void)bias; (void)memory; (void)scale;
       throw std::logic_error("cross_attention_joint requires CUDA");
 #endif
     }

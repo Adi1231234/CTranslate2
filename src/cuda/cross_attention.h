@@ -28,12 +28,14 @@ namespace ctranslate2 {
     // q: [clips][heads][m][64] (or null with x: [clips * m][k], w: [heads * 64][k], bias: [heads * 64], the
     // queries' Dense layer); k, v: [clips][heads][1500][64] (with slot, on the device: clip c's are the cache's
     // entry slot[c], cuda/memory_slots.h; with kv, on the device, k and v unused: clip c's start at kv[2c] and
-    // kv[2c + 1], the clips of several searches, layers/joint_step.h); o: [clips][m][heads][64].
+    // kv[2c + 1], the clips of several searches, layers/joint_step.h); o: [clips][m][heads][64]. With dense (q and
+    // x null): the queries' Dense output [clips * m][heads * 64] without its bias, which is bias (or null).
     void cross_attention(const float16_t* q, const float16_t* k, const float16_t* v, float16_t* o,
                          dim_t clips, dim_t heads, dim_t m, float alpha, int residue,
                          const float16_t* x = nullptr, const float16_t* w = nullptr,
                          const float16_t* bias = nullptr, dim_t k_inputs = 0, const int32_t* slot = nullptr,
-                         const CrossResidues& residues = CrossResidues(), const float16_t* const* kv = nullptr);
+                         const CrossResidues& residues = CrossResidues(), const float16_t* const* kv = nullptr,
+                         const float16_t* dense = nullptr);
 
   }
 }

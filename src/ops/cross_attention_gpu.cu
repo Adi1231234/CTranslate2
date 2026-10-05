@@ -54,12 +54,13 @@ namespace ctranslate2 {
     void cross_attention(const float16_t* q, const float16_t* k, const float16_t* v, float16_t* o,
                          dim_t clips, dim_t heads, dim_t m, float alpha, int residue,
                          const float16_t* x, const float16_t* w, const float16_t* bias, dim_t k_inputs,
-                         const int32_t* slot, const CrossResidues& residues, const float16_t* const* kv) {
+                         const int32_t* slot, const CrossResidues& residues, const float16_t* const* kv,
+                         const float16_t* dense) {
       const int rows = static_cast<int>(std::min<dim_t>(m, 8));   // queries per pass (the mma's n)
       const int smem = rows * (at::native::ca_pitch + (x ? at::native::ca_qpitch : 0))
         * static_cast<int>(sizeof (__half));
       auto h = [](const float16_t* p) { return reinterpret_cast<const __half*>(p); };
-      const at::native::CaQueries queries{h(q), h(x), h(w), h(bias), static_cast<int>(k_inputs)};
+      const at::native::CaQueries queries{h(q), h(x), h(w), h(bias), static_cast<int>(k_inputs), h(dense)};
       // L2 prefetch distance in steps (0 none): 2-4 were 0.3 s faster on the store PC's 150 clips than 0.
       static const int ahead = read_int_from_env("CT2_CROSS_AHEAD", 4);
       at::native::cross_attention_kernel<<<static_cast<unsigned>(clips * heads), at::native::ca_warps * 32, smem,

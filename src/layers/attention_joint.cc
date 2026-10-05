@@ -124,8 +124,8 @@ namespace ctranslate2 {
       const DataType dtype = fused_proj.dtype();
 
       if (!_self_attention) {
-        // process_cross_attention's head split for all the clips ([clips, heads, beams, depth]), then each part's
-        // clips against its memory keys and values with its own batch's arithmetic, in one launch.
+        // Each part's clips against its memory keys and values with its own batch's arithmetic, in one launch that
+        // reads the queries from the projection with their bias (process_cross_attention's head split's values).
         const dim_t beams = fused_proj.dim(0) / joint.clips;
         std::vector<dim_t> part_clips;
         part_clips.reserve(joint.parts.size());
@@ -134,9 +134,8 @@ namespace ctranslate2 {
             throw std::logic_error("A joint decoding step needs the same beams in every part");
           part_clips.push_back(part.clips);
         }
-        StorageView queries_proj(dtype, device);
-        split_heads_with_bias(fused_proj, _linear[0].bias(), {&queries_proj}, _num_heads, beams);
-        cross_attention_joint(queries_proj, joint.memory(joint.layer), part_clips, _queries_scale, context);
+        cross_attention_joint(fused_proj, _linear[0].bias(), _num_heads, joint.memory(joint.layer), part_clips,
+                              _queries_scale, context);
         combine_heads(context, _num_heads, nullptr, beams, /*heads_combined=*/true);
         return;
       }

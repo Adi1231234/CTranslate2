@@ -23,12 +23,14 @@ namespace ctranslate2 {
     void cross_attention_fused_q(const StorageView& x, const Dense& linear, const StorageView& keys,
                                  const StorageView& values, float scale, dim_t m, int residue, StorageView& output);
 
-    // The clips of several searches decoded together (layers/joint_step.h): queries [clips, heads, m, 64] of the
-    // parts' clips in part order, part p's clips with the residue of a batch of part_clips[p] clips; memory: on
-    // the device, clip c's keys and values from memory[2c] and memory[2c + 1] ([heads, 1500, 64] each). Output as
-    // cross_attention_fused's.
-    void cross_attention_joint(const StorageView& queries, const void* const* memory,
-                               const std::vector<dim_t>& part_clips, float scale, StorageView& output);
+    // The clips of several searches decoded together (layers/joint_step.h): the queries' Dense output proj
+    // [clips * m, 1, heads * 64] without its bias (bias, or null), the parts' clips in part order, part p's clips
+    // with the residue of a batch of part_clips[p] clips; memory: on the device, clip c's keys and values from
+    // memory[2c] and memory[2c + 1] ([heads, 1500, 64] each). The kernel adds the bias as the head split would.
+    // Output [clips, heads, m, 64] holding [clips, m, heads, 64].
+    void cross_attention_joint(const StorageView& proj, const StorageView* bias, dim_t heads,
+                               const void* const* memory, const std::vector<dim_t>& part_clips, float scale,
+                               StorageView& output);
 
     // The two conditions above without CT2_CROSS_CHECK (for the check): the key tile residue or -1; whether the
     // queries' Dense layer goes in the kernel too.

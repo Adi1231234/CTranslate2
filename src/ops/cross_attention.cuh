@@ -25,14 +25,24 @@ namespace at {
     constexpr int ca_qpitch = 72;                            // halves per projected query row (phase 0)
 
     // The queries: q [entries][m][64], or (x non-null) projected by the block from x, w, bias with K inputs
-    // (cross_attention_q.cuh).
+    // (cross_attention_q.cuh), or (dense non-null) the queries' Dense output [clips * m][heads * 64] without its bias,
+    // with bias (or none) added as split_heads_bias adds it (__hadd2(bias, x)): no head split launch.
     struct CaQueries {
       const __half* q;
       const __half* x;
       const __half* w;
       const __half* bias;
       int K;
+      const __half* dense;
     };
+
+    // Dims d, d + 1 of a query row as one word, with their bias (or none) added.
+    __device__ __forceinline__ unsigned ca_query_word(const __half* row, const __half* bias, int d) {
+      __half2 x = *reinterpret_cast<const __half2*>(row + d);
+      if (bias)
+        x = __hadd2(*reinterpret_cast<const __half2*>(bias + d), x);
+      return *reinterpret_cast<const unsigned*>(&x);
+    }
 
     // entry = clip * heads + head; k, v: [entries][1500][64]; o: [clips][m][heads][64]. With slot (cuda/memory_slots.h),
     // clip c's keys and values are the cache's entry slot[c] * heads + head; with kv (clips of several searches,
@@ -66,12 +76,14 @@ namespace at {
           __syncthreads();
         }
         const __half* qr0 = queries.x ? qs + g * ca_qpitch                               // query g's row
-                                      : queries.q + ((size_t)entry * m + j0 + g) * ca_depth;
+          : queries.dense ? queries.dense + ((size_t)(clip * m + j0 + g) * heads + head) * ca_depth
+          : queries.q + ((size_t)entry * m + j0 + g) * ca_depth;
+        const __half* qbias = queries.dense && queries.bias ? queries.bias + head * ca_depth : nullptr;
         unsigned b[4][2];                                    // query g's dims 16c + 2t.. (zero past the rows)
         #pragma unroll
         for (int c = 0; c < 4; ++c) {
-          b[c][0] = g < rows ? ca_word(qr0 + 16 * c + 2 * t) : 0u;
-          b[c][1] = g < rows ? ca_word(qr0 + 16 * c + 2 * t + 8) : 0u;
+          b[c][0] = g < rows ? ca_query_word(qr0, qbias, 16 * c + 2 * t) : 0u;
+          b[c][1] = g < rows ? ca_query_word(qr0, qbias, 16 * c + 2 * t + 8) : 0u;
         }
         #pragma unroll 4
         for (int T = warp; T < ca_tiles; T += ca_warps) {    // scores of keys 16T .. 16T + 15
