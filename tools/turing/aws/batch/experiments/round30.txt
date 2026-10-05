@@ -1,8 +1,10 @@
 # Rounds 28 and 29 (never started: no capacity) in one job, with the streamed encoder attention reading its sources
-# (5dbd1c66, pyct2-l41i, every change off by default): the three kernels' bits and times first
+# (5dbd1c66, pyct2-l41i, every change off by default): the GPU's power limits (power_limit.sh: the runs sit at the
+# 350 W limit, the SM clock ~1900 of 2520 MHz), the three kernels' bits and times
 # (decoder_gemm_probe: the second feed-forward's deeper pipelines; encoder_ffn1_check: the 8-wide replica with the
 # bias and GELU fused; exact_attention_stream_check), then the batched path: the default, each change alone
 # (CT2_DECODER_TILES=ffn2=64x64k64/5, CT2_ENC_GEMM=cutlass at 128x32s4, CT2_EA_STREAM=8x1s3), all three, the default.
+scriptq|scripts/power_limit.sh
 scriptg|scripts/probes.sh|probes/probes-480e7d4c.tgz|decoder_gemm_probe
 scripte|scripts/probes.sh|probes/probes-f08ab071.tgz|encoder_ffn1_check:20
 scripta|scripts/probes.sh|probes/probes-5dbd1c66.tgz|exact_attention_stream_check:20
