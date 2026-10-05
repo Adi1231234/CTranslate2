@@ -5,8 +5,8 @@
 // second feed-forward (1280 x 5120) on the L40S: a batch of m rows runs split-K in S slices of L (each slice one
 // mma.sync m16n8k16 chain over its k in increasing 16-groups, rounded to half; the slices summed in order in
 // fp32; out = half(sum)), S and L chosen by m (grouped_split_gemm.cc). Here every row gets its own batch's S and
-// L in one pass over the weights: a warp streams its 16 columns once for all rows (hmma_gemm_kernel.cuh's
-// pipeline) and closes a row's slice where that row's batch would. Slice ends must be multiples of 64. As in
+// L in one pass: 64 x 64 tiles of the output, each output's chain closing where its row's batch would close a
+// slice (cp.async pipeline as hmma_gemm_kernel.cuh). Slice ends must be multiples of 32. As in
 // hmma_probe.cu's candidates (which match cuBLAS bit for bit): the first slice is the sum itself (the sum starts
 // at -0, the one value that adds as nothing, so -0 stays -0) and slices past k add +0.
 
@@ -55,38 +55,39 @@ namespace ctranslate2 {
       return -1;
     }
 
-    // Block: 16 columns, all M rows (MT 16-row tiles) shared by Warps warps (warp w: tiles w, w + Warps, ...), the
-    // block's weights and all rows of A staged once a KS-k step (64, or 32 for many rows: shared memory); A [M x K],
-    // W [N x K], C [M x N], row-major.
-    template <int MT, int Warps, int KS>
-    __global__ void __launch_bounds__(Warps * 32)
+    // Block: a 64-row x 64-column tile of C (grid: column tiles x row tiles), 4 warps each owning 32 rows x 32
+    // columns (2 m16 tiles x 4 n8 tiles); A and W staged a 32-k step at a time through a gsg_stages-deep cp.async
+    // pipeline. Every output's chain runs the mma steps over k in increasing 16-groups, so each row gets its batch's
+    // split exactly (the slice bookkeeping is per element). A [M x K], W [N x K], C [M x N], row-major.
+    constexpr int gsg_tile = 64, gsg_kstep = 32, gsg_pitch = gsg_kstep + 8;   // halves a staged row
+
+    __global__ void __launch_bounds__(128)
     grouped_split_gemm_kernel(const __half* A, const __half* W, __half* C, int M, int N, int K, SplitGroups groups) {
 #if __CUDA_ARCH__ >= 800
-      constexpr int TPW = (MT + Warps - 1) / Warps;         // row tiles a warp
-      constexpr int gsg_kstep = KS, gsg_pitch = KS + 8, chunks = KS / 8;   // halves a staged row; 16-byte loads
       extern __shared__ __align__(16) unsigned char gsg_smem[];
       __half* st = reinterpret_cast<__half*>(gsg_smem);
-      constexpr int rows = MT * 16 + 16, stage = rows * gsg_pitch;
+      constexpr int stage = 2 * gsg_tile * gsg_pitch;        // A rows, then W rows
       const int warp = threadIdx.x / 32, lane = threadIdx.x % 32, lr = lane % 8, lm = lane / 8;
-      const int n0 = blockIdx.x * 16, steps = K / gsg_kstep;
+      const int wm = warp / 2, wn = warp % 2;
+      const int m0 = blockIdx.y * gsg_tile, n0 = blockIdx.x * gsg_tile, steps = K / gsg_kstep;
       const int g = lane / 4, t = lane % 4;
-      int slice[TPW][2];                                    // the slice length of this thread's two rows a tile
-      bool pad[TPW][2];                                     // their batch has slices past k
+      int slice[2][2];                                      // this thread's rows (2 tiles x rows g, g + 8)
+      bool pad[2][2];
       #pragma unroll
-      for (int i = 0; i < TPW; ++i)
+      for (int mt = 0; mt < 2; ++mt)
         #pragma unroll
         for (int h = 0; h < 2; ++h) {
-          const int mt = warp + i * Warps;
-          const int grp = mt < MT ? gsg_group_of(groups, mt * 16 + g + 8 * h) : -1;
-          slice[i][h] = grp < 0 ? 0 : groups.slice[grp];
-          pad[i][h] = grp >= 0 && groups.slices[grp] > (K + groups.slice[grp] - 1) / groups.slice[grp];
+          const int row = m0 + wm * 32 + mt * 16 + g + 8 * h;
+          const int grp = row < M ? gsg_group_of(groups, row) : -1;
+          slice[mt][h] = grp < 0 ? 0 : groups.slice[grp];
+          pad[mt][h] = grp >= 0 && groups.slices[grp] > (K + groups.slice[grp] - 1) / groups.slice[grp];
         }
       auto load = [&](int s) {
         __half* dst = st + (s % gsg_stages) * stage;
-        for (int v = threadIdx.x; v < rows * chunks; v += Warps * 32) {
-          const int r = v / chunks, c = (v % chunks) * 8;
-          const bool is_a = r < MT * 16;
-          const int row = is_a ? r : n0 + r - MT * 16;
+        for (int v = threadIdx.x; v < 2 * gsg_tile * (gsg_kstep / 8); v += 128) {
+          const int r = v / (gsg_kstep / 8), c = (v % (gsg_kstep / 8)) * 8;
+          const bool is_a = r < gsg_tile;
+          const int row = is_a ? m0 + r : n0 + r - gsg_tile;
           const bool valid = row < (is_a ? M : N);
           gsg_cp16(dst + r * gsg_pitch + c, (is_a ? A : W) + (size_t)(valid ? row : 0) * K + s * gsg_kstep + c, valid);
         }
@@ -96,14 +97,14 @@ namespace ctranslate2 {
           load(s);
         asm volatile("cp.async.commit_group;");
       }
-      float acc[2][TPW][4] = {}, sum[2][TPW][4];
+      float acc[2][4][4] = {}, sum[2][4][4];
       #pragma unroll
-      for (int j = 0; j < 2; ++j)
+      for (int mt = 0; mt < 2; ++mt)
         #pragma unroll
-        for (int i = 0; i < TPW; ++i)
+        for (int nt = 0; nt < 4; ++nt)
           #pragma unroll
           for (int e = 0; e < 4; ++e)
-            sum[j][i][e] = -0.f;
+            sum[mt][nt][e] = -0.f;
       for (int s = 0; s < steps; ++s) {
         asm volatile("cp.async.wait_group %0;" :: "n"(gsg_stages - 2));
         __syncthreads();
@@ -113,46 +114,53 @@ namespace ctranslate2 {
         const __half* base = st + (s % gsg_stages) * stage;
         #pragma unroll
         for (int q = 0; q < gsg_kstep / 16; ++q) {
-          unsigned b[4];
-          gsg_ldm4(b, base + (MT * 16 + (lm / 2) * 8 + lr) * gsg_pitch + q * 16 + (lm % 2) * 8);
+          unsigned a[2][4], b[2][4];                         // b[p]: n8 tiles 2p (b0 b1) and 2p + 1 (b2 b3)
           #pragma unroll
-          for (int i = 0; i < TPW; ++i) {
-            const int mt = warp + i * Warps;
-            if (mt < MT) {
-              unsigned a[4];
-              gsg_ldm4(a, base + (mt * 16 + (lm % 2) * 8 + lr) * gsg_pitch + q * 16 + (lm / 2) * 8);
-              gsg_mma(acc[0][i], a, b[0], b[1]);
-              gsg_mma(acc[1][i], a, b[2], b[3]);
+          for (int mt = 0; mt < 2; ++mt)
+            gsg_ldm4(a[mt], base + (wm * 32 + mt * 16 + (lm % 2) * 8 + lr) * gsg_pitch + q * 16 + (lm / 2) * 8);
+          #pragma unroll
+          for (int p = 0; p < 2; ++p)
+            gsg_ldm4(b[p], base + (gsg_tile + wn * 32 + p * 16 + (lm / 2) * 8 + lr) * gsg_pitch + q * 16
+                                + (lm % 2) * 8);
+          #pragma unroll
+          for (int mt = 0; mt < 2; ++mt)
+            #pragma unroll
+            for (int p = 0; p < 2; ++p) {
+              gsg_mma(acc[mt][2 * p], a[mt], b[p][0], b[p][1]);
+              gsg_mma(acc[mt][2 * p + 1], a[mt], b[p][2], b[p][3]);
             }
-          }
         }
         const int k_end = (s + 1) * gsg_kstep;
         #pragma unroll
-        for (int i = 0; i < TPW; ++i)
+        for (int mt = 0; mt < 2; ++mt)
           #pragma unroll
           for (int h = 0; h < 2; ++h)
-            if (slice[i][h] > 0 && (k_end % slice[i][h] == 0 || k_end == K))   // this row's slice closes here
+            if (slice[mt][h] > 0 && (k_end % slice[mt][h] == 0 || k_end == K))   // this row's slice closes here
               #pragma unroll
-              for (int j = 0; j < 2; ++j)
+              for (int nt = 0; nt < 4; ++nt)
                 #pragma unroll
                 for (int e = 0; e < 2; ++e) {
-                  float& a = acc[j][i][2 * h + e];
-                  sum[j][i][2 * h + e] += __half2float(__float2half_rn(a));
-                  a = 0.f;
+                  float& x = acc[mt][nt][2 * h + e];
+                  sum[mt][nt][2 * h + e] += __half2float(__float2half_rn(x));
+                  x = 0.f;
                 }
       }
       #pragma unroll
-      for (int j = 0; j < 2; ++j)
+      for (int mt = 0; mt < 2; ++mt)
         #pragma unroll
-        for (int i = 0; i < TPW; ++i)
+        for (int h = 0; h < 2; ++h) {
+          const int row = m0 + wm * 32 + mt * 16 + g + 8 * h;
+          const float z = pad[mt][h] ? 0.f : -0.f;              // empty slices add +0 (-0 adds as nothing)
+          if (row >= M)
+            continue;
           #pragma unroll
-          for (int h = 0; h < 2; ++h) {
-            const int row = (warp + i * Warps) * 16 + g + 8 * h, col = n0 + j * 8 + 2 * t;
-            const float z = pad[i][h] ? 0.f : -0.f;           // empty slices add +0 (-0 adds as nothing)
-            if (row < M && col < N)
+          for (int nt = 0; nt < 4; ++nt) {
+            const int col = n0 + wn * 32 + nt * 8 + 2 * t;
+            if (col < N)
               *reinterpret_cast<__half2*>(C + (size_t)row * N + col) =
-                __floats2half2_rn(sum[j][i][2 * h] + z, sum[j][i][2 * h + 1] + z);
+                __floats2half2_rn(sum[mt][nt][2 * h] + z, sum[mt][nt][2 * h + 1] + z);
           }
+        }
 #endif
     }
 
@@ -168,25 +176,19 @@ namespace ctranslate2 {
       return true;
     }
 
-    template <int MT>
-    void gsg_launch(const __half* a, const __half* w, __half* c, int m, int n, int k, const SplitGroups& groups,
-                    cudaStream_t stream) {
-      constexpr int warps = MT < 4 ? MT : MT <= 10 ? 4 : 8, ks = MT <= 10 ? 64 : 32;
-      constexpr int smem = gsg_stages * (MT * 16 + 16) * (ks + 8) * sizeof (__half);
-      static const bool configured = cudaFuncSetAttribute(grouped_split_gemm_kernel<MT, warps, ks>,
-                                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                                          smem) == cudaSuccess;
-      (void)configured;
-      grouped_split_gemm_kernel<MT, warps, ks><<<(n + 15) / 16, warps * 32, smem, stream>>>(a, w, c, m, n, k,
-                                                                                            groups);
+    inline void gsg_launch(const __half* a, const __half* w, __half* c, int m, int n, int k, const SplitGroups& groups,
+                           cudaStream_t stream) {
+      constexpr int smem = gsg_stages * 2 * gsg_tile * gsg_pitch * sizeof (__half);
+      const dim3 grid((n + gsg_tile - 1) / gsg_tile, (m + gsg_tile - 1) / gsg_tile);
+      grouped_split_gemm_kernel<<<grid, 128, smem, stream>>>(a, w, c, m, n, k, groups);
     }
 
     // The second feed-forward for groups of rows (no device check): false, nothing launched, when a group's rows
     // have no known split, there are more than gsg_max_rows rows or more than gsg_max_groups groups, or k is no
-    // multiple of 64.
+    // multiple of 32.
     inline bool gsg_run(const __half* a, const __half* w, __half* c, int n, int k,
                         const std::vector<int64_t>& group_rows, cudaStream_t stream) {
-      if (group_rows.empty() || group_rows.size() > static_cast<size_t>(gsg_max_groups) || k % 64 != 0)
+      if (group_rows.empty() || group_rows.size() > static_cast<size_t>(gsg_max_groups) || k % gsg_kstep != 0)
         return false;
       SplitGroups groups{};
       int m = 0;
@@ -200,29 +202,9 @@ namespace ctranslate2 {
         groups.slices[groups.count] = slices;
         ++groups.count;
       }
-      switch ((m + 15) / 16) {
-      case 1: gsg_launch<1>(a, w, c, m, n, k, groups, stream); break;
-      case 2: gsg_launch<2>(a, w, c, m, n, k, groups, stream); break;
-      case 3: gsg_launch<3>(a, w, c, m, n, k, groups, stream); break;
-      case 4: gsg_launch<4>(a, w, c, m, n, k, groups, stream); break;
-      case 5: gsg_launch<5>(a, w, c, m, n, k, groups, stream); break;
-      case 6: gsg_launch<6>(a, w, c, m, n, k, groups, stream); break;
-      case 7: gsg_launch<7>(a, w, c, m, n, k, groups, stream); break;
-      case 8: gsg_launch<8>(a, w, c, m, n, k, groups, stream); break;
-      case 9: gsg_launch<9>(a, w, c, m, n, k, groups, stream); break;
-      case 10: gsg_launch<10>(a, w, c, m, n, k, groups, stream); break;
-      case 11: gsg_launch<11>(a, w, c, m, n, k, groups, stream); break;
-      case 12: gsg_launch<12>(a, w, c, m, n, k, groups, stream); break;
-      case 13: gsg_launch<13>(a, w, c, m, n, k, groups, stream); break;
-      case 14: gsg_launch<14>(a, w, c, m, n, k, groups, stream); break;
-      case 15: gsg_launch<15>(a, w, c, m, n, k, groups, stream); break;
-      case 16: gsg_launch<16>(a, w, c, m, n, k, groups, stream); break;
-      case 17: gsg_launch<17>(a, w, c, m, n, k, groups, stream); break;
-      case 18: gsg_launch<18>(a, w, c, m, n, k, groups, stream); break;
-      case 19: gsg_launch<19>(a, w, c, m, n, k, groups, stream); break;
-      case 20: gsg_launch<20>(a, w, c, m, n, k, groups, stream); break;
-      default: return false;
-      }
+      if (m > gsg_max_rows)
+        return false;
+      gsg_launch(a, w, c, m, n, k, groups, stream);
       return true;
     }
 
