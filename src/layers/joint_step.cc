@@ -28,7 +28,8 @@ namespace ctranslate2 {
       const dim_t row = x.size() / shape[0];
       shape[0] = count;
       StorageView view(x.dtype(), x.device());
-      view.view(static_cast<char*>(x.buffer()) + begin * row * x.item_size(), std::move(shape));
+      void* first = static_cast<char*>(x.buffer()) + begin * row * x.item_size();
+      view.view(first, std::move(shape));                    // the untyped view: x's dtype
       return view;
     }
 

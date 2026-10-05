@@ -31,4 +31,6 @@ cp -P "$INST"/lib/libctranslate2.so* "$PKG/"
 cp -L "$(gcc -print-file-name=libgomp.so.1)" "$PKG/"
 patchelf --set-rpath '$ORIGIN' "$PKG"/_ext*.so "$PKG"/libctranslate2.so.*.*.*
 git -C "$SRC" log --oneline -1 > "$PKG/BUILD.txt"
+# The library links with undefined symbols allowed: loading the extension (all symbols bound now) finds them.
+(cd /tmp && PYTHONPATH="$OUT" "$VENV/bin/python" -c "import ctranslate2") || { echo "the package does not load"; exit 1; }
 echo "built $PKG from $(git -C "$SRC" rev-parse --short HEAD) for $ARCH"
