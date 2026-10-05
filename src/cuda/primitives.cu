@@ -30,6 +30,7 @@
 #include "cuda/attention_scores_k64.cuh"
 #include "cuda/clip_groups.h"
 #include "cuda/encoder_gemm.h"
+#include "cuda/grouped_split_gemm.h"
 #include "cuda/graph_host_copy.h"
 #endif
 #include <thrust/device_ptr.h>
@@ -538,7 +539,18 @@ namespace ctranslate2 {
                                       const float16_t*) {
 #ifndef CT2_USE_HIP
     // Rows of several batches decoded together: each batch's rows on their own (cuda/clip_groups.h), unless one
-    // call gives every row the same bits (then all groups share one read of the weights).
+    // call gives every row the same bits (then all groups share one read of the weights): cuBLAS where its
+    // arithmetic does not depend on the rows, else a kernel that gives each group its own (grouped_split_gemm.h).
+    const bool plain = !transpose_a && transpose_b && lda == k && ldb == k && ldc == n && alpha == 1 && beta == 0
+      && !cuda::use_true_fp16_gemm();
+    if (plain && cuda::clip_groups() && m % cuda::clip_groups()->total == 0) {
+      std::vector<dim_t> rows;
+      for (const dim_t clips : cuda::clip_groups()->clips)
+        if (clips > 0)
+          rows.push_back(clips * (m / cuda::clip_groups()->total));
+      if (cuda::grouped_split_gemm(a, b, c, n, k, rows, cuda::get_cuda_stream()))
+        return;
+    }
     if (!transpose_a && !(transpose_b && lda == k && ldb == k && ldc == n
                           && cuda::rows_independent_product(m, n, k))
         && cuda::for_each_clip_group(m, [&](dim_t row, dim_t rows) {

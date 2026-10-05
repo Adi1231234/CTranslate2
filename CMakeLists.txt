@@ -244,6 +244,7 @@ set(CUDA_SOURCES
   src/cuda/graph_host_copy.cu
   src/cuda/graph_memory.cc
   src/cuda/graph_memset.cu
+  src/cuda/grouped_split_gemm.cu
   src/cuda/green_stream.cc
   src/cuda/persistent.cu
   src/cuda/primitives.cu
