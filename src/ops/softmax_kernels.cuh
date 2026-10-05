@@ -220,32 +220,12 @@ namespace at {
       return j + j / 32;  // one pad float per 32: lane L reading 32L + i hits bank (L + i) % 32
     }
 
+    // One row of `size` values by one warp (buf: warp_softmax_slot(size) + 1 floats of its own), with the legacy
+    // kernel's arithmetic for a block of legacy_block threads: what warp_softmax_forward computes for each row.
     template <typename scalar_t, bool LogSoftmax>
-    __global__ void __launch_bounds__(warp_softmax_rows_per_block * C10_WARP_SIZE)
-    warp_softmax_forward(scalar_t* output,
-                         const scalar_t* input,
-                         const unsigned rows,
-                         const unsigned classes,
-                         const unsigned legacy_block,
-                         const int32_t* lengths)
+    __device__ __forceinline__ void warp_softmax_row(scalar_t* output, const scalar_t* input, const unsigned size,
+                                                     const unsigned legacy_block, const unsigned lane, float* buf)
     {
-      extern __shared__ float row_smem[];
-      const unsigned warp = threadIdx.x / C10_WARP_SIZE;
-      const unsigned lane = threadIdx.x % C10_WARP_SIZE;
-      const unsigned row = blockIdx.x * warp_softmax_rows_per_block + warp;
-      if (row >= rows)
-        return;
-      float* buf = row_smem + warp * (warp_softmax_slot(classes) + 1);
-      input += size_t(row) * classes;
-      output += size_t(row) * classes;
-
-      unsigned size = classes;
-      if (lengths) {
-        size = lengths[row];
-        for (unsigned i = size + lane; i < classes; i += C10_WARP_SIZE)
-          output[i] = 0.f;
-      }
-
       float lane_max = -max_float;
       for (unsigned j = lane; j < size; j += C10_WARP_SIZE) {
         const float v = static_cast<float>(input[j]);
@@ -284,6 +264,34 @@ namespace at {
         const float v = buf[warp_softmax_slot(j)];
         output[j] = static_cast<scalar_t>(LogSoftmax ? v - max_k - logsum : v / sum);
       }
+    }
+
+    template <typename scalar_t, bool LogSoftmax>
+    __global__ void __launch_bounds__(warp_softmax_rows_per_block * C10_WARP_SIZE)
+    warp_softmax_forward(scalar_t* output,
+                         const scalar_t* input,
+                         const unsigned rows,
+                         const unsigned classes,
+                         const unsigned legacy_block,
+                         const int32_t* lengths)
+    {
+      extern __shared__ float row_smem[];
+      const unsigned warp = threadIdx.x / C10_WARP_SIZE;
+      const unsigned lane = threadIdx.x % C10_WARP_SIZE;
+      const unsigned row = blockIdx.x * warp_softmax_rows_per_block + warp;
+      if (row >= rows)
+        return;
+      float* buf = row_smem + warp * (warp_softmax_slot(classes) + 1);
+      input += size_t(row) * classes;
+      output += size_t(row) * classes;
+
+      unsigned size = classes;
+      if (lengths) {
+        size = lengths[row];
+        for (unsigned i = size + lane; i < classes; i += C10_WARP_SIZE)
+          output[i] = 0.f;
+      }
+      warp_softmax_row<scalar_t, LogSoftmax>(output, input, size, legacy_block, lane, buf);
     }
 
   }

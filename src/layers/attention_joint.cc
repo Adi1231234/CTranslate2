@@ -13,7 +13,7 @@
 #  include "cuda/cache_reorder.h"
 #  include "cuda/clip_groups.h"
 #  include "cuda/copy_parts.h"
-#  include "cuda/utils.h"
+#  include "cuda/softmax_parts.h"
 #endif
 
 namespace ctranslate2 {
@@ -88,6 +88,32 @@ namespace ctranslate2 {
       }
     }
 
+    // ops::SoftMax of each part's scores, in place: one launch for all the parts where it applies (CUDA, fp16, the
+    // warp kernel's lengths), else part by part. The same values either way (cuda/softmax_parts.h).
+    static void softmax_parts(std::vector<StorageView>& scores) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      bool fused = !scores.empty() && scores.size() <= static_cast<size_t>(cuda::SoftmaxParts::max_parts);
+      cuda::SoftmaxParts parts;
+      unsigned rows = 0;
+      for (StorageView& s : scores) {
+        fused = fused && s.device() == Device::CUDA && s.dtype() == DataType::FLOAT16
+          && cuda::softmax_parts_supported(s.dim(-1));
+        if (!fused)
+          break;
+        rows += static_cast<unsigned>(s.size() / s.dim(-1));
+        parts.data[parts.count] = s.buffer();
+        parts.rows_end[parts.count] = rows;
+        parts.cols[parts.count++] = static_cast<unsigned>(s.dim(-1));
+      }
+      if (fused) {
+        cuda::softmax_parts(parts);
+        return;
+      }
+#endif
+      for (StorageView& s : scores)
+        ops::SoftMax()(s, nullptr, s);
+    }
+
     // The parts' outputs one after the other along the rows: one launch where it applies (CUDA), where ops::Concat
     // copies each part on its own.
     static void join_rows(std::vector<StorageView>& parts, StorageView& out) {
@@ -152,7 +178,9 @@ namespace ctranslate2 {
 
       // Self-attention: the head split of all the rows (each row's own values), every part's beam order and new
       // step into its caches in one launch (data movement), then each part's attention on its own caches as its own
-      // step (one batch per call, no clip groups).
+      // step (one batch per call, no clip groups): dot_product_attention's three ops on a decoder step, the scores
+      // MatMul and the values MatMul part by part (cuBLAS's arithmetic depends on a call's batch), the softmax of
+      // every part's scores in one launch where it applies (a row's arithmetic depends on its length only).
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       const cuda::ClipGroupsPause no_groups;
 #endif
@@ -162,55 +190,22 @@ namespace ctranslate2 {
       split_heads_with_bias(fused_proj, _linear[0].bias(), {&all_queries, &all_keys, &all_values}, _num_heads);
       append_parts(joint, all_keys, all_values);
 
-#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      // The parts' attentions are independent: on side streams (CT2_SIDE_STREAMS), after the cache update, and
-      // joined back before their contexts are (cuda/utils.h).
-      const int sides = std::min<int>(cuda::side_streams(), static_cast<int>(joint.parts.size()));
-      static thread_local std::vector<cudaEvent_t> events;
-      while (static_cast<int>(events.size()) < sides + 1) {
-        cudaEvent_t event;
-        CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
-        events.push_back(event);
+      std::vector<StorageView> scores;
+      scores.reserve(joint.parts.size());
+      const ops::MatMul keys_matmul(/*trans_a=*/false, /*trans_b=*/true, _queries_scale);
+      for (const auto& part : joint.parts) {
+        scores.emplace_back(dtype, device);
+        keys_matmul(rows_view(all_queries, part.row_begin, part.rows), *part.self_keys[joint.layer], scores.back());
       }
-      cudaStream_t main_stream = cuda::get_cuda_stream();
-      if (sides > 1)
-        CUDA_CHECK(cudaEventRecord(events[sides], main_stream));
-#endif
+      softmax_parts(scores);
       std::vector<StorageView> contexts;
       contexts.reserve(joint.parts.size());
+      const ops::MatMul values_matmul;
       for (size_t p = 0; p < joint.parts.size(); ++p) {
-        const auto& part = joint.parts[p];
-#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-        std::unique_ptr<cuda::UseSideStreamInScope> side;
-        if (sides > 1) {
-          side = std::make_unique<cuda::UseSideStreamInScope>(static_cast<int>(p % sides));
-          if (p < static_cast<size_t>(sides))
-            CUDA_CHECK(cudaStreamWaitEvent(cuda::get_cuda_stream(), events[sides], 0));
-        }
-#endif
-        StorageView queries_proj = rows_view(all_queries, part.row_begin, part.rows);
-        StorageView& cached_keys = *part.self_keys[joint.layer];
-        StorageView& cached_values = *part.self_values[joint.layer];
-
         contexts.emplace_back(dtype, device);
-        StorageView& part_context = contexts.back();
-        const bool heads_combined = dot_product_attention(queries_proj, cached_keys, cached_values,
-                                                          /*values_lengths=*/nullptr, nullptr, nullptr, nullptr,
-                                                          nullptr, 0, 0, 0, part_context, /*attention=*/nullptr,
-                                                          /*return_normalized_attention=*/true, _queries_scale,
-                                                          _is_decoder, /*with_cache=*/true, /*beam_size=*/1,
-                                                          nullptr, nullptr);
-        combine_heads(part_context, _num_heads, nullptr, 1, heads_combined);
+        values_matmul(scores[p], *joint.parts[p].self_values[joint.layer], contexts.back());
+        combine_heads(contexts.back(), _num_heads, nullptr, 1, /*heads_combined=*/false);
       }
-#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      for (int s = 0; sides > 1 && s < sides; ++s) {
-        {
-          const cuda::UseSideStreamInScope side(s);
-          CUDA_CHECK(cudaEventRecord(events[s], cuda::get_cuda_stream()));
-        }
-        CUDA_CHECK(cudaStreamWaitEvent(main_stream, events[s], 0));
-      }
-#endif
       join_rows(contexts, context);
     }
 

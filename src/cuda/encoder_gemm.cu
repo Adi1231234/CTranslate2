@@ -18,17 +18,13 @@ namespace ctranslate2 {
       return reinterpret_cast<uintptr_t>(p) % 16 == 0;
     }
 
-    // The width of the chain cuBLAS 12.9.2 runs this encoder product in on this device, 0 where no replica was
-    // verified: sm_120, every encoder Dense layer in 16-wide steps (cutlass_80_tensorop_f16_s16816gemm..._64x64);
-    // sm_89, the first feed-forward (5120 x 1280) in 8-wide steps (ampere_fp16_s1688gemm_fp16_128x128...,
-    // tools/turing/kernels/encoder_ffn1_check.cu); its other products stay on cuBLAS (s16816 kernels near the
-    // tensor pipe's peak, nothing to gain).
-    static int replica_width(dim_t n, dim_t k) {
-      if (cublas_verified_on(12, 0))
-        return 16;
-      if (cublas_verified_on(8, 9) && n == 5120 && k == 1280)
-        return 8;
-      return 0;
+    // Where the replica gives cuBLAS 12.9.2's bits for an encoder product on this device: sm_120, every encoder
+    // Dense layer (cutlass_80_tensorop_f16_s16816gemm..._64x64); sm_89, the first feed-forward (5120 x 1280), which
+    // cuBLAS runs there in 8-wide steps (ampere_fp16_s1688gemm_fp16_128x128) with the same bits as the 16-wide
+    // chain (tools/turing/kernels/encoder_ffn1_check.cu: 0 mismatches at both widths). sm_89's other products stay
+    // on cuBLAS (s16816 256x128 kernels near the tensor pipe's peak: nothing to gain).
+    static bool replica_applies(dim_t n, dim_t k) {
+      return cublas_verified_on(12, 0) || (cublas_verified_on(8, 9) && n == 5120 && k == 1280);
     }
 
     // CT2_ENC_GEMM_MIN_ROWS (default 1500, one 30 s window): smaller products keep cuBLAS, which may pick
@@ -38,37 +34,41 @@ namespace ctranslate2 {
       static const bool enabled = read_string_from_env("CT2_ENC_GEMM", "cublas") == "cutlass";
       static const dim_t min_rows = read_int_from_env("CT2_ENC_GEMM_MIN_ROWS", 1500);
       return enabled && m >= min_rows && n % 8 == 0 && k % 64 == 0
-        && aligned16(a) && aligned16(w) && aligned16(c) && replica_width(n, k) > 0;
+        && aligned16(a) && aligned16(w) && aligned16(c) && replica_applies(n, k);
     }
 
     // enc_gemm_launch with CT2_ENC_GEMM_BLOCKS=<n>: persistent, n blocks per SM (cuda/persistent.h).
-    template <int Tile, int KTile, int Stages, typename Op, int InstK>
+    template <int TM, int TN, int KT, int S, typename Op, int WM, int WN>
     static void enc_gemm_run(const float16_t* a, const float16_t* w, float16_t* c, int m, int n, int k,
                              const float16_t* bias) {
       static const int per_sm = persistent_blocks_per_sm("CT2_ENC_GEMM_BLOCKS");
       cudaStream_t stream = get_cuda_stream();
       auto half_ptr = [](const float16_t* p) { return reinterpret_cast<const __half*>(p); };
-      enc_gemm_launch<Tile, KTile, Stages, Op, InstK>(half_ptr(a), half_ptr(w), reinterpret_cast<__half*>(c), m, n,
-                                                       k, half_ptr(bias), stream,
-                                                       per_sm > 0 ? work_counter(stream) : nullptr,
-                                                       per_sm * sm_count());
+      enc_gemm_launch<TM, TN, KT, S, Op, WM, WN>(half_ptr(a), half_ptr(w), reinterpret_cast<__half*>(c), m, n, k,
+                                                 half_ptr(bias), stream, per_sm > 0 ? work_counter(stream) : nullptr,
+                                                 per_sm * sm_count());
     }
 
     using EncLaunch = void (*)(const float16_t*, const float16_t*, float16_t*, int, int, int, const float16_t*);
     struct EncConfig {
-      const char* name;                                  // <tile>x<k tile>s<stages>
-      EncLaunch plain16, gelu16, plain8, gelu8;          // by the chain's width
+      const char* name;
+      EncLaunch plain, gelu;
     };
 
-#define CT2_ENC_CONFIG(T, KT, S) \
-    {#T "x" #KT "s" #S, &enc_gemm_run<T, KT, S, EncPlainOp, 16>, &enc_gemm_run<T, KT, S, EncBiasGeluOp, 16>, \
-     &enc_gemm_run<T, KT, S, EncPlainOp, 8>, &enc_gemm_run<T, KT, S, EncBiasGeluOp, 8>}
+#define CT2_ENC_CONFIG(NAME, TM, TN, KT, S, WM, WN) \
+    {NAME, &enc_gemm_run<TM, TN, KT, S, EncPlainOp, WM, WN>, &enc_gemm_run<TM, TN, KT, S, EncBiasGeluOp, WM, WN>}
 
-    // Shared memory: Tile * KTile * 4 bytes per stage (at most 96 KB per block here).
+    // <tile>x<k tile>s<stages>: square tiles of 4 warps; <tile m>x<tile n>k<k tile>s<stages>: warps of 64 x 64 (the
+    // shape of cuBLAS's s16816 256x128 kernels on sm_89). Shared memory: (TM + TN) * KT * 2 bytes per stage, at most
+    // 96 KB per block here.
     static const EncConfig enc_configs[] = {
-      CT2_ENC_CONFIG(64, 32, 6), CT2_ENC_CONFIG(64, 32, 4), CT2_ENC_CONFIG(64, 32, 3),
-      CT2_ENC_CONFIG(64, 64, 4), CT2_ENC_CONFIG(64, 64, 3), CT2_ENC_CONFIG(64, 64, 6),
-      CT2_ENC_CONFIG(128, 32, 4), CT2_ENC_CONFIG(128, 32, 3), CT2_ENC_CONFIG(128, 64, 3),
+      CT2_ENC_CONFIG("64x32s6", 64, 64, 32, 6, 32, 32), CT2_ENC_CONFIG("64x32s4", 64, 64, 32, 4, 32, 32),
+      CT2_ENC_CONFIG("64x32s3", 64, 64, 32, 3, 32, 32), CT2_ENC_CONFIG("64x64s4", 64, 64, 64, 4, 32, 32),
+      CT2_ENC_CONFIG("64x64s3", 64, 64, 64, 3, 32, 32), CT2_ENC_CONFIG("64x64s6", 64, 64, 64, 6, 32, 32),
+      CT2_ENC_CONFIG("128x32s4", 128, 128, 32, 4, 64, 64), CT2_ENC_CONFIG("128x32s3", 128, 128, 32, 3, 64, 64),
+      CT2_ENC_CONFIG("128x64s3", 128, 128, 64, 3, 64, 64),
+      CT2_ENC_CONFIG("256x128k32s3", 256, 128, 32, 3, 64, 64), CT2_ENC_CONFIG("256x128k32s4", 256, 128, 32, 4, 64, 64),
+      CT2_ENC_CONFIG("128x256k32s3", 128, 256, 32, 3, 64, 64),
     };
 
     // CT2_ENC_GEMM_CFG picks the configuration (default 64x32s6, cuBLAS's own on sm_120); an unknown name keeps it.
@@ -86,10 +86,7 @@ namespace ctranslate2 {
     void encoder_gemm(const float16_t* a, const float16_t* w, float16_t* c, dim_t m, dim_t n, dim_t k,
                       const float16_t* gelu_bias) {
       const EncConfig& config = enc_config();
-      const bool narrow = replica_width(n, k) == 8;
-      const EncLaunch launch = gelu_bias ? (narrow ? config.gelu8 : config.gelu16)
-                                         : (narrow ? config.plain8 : config.plain16);
-      launch(a, w, c, int(m), int(n), int(k), gelu_bias);
+      (gelu_bias ? config.gelu : config.plain)(a, w, c, int(m), int(n), int(k), gelu_bias);
     }
 
   }

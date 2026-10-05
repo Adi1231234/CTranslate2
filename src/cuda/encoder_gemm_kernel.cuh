@@ -1,6 +1,6 @@
 #pragma once
 
-// The kernel of encoder_gemm.h: CUTLASS 2.x's threadblock-level main loop and epilogue for one 64x64 output tile
+// The kernel of encoder_gemm.h: CUTLASS 2.x's threadblock-level main loop and epilogue for one output tile
 // (the body of cutlass::gemm::kernel::Gemm without split-K), run for one tile per block or, persistent, for the
 // tiles a block takes from the work counter. Tiles are numbered as cuBLAS's grid orders them
 // (GemmIdentityThreadblockSwizzle<8>: 8 column tiles per row tile, all row tiles, then the next 8 columns).
@@ -42,15 +42,15 @@ namespace ctranslate2 {
       }
     };
 
-    // Tile x Tile outputs per block, KTile of k per stage, 4 warps of Tile/2 x Tile/2 x KTile, mma.sync m16n8kInstK
-    // (any of these keeps each output's chain over k: InstK at a time in increasing order, no k split inside or
-    // across blocks; InstK is the chain's width: 16 as cuBLAS's s16816 kernels, 8 as its s1688 ones).
-    template <int Tile, int KTile, int Stages, typename Op, int InstK = 16>
+    // TileM x TileN outputs per block, KTile of k per stage, warps of WarpM x WarpN x KTile (any of these keeps each
+    // output's chain over k: one mma.sync m16n8k16 at a time in increasing order, no k split inside or across
+    // blocks).
+    template <int TileM, int TileN, int KTile, int Stages, typename Op, int WarpM, int WarpN>
     using EncGemmKernel = typename cutlass::gemm::kernel::DefaultGemm<
       EncHalf, cutlass::layout::RowMajor, 8, EncHalf, cutlass::layout::ColumnMajor, 8,
       EncHalf, cutlass::layout::RowMajor, float, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-      cutlass::gemm::GemmShape<Tile, Tile, KTile>, cutlass::gemm::GemmShape<Tile / 2, Tile / 2, KTile>,
-      cutlass::gemm::GemmShape<16, 8, InstK>, Op, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>,
+      cutlass::gemm::GemmShape<TileM, TileN, KTile>, cutlass::gemm::GemmShape<WarpM, WarpN, KTile>,
+      cutlass::gemm::GemmShape<16, 8, 16>, Op, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>,
       Stages, false, cutlass::arch::OpMultiplyAdd>::GemmKernel;
 
     template <typename K>
@@ -97,15 +97,15 @@ namespace ctranslate2 {
 
     // c = a w^T (a [m, k], w [n, k], c [m, n] row-major; with bias, c = gelu(bias + c) as EncBiasGeluOp) on
     // `stream`: a block per tile, or with a work counter (zero, cuda/persistent.h) `blocks` blocks taking them.
-    template <int Tile, int KTile, int Stages, typename Op, int InstK>
+    template <int TileM, int TileN, int KTile, int Stages, typename Op, int WarpM, int WarpN>
     inline void enc_gemm_launch(const __half* a, const __half* w, __half* c, int m, int n, int k, const __half* bias,
                                 cudaStream_t stream, unsigned* counter = nullptr, int blocks = 0) {
-      using K = EncGemmKernel<Tile, KTile, Stages, Op, InstK>;
+      using K = EncGemmKernel<TileM, TileN, KTile, Stages, Op, WarpM, WarpN>;
       using RefA = typename K::Mma::IteratorA::TensorRef;
       using RefB = typename K::Mma::IteratorB::TensorRef;
       using RefC = typename K::Epilogue::OutputTileIterator::TensorRef;
       auto half_ptr = [](const __half* p) { return reinterpret_cast<EncHalf*>(const_cast<__half*>(p)); };
-      const cutlass::gemm::GemmCoord problem(m, n, k), tiles((m + Tile - 1) / Tile, (n + Tile - 1) / Tile, 1);
+      const cutlass::gemm::GemmCoord problem(m, n, k), tiles((m + TileM - 1) / TileM, (n + TileN - 1) / TileN, 1);
       const typename K::Params params(problem, tiles,
                                       RefA(half_ptr(a), cutlass::layout::RowMajor(k)),
                                       RefB(half_ptr(w), cutlass::layout::ColumnMajor(k)),

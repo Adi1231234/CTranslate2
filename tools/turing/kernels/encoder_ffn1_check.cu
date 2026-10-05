@@ -1,9 +1,8 @@
 // Bit-for-bit check and timing of the encoder GEMM's replica (src/cuda/encoder_gemm_kernel.cuh) against what
 // production runs for the Whisper encoder's first feed-forward: the cuBLAS product (CTranslate2's call; on the
-// L40S ampere_fp16_s1688gemm_fp16_128x128, an 8-wide chain), then BiasAdd's GELU (ops/bias_add_vec.cuh), against
-// the replica with the bias and GELU in its epilogue, at chains 8 and 16 wide (16 must differ on sm_89: the check
-// sees a wrong chain), 1, 2, 4, 6 and 8 clips (m = 1500 a clip), 5120 x 1280, three fills. Must end with TOTAL 0
-// (the 16-wide counts are reported apart, not in the total).
+// L40S ampere_fp16_s1688gemm_fp16_128x128, an 8-wide chain, which round30 found bit for bit the 16-wide one), then
+// BiasAdd's GELU (ops/bias_add_vec.cuh), against the replica with the bias and GELU in its epilogue in several
+// tile shapes, 1, 2, 4, 6 and 8 clips (m = 1500 a clip), 5120 x 1280, three fills. Must end with TOTAL 0.
 // usage: encoder_ffn1_check [timing repetitions, default 10]
 #include <cstdio>
 #include "probe_common.h"
@@ -14,11 +13,12 @@
 using namespace ctranslate2::cuda;
 using Launch = void (*)(const __half*, const __half*, __half*, int, int, int, const __half*, cudaStream_t, unsigned*,
                         int);
-struct Config { const char* name; Launch narrow, wide; };
-#define CONFIG(T, KT, S) {#T "x" #KT "s" #S, enc_gemm_launch<T, KT, S, EncBiasGeluOp, 8>, \
-                          enc_gemm_launch<T, KT, S, EncBiasGeluOp, 16>}
-static const Config configs[] = {CONFIG(64, 32, 6), CONFIG(64, 64, 4), CONFIG(128, 32, 4), CONFIG(128, 32, 3),
-                                 CONFIG(128, 64, 3)};
+struct Config { const char* name; Launch run; };
+#define CONFIG(TM, TN, KT, S, WM, WN) \
+  {#TM "x" #TN "k" #KT "s" #S, enc_gemm_launch<TM, TN, KT, S, EncBiasGeluOp, WM, WN>}
+static const Config configs[] = {CONFIG(128, 128, 32, 4, 64, 64), CONFIG(128, 128, 64, 3, 64, 64),
+                                 CONFIG(256, 128, 32, 3, 64, 64), CONFIG(256, 128, 32, 4, 64, 64),
+                                 CONFIG(128, 256, 32, 3, 64, 64)};
 constexpr int CONFIGS = sizeof configs / sizeof configs[0];
 
 template <typename F> float time_us(F run, int reps) {
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
         reinterpret_cast<const uint4*>(R), reinterpret_cast<const uint4*>(B), nullptr, reinterpret_cast<uint4*>(R),
         n / 8, vecs);
     };
-    unsigned long long narrow[CONFIGS] = {}, wide[CONFIGS] = {};
+    unsigned long long bad[CONFIGS] = {};
     for (int f = 0; f < 3; ++f) {
       fill<<<1024, 256>>>(A, (size_t)m * k, 17u * f + clips, -4 + f, 1 + f);
       fill<<<1024, 256>>>(W, (size_t)n * k, 29u * f + clips, -9 + f, -3 + f);
@@ -59,19 +59,16 @@ int main(int argc, char** argv) {
       reference();
       for (int c = 0; c < CONFIGS; ++c) {
         CK(cudaMemset(C, 0xff, 2ull * m * n));
-        configs[c].narrow(A, W, C, m, n, k, B, 0, nullptr, 0);
+        configs[c].run(A, W, C, m, n, k, B, 0, nullptr, 0);
         CK(cudaGetLastError());
-        narrow[c] += diff((size_t)m * n);
-        configs[c].wide(A, W, C, m, n, k, B, 0, nullptr, 0);
-        wide[c] += diff((size_t)m * n);
+        bad[c] += diff((size_t)m * n);
       }
     }
     printf("%d clips: cuBLAS + BiasAdd GELU %8.1f us\n", clips, time_us(reference, reps));
     for (int c = 0; c < CONFIGS; ++c) {
-      total += narrow[c];
-      const float t = time_us([&] { configs[c].narrow(A, W, C, m, n, k, B, 0, nullptr, 0); }, reps);
-      printf("  %-8s 8-wide %llu of %llu mismatched, %8.1f us | 16-wide %llu mismatched\n", configs[c].name,
-             narrow[c], 3ull * m * n, t, wide[c]);
+      total += bad[c];
+      const float t = time_us([&] { configs[c].run(A, W, C, m, n, k, B, 0, nullptr, 0); }, reps);
+      printf("  %-14s %llu of %llu mismatched, %8.1f us\n", configs[c].name, bad[c], 3ull * m * n, t);
     }
   }
   printf("TOTAL %llu mismatches\n", total);
