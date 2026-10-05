@@ -102,8 +102,11 @@ try:
         if why: log(f"STOP ({why}) at {uid}, prefetched units dropped"); break
         done.put((uid, transcribe_unit(model, clips, MODE, pool)))
 except Exception as e:                          # write what finished, then exit non-zero for a restart
-    log(f"MAIN CRASHED: {type(e).__name__}: {e}"); done.put(None); wt.join(); os._exit(5)
+    log(f"MAIN CRASHED: {type(e).__name__}: {e}")
+    if hasattr(pool, "flush"): pool.flush()     # fallback ladders still gathering (fallback.BatchedPool)
+    done.put(None); wt.join(); os._exit(5)
 log("MAIN DONE: every unit decoded, waiting for the writer (pending fallback clips)")
+if hasattr(pool, "flush"): pool.flush()
 done.put(None); wt.join()                       # drain: every processed unit is written before exit
 log("FINISHED" if not producer_failed else "EXITING AFTER PRODUCER CRASH")
 os._exit(3 if producer_failed else 0)  # non-zero -> supervisor restarts; resume skips done units

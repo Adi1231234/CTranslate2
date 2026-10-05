@@ -3,8 +3,8 @@
 batch; 'async' (RUN_FALLBACK=async): a side thread and its own CTranslate2 worker, next to the batched path. On the
 store PC's 8 GB GPU async paged 760-860 MB to system memory and ran 30 real units at 21.1x, inline 26.1x (26.9).
 'skip' (measurement only, never production): no ladder at all, the row says so (path "fallback_skipped"), to time
-the batched path alone."""
-import time
+the batched path alone. 'batched': several ladders at once whose GPU calls are joined (fallback_batch.py)."""
+import copy, os, threading, time
 from concurrent.futures import Future, ThreadPoolExecutor
 
 
@@ -35,6 +35,58 @@ class InlinePool:
         return done
 
 
+class BatchedPool:
+    """Ladders on RUN_FALLBACK_THREADS threads (default 8) whose models' CTranslate2 calls go through one broker.
+    Fallback clips come one at a time, so ladders wait until RUN_FALLBACK_GATHER of them are queued (default: the
+    threads), RUN_FALLBACK_GATHER_S seconds pass after the first (default 600) or flush() (the batched path is
+    done), and then start together; the writer holds their units meanwhile."""
+    def __init__(self, log):
+        self.threads = int(os.environ.get("RUN_FALLBACK_THREADS", "8"))
+        self.gather = int(os.environ.get("RUN_FALLBACK_GATHER", str(self.threads)))
+        self.max_wait = float(os.environ.get("RUN_FALLBACK_GATHER_S", "600"))
+        self.executor = ThreadPoolExecutor(max_workers=self.threads)
+        self.log, self.proxies, self.waiting, self.lock, self.timer = log, {}, [], threading.Lock(), None
+
+    def submit(self, fn, model, uuid, wav):
+        if id(model) not in self.proxies:
+            from fallback_batch import Broker
+            proxy = copy.copy(model)
+            proxy.model = Broker(model.model, os.environ.get("RUN_FALLBACK_SAMPLING") == "batched")
+            self.proxies[id(model)] = proxy
+        proxy, done = self.proxies[id(model)], Future()
+
+        def ladder():
+            try:
+                done.set_result(_timed(self.log, fn, proxy, uuid, wav))
+            except Exception as e:                         # the writer raises it
+                done.set_exception(e)
+            finally:
+                proxy.model.ladder_finished()
+        with self.lock:
+            self.waiting.append((proxy, ladder))
+            if len(self.waiting) >= self.gather:
+                self._start()
+            elif self.timer is None:                         # the first one waiting: start them all by then
+                self.timer = threading.Timer(self.max_wait, self.flush)
+                self.timer.daemon = True
+                self.timer.start()
+        return done
+
+    def _start(self):
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+        for proxy, _ in self.waiting:
+            proxy.model.ladder_started()                     # before any of them calls the broker
+        for _, ladder in self.waiting:
+            self.executor.submit(ladder)
+        self.waiting = []
+
+    def flush(self):
+        with self.lock:
+            self._start()
+
+
 class SkipPool:
     def submit(self, fn, model, uuid, wav):
         done = Future()
@@ -47,4 +99,6 @@ def make_pool(kind, log):
     """The pool for RUN_FALLBACK=kind, and how many CTranslate2 workers it needs of its own."""
     if kind == "skip":
         return SkipPool(), 0
+    if kind == "batched":
+        return BatchedPool(log), 1
     return (InlinePool(log), 0) if kind == "inline" else (AsyncPool(log), 1)
