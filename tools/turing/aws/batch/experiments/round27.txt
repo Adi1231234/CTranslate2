@@ -1,0 +1,6 @@
+# round25 again with ncu_run.sh ending each process once its launches are measured (--kill) and uploading each report
+# at once (round25's per-kernel processes ran all 8 units under the profiler, ~10 min each, past the time limit):
+# the stream's main path on pyct2-l41d, 4 units, 30 launches of each heavy kernel past ~300 steps; then the
+# streamed encoder attention (pyct2-l41f, CT2_EA_STREAM=8x1s3, probe: 1437 us against 1584 at 8 clips, its split 444 us).
+scriptn|scripts/ncu_run.sh|pyct2-l41d|runner-a31eb938|src/tools/turing/scale/units_real.txt|4|300|30|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|CT2_CUDA_SCHEDULE=blocking
+scriptm|scripts/ncu_run.sh|pyct2-l41f|runner-a31eb938|src/tools/turing/scale/units_real.txt|4|300|30|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|CT2_CUDA_SCHEDULE=blocking|CT2_EA_STREAM=8x1s3|KERNELS=exact_attention_stream_kernel:3,exact_attention_stream_split:3
