@@ -1,0 +1,11 @@
+# Is the batched path bound by the GPU's 350 W power limit (the runs sit at ~340 W with the SM clock at ~1900 of
+# 2520 MHz; round30: a second feed-forward 45% faster alone gave the run only +1.3%)? The same configuration
+# (pyct2-l41i, defaults) at 350 W, then with the limit lowered to 300 W and 250 W (power_limit.sh, privileged),
+# then at 350 W again. Rate proportional to the limit's dynamic share: power-bound.
+w1|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scriptp|scripts/power_limit.sh|300
+w300|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scriptq|scripts/power_limit.sh|250
+w250|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+scriptr|scripts/power_limit.sh|350
+w2|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
