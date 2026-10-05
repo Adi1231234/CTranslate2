@@ -1,0 +1,5 @@
+# pyct2-l40v (9cf78e76): the second feed-forward kernel in 64 x 64 tiles. Its check, then the best main-path setting (q6p2
+# 90.04x, 94.8 steady) and the full run with the beam attempts of the fallback joined (exact).
+scriptp|scripts/probes.sh|probes/probes-9cf78e76.tgz|grouped_split_check
+v6p2|pyct2-l40v|runner-0349137c|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=skip|PIPE_GROUPS=6|CT2_CUDA_SCHEDULE=blocking
+va6p2|pyct2-l40v|runner-0349137c|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=batched|RUN_FALLBACK_GATHER=3|RUN_FALLBACK_GATHER_S=60|PIPE_GROUPS=6|CT2_CUDA_SCHEDULE=blocking

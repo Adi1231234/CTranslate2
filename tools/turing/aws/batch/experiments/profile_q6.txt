@@ -1,0 +1,3 @@
+# Where q6p2's time goes (the batched path alone, 2 MPS processes, 6 groups of 8, 94.8x steady): kernels of both
+# processes over 25 s after 80 s.
+scriptq|scripts/profile_mps.sh|pq6|pyct2-l40q|runner-0349137c|src/tools/turing/scale/units_real.txt|2|80|25|RUN_FALLBACK=skip|PIPE_GROUPS=6|CT2_CUDA_SCHEDULE=blocking
