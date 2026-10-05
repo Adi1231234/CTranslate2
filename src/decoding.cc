@@ -11,11 +11,26 @@
 #ifdef CT2_WITH_CUDA
 #  include "cuda/clip_groups.h"
 #  include "cuda/graph.h"
+#  include "cuda/shared_memory_rows.h"
 #endif
 
 namespace ctranslate2 {
 
   static const ops::Gather gather;
+
+  // Set by GreedySearch::search for the hypotheses of sampled inputs whose memory entries were not repeated: the
+  // number of consecutive rows of one input (0: every row has its own memory). Read by the search it then runs.
+  static thread_local dim_t shared_memory_hypotheses = 0;
+
+  struct SharedMemoryHypotheses {
+    explicit SharedMemoryHypotheses(dim_t rows_per_input) : previous(shared_memory_hypotheses) {
+      shared_memory_hypotheses = rows_per_input;
+    }
+    ~SharedMemoryHypotheses() {
+      shared_memory_hypotheses = previous;
+    }
+    const dim_t previous;
+  };
 
   static void gather_beam_flat(StorageView& data, const StorageView& indices, dim_t beam_size) {
     merge_batch_beam(data);
@@ -796,10 +811,19 @@ namespace ctranslate2 {
     // We can return multiple hypotheses from greedy search when random sampling is enabled.
     // In that case we replicate the batches and then merge the hypotheses in a single result.
     if (num_hypotheses > 1) {
+#ifdef CT2_WITH_CUDA
+      // On CUDA the hypotheses read one copy of their input's memory keys and values (cuda/shared_memory_rows.h):
+      // the entries the decoder does not replicate for beams stay one per input.
+      const bool share = decoder.device() == Device::CUDA && decoder.output_type() == DataType::FLOAT16
+        && cuda::shared_memory_rows_enabled();
+#else
+      const bool share = false;
+#endif
       for (auto& [name, value] : state) {
-        if (value)
+        if (value && !(share && !decoder.replicate_state(name)))
           repeat_batch(value, num_hypotheses);
       }
+      const SharedMemoryHypotheses shared_memory(share ? static_cast<dim_t>(num_hypotheses) : 0);
 
       std::vector<size_t> repeat_start_ids = repeat_vector(start_ids, num_hypotheses);
       std::vector<std::vector<size_t>> repeat_prefix_ids;
@@ -886,9 +910,35 @@ namespace ctranslate2 {
 
     const dim_t max_step = get_max_step(max_length, return_prefix, prefix_ids);
 
+    // Hypotheses sharing their input's memory entries (shared_memory_hypotheses rows an input): each row's input
+    // among those entries, which hold the inputs still decoding, in order.
+    const dim_t share = shared_memory_hypotheses;
+    std::vector<dim_t> memory_inputs;
+    StorageView row_input(DataType::INT32);
+    auto map_rows = [&] {
+      std::vector<int32_t> rows(batch_offset.size());
+      for (size_t i = 0; i < rows.size(); ++i)
+        rows[i] = static_cast<int32_t>(std::find(memory_inputs.begin(), memory_inputs.end(), batch_offset[i] / share)
+                                       - memory_inputs.begin());
+      row_input = StorageView({static_cast<dim_t>(rows.size())}, rows).to(device);
+    };
+    if (share) {
+      for (dim_t i = 0; i < batch_size / share; ++i)
+        memory_inputs.push_back(i);
+      map_rows();
+    }
+
     for (dim_t step = 0; step < max_step; ++step) {
       convert_to_original_word_ids(decoder, sample_from);
       const StorageView step_ids = sample_from.to(device);
+#ifdef CT2_WITH_CUDA
+      const cuda::SharedMemoryRows shared_rows{share ? row_input.data<int32_t>() : nullptr,
+                                               static_cast<dim_t>(batch_offset.size()),
+                                               static_cast<dim_t>(memory_inputs.size())};
+      std::unique_ptr<cuda::SharedMemoryRowsScope> shared_scope;
+      if (share)
+        shared_scope = std::make_unique<cuda::SharedMemoryRowsScope>(shared_rows);
+#endif
       run_decoder_step(device, step, !gather_attention, [&] {
         decoder(start_step + step,
                 step_ids,
@@ -1014,7 +1064,30 @@ namespace ctranslate2 {
         if (alive_seq)
           gather(alive_seq, alive);
         gather(sample_from, alive);
-        decoder.update_state(state, alive.to(device));
+        if (share) {
+          // The rows' entries by the alive rows; the shared memory entries by the inputs still decoding.
+          std::vector<int32_t> keep;
+          std::vector<dim_t> kept;
+          for (size_t j = 0; j < memory_inputs.size(); ++j)
+            if (std::any_of(batch_offset.begin(), batch_offset.end(),
+                            [&](dim_t row) { return row / share == memory_inputs[j]; })) {
+              keep.push_back(static_cast<int32_t>(j));
+              kept.push_back(memory_inputs[j]);
+            }
+          decoder.flush_state_reorder(state);
+          const StorageView alive_rows = alive.to(device);
+          const StorageView keep_inputs = StorageView({static_cast<dim_t>(keep.size())}, keep).to(device);
+          for (auto& [name, value] : state) {
+            if (decoder.replicate_state(name))
+              gather(value, alive_rows);
+            else if (kept.size() != memory_inputs.size())
+              gather(value, keep_inputs);
+          }
+          memory_inputs = std::move(kept);
+          map_rows();
+        } else {
+          decoder.update_state(state, alive.to(device));
+        }
       }
     }
 

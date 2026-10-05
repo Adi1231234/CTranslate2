@@ -14,6 +14,9 @@
 #include "attention_fused.h"
 #include "cross_attention_fused.h"
 #include "split_heads_fused.h"
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/shared_memory_rows.h"
+#endif
 
 namespace ctranslate2 {
   namespace layers {
@@ -171,6 +174,41 @@ namespace ctranslate2 {
 
     static const ops::Transpose transpose_op({0, 2, 1, 3});
 
+    // Sampled hypotheses reading one copy of their clip's memory keys and values (cuda/shared_memory_rows.h):
+    // queries [rows, heads, 1, depth] against keys [clips, heads, time, depth].
+    static bool shares_memory(const StorageView& queries, const StorageView& keys) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      const cuda::SharedMemoryRows* rows = cuda::shared_memory_rows();
+      return rows && queries.device() == Device::CUDA && queries.dtype() == DataType::FLOAT16
+        && keys.dim(0) == rows->clips && queries.dim(0) == rows->rows && rows->rows != rows->clips;
+#else
+      (void)queries; (void)keys;
+      return false;
+#endif
+    }
+
+    // The stock path's MatMul, SoftMax and MatMul for those queries, each product the same cuBLAS arithmetic on the
+    // same values through pointers to the shared copy.
+    static void shared_memory_attention(const StorageView& queries, const StorageView& keys,
+                                        const StorageView& values, const StorageView* values_lengths,
+                                        float queries_scale, StorageView& output) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      const dim_t rows = queries.dim(0), heads = queries.dim(1), time = keys.dim(2), depth = keys.dim(3);
+      if (queries.dim(2) != 1)
+        throw std::logic_error("Shared memory rows need one query a row");
+      StorageView attn({rows, heads, 1, time}, queries.dtype(), queries.device());
+      cuda::shared_rows_scores(queries.data<float16_t>(), keys.data<float16_t>(), attn.data<float16_t>(), heads,
+                               time, depth, queries_scale);
+      ops::SoftMax()(attn, values_lengths, attn);
+      output.resize({rows, heads, 1, depth});
+      cuda::shared_rows_output(attn.data<float16_t>(), values.data<float16_t>(), output.data<float16_t>(), heads,
+                               time, depth);
+#else
+      (void)queries; (void)keys; (void)values; (void)values_lengths; (void)queries_scale; (void)output;
+      throw std::logic_error("Shared memory rows require CUDA");
+#endif
+    }
+
     static inline void save_attention(StorageView& attention, StorageView weights, dim_t beam_size) {
       if (beam_size == 1)
         attention = std::move(weights);
@@ -223,6 +261,10 @@ namespace ctranslate2 {
           && attention_fusable(queries, keys, values)) {
         attention_fused(queries, keys, values, queries_scale, output);   // scores stay in shared memory
         return true;
+      }
+      if (!relative_positions && !relative_attention_bias && !alibi && !attention && shares_memory(queries, keys)) {
+        shared_memory_attention(queries, keys, values, values_lengths, queries_scale, output);
+        return false;
       }
       int residue = -1;
       if (!relative_positions && !relative_attention_bias && !alibi && !values_lengths && !attention
@@ -464,7 +506,7 @@ namespace ctranslate2 {
       }
 
       const StorageView& queries_raw = fused_queries ? fused_proj : queries_proj;
-      if (queries_raw.dim(1) == 1 && cached_keys)
+      if (queries_raw.dim(1) == 1 && cached_keys && !shares_memory(queries_raw, *cached_keys))
         beam_size = queries_raw.dim(0) / cached_keys->dim(0);
 
       if (fused_queries)
