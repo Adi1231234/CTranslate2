@@ -2,8 +2,8 @@
 # Build this fork on Linux for one GPU arch, with the official wheel's CUDA flags minus the CPU backends,
 # as ../build_windows.ps1 does on Windows. The default arch 8.6+PTX matches what the official wheel runs on
 # sm_86 and sm_89 GPUs (AWS A10G, L4, L40S): its "Common" list stops at sm_86 SASS plus compute_86 PTX, and
-# such a GPU runs the sm_86 SASS. "8.6 12.0+PTX" adds Blackwell's own SASS (AWS g7e, the store PC's sm_120).
-# Output: <out>/ctranslate2, a drop-in package (put <out> first on sys.path); the library sits next to the
+# such a GPU runs the sm_86 SASS, and Blackwell (sm_120: AWS g7e, the store PC) JIT-compiles the compute_86 PTX
+# (CMake 3.28's FindCUDA does not know arch 12.0). Output: <out>/ctranslate2, a drop-in package (put <out> first on sys.path); the library sits next to the
 # extension, which finds it through $ORIGIN.
 # usage: build.sh <source checkout> <out dir> [arch]      (after setup_env.sh)
 set -euo pipefail
