@@ -1,6 +1,7 @@
 #include "ctranslate2/models/whisper.h"
 
 #include <algorithm>
+#include <numeric>
 
 #include "ctranslate2/decoding.h"
 
@@ -8,6 +9,7 @@
 #include "dtw.h"
 
 #ifdef CT2_WITH_CUDA
+#  include "cuda/clip_groups.h"
 #  include "cuda/utils.h"
 #  ifndef CT2_USE_HIP
 #    include "cuda/nvtx.h"
@@ -85,7 +87,7 @@ namespace ctranslate2 {
       _num_languages = _no_speech_id - _sot_id - 5;
     }
 
-    StorageView WhisperReplica::encode(StorageView features, const bool to_cpu) {
+    StorageView WhisperReplica::encode(StorageView features, const bool to_cpu, const size_t group_size) {
       PROFILE("WhisperReplica::encode");
       CT2_NVTX_RANGE(range, "encode");
 
@@ -101,7 +103,24 @@ namespace ctranslate2 {
       features.move_to(device, dtype);
 
       StorageView encoder_output(dtype, device);
-      (*_encoder)(features, encoder_output);
+      const dim_t batch = features.dim(0), group = static_cast<dim_t>(group_size);
+      if (group > 0 && batch > group) {
+        // Each group as a batch of its own (the encoder's products depend on the batch), then concatenated.
+        std::vector<StorageView> parts;
+        parts.reserve((batch + group - 1) / group);
+        for (dim_t first = 0; first < batch; first += group) {
+          StorageView chunk(dtype, device);
+          ops::Slide(0, first, std::min(group, batch - first))(features, chunk);
+          parts.emplace_back(dtype, device);
+          (*_encoder)(chunk, parts.back());
+        }
+        std::vector<const StorageView*> inputs;
+        for (const auto& part : parts)
+          inputs.push_back(&part);
+        ops::Concat(0)(inputs, encoder_output);
+      } else {
+        (*_encoder)(features, encoder_output);
+      }
 
       if (to_cpu) {
         if (device != Device::CPU)
@@ -286,6 +305,13 @@ namespace ctranslate2 {
         const Device device = _decoder->device();
         const DataType dtype = _decoder->output_type();
         const StorageView inputs = layers::make_sequence_inputs(prompt_tokens, device);
+#ifdef CT2_WITH_CUDA
+        // The prompt (and the memory keys and values it projects) per group, as each group's own batch.
+        std::vector<dim_t> clip_ids(prompts.size());
+        std::iota(clip_ids.begin(), clip_ids.end(), dim_t(0));
+        const cuda::ClipGroupsScope clip_groups(
+          cuda::make_clip_groups(clip_ids, static_cast<dim_t>(options.group_size)));
+#endif
 
         // Initialize the decoder state with the prompt.
         if (!options.return_no_speech_prob || sot_is_start_token)
@@ -320,6 +346,7 @@ namespace ctranslate2 {
       decoding_options.return_scores = options.return_scores;
       decoding_options.return_logits_vocab = options.return_logits_vocab;
       decoding_options.include_eos_in_hypotheses = false;
+      decoding_options.group_size = static_cast<dim_t>(options.group_size);
 
       for (const auto& id : options.suppress_tokens) {
         if (id >= 0)
@@ -681,11 +708,12 @@ namespace ctranslate2 {
       return replica.num_languages();
     }
 
-    std::future<StorageView> Whisper::encode(const StorageView& features, const bool to_cpu) {
+    std::future<StorageView> Whisper::encode(const StorageView& features, const bool to_cpu,
+                                             const size_t group_size) {
       CT2_NVTX_RANGE(range, "submit encode");
       return post<StorageView>(
-        [features = features.sync_copy(), to_cpu](WhisperReplica& replica) mutable {
-          return replica.encode(std::move(features), to_cpu);
+        [features = features.sync_copy(), to_cpu, group_size](WhisperReplica& replica) mutable {
+          return replica.encode(std::move(features), to_cpu, group_size);
         });
     }
 

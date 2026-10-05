@@ -5,6 +5,7 @@
 
 #include "env.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/clip_groups.h"
 #  include "cuda/cross_attention.h"
 #endif
 
@@ -16,6 +17,13 @@ namespace ctranslate2 {
       return enabled;
     }
 
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+    // cuBLAS's arithmetic for a batch of `clips` clips (the residue the kernel replays), -1 if not replicated.
+    static int group_residue(const StorageView& queries, const StorageView& keys, dim_t clips) {
+      return cuda::cross_attention_residue(queries.dim(2), clips * queries.dim(1), keys.dim(2), keys.dim(3));
+    }
+#endif
+
     int cross_kernel_residue(const StorageView& queries, const StorageView& keys, const StorageView& values) {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       if (queries.device() != Device::CUDA || queries.dtype() != DataType::FLOAT16
@@ -23,8 +31,15 @@ namespace ctranslate2 {
           || keys.rank() != 4 || keys.shape() != values.shape() || queries.dim(0) != keys.dim(0)
           || queries.dim(1) != keys.dim(1) || queries.dim(3) != keys.dim(3))
         return -1;
-      return cuda::cross_attention_residue(queries.dim(2), queries.dim(0) * queries.dim(1), keys.dim(2),
-                                           keys.dim(3));
+      // Several batches decoded together (cuda/clip_groups.h): each group runs with its own residue, so the
+      // kernel applies when it applies to every group.
+      int grouped = 0;
+      if (cuda::for_each_clip_group(queries.dim(0), [&](dim_t, dim_t clips) {
+            if (group_residue(queries, keys, clips) < 0)
+              grouped = -1;
+          }))
+        return grouped;
+      return group_residue(queries, keys, queries.dim(0));
 #else
       (void)queries; (void)keys; (void)values;
       return -1;
@@ -41,9 +56,18 @@ namespace ctranslate2 {
                                float scale, int residue, StorageView& output) {
       output.resize(queries.shape());
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      cuda::cross_attention(queries.data<float16_t>(), keys.data<float16_t>(), values.data<float16_t>(),
-                            output.data<float16_t>(), queries.dim(0), queries.dim(1), queries.dim(2), scale,
-                            residue);
+      const dim_t heads = queries.dim(1), m = queries.dim(2), per_query_clip = heads * m * queries.dim(3);
+      const dim_t per_key_clip = heads * keys.dim(2) * keys.dim(3);
+      const auto launch = [&](dim_t clip, dim_t clips, int r) {
+        cuda::cross_attention(queries.data<float16_t>() + clip * per_query_clip,
+                              keys.data<float16_t>() + clip * per_key_clip,
+                              values.data<float16_t>() + clip * per_key_clip,
+                              output.data<float16_t>() + clip * per_query_clip, clips, heads, m, scale, r);
+      };
+      if (!cuda::for_each_clip_group(queries.dim(0), [&](dim_t clip, dim_t clips) {
+            launch(clip, clips, group_residue(queries, keys, clips));
+          }))
+        launch(0, queries.dim(0), residue);
 #else
       (void)keys; (void)values; (void)scale; (void)residue;
       throw std::logic_error("cross_attention_fused requires CUDA");

@@ -10,16 +10,27 @@ alternated pairs, 26.9); PIPE_ORDER=asc keeps the batch order; PIPE_ORDER=interl
 the longest and the shortest left (a long decode, during which the encoder gets ahead, then a short one,
 which would otherwise wait for it); the segments still come out in batch order. PIPE_AHEAD=<n>: encoded batches that may wait (default 1). PIPE_LOG=<file>: one line
 per batch with its encode and decode start and end, then its generate() call's start and end (seconds).
+PIPE_GROUPS=<k> (default 1): k consecutive batches go through one encode() and one generate() call with
+group_size = the batch size, so CTranslate2 runs each batch's products as that batch alone would (same
+shapes, same kernels, same output) but back to back, and the decoder weights are read once for all k.
 """
 import os, queue, threading, time
 from faster_whisper import WhisperModel
-from faster_whisper.transcribe import Segment, Word
+from faster_whisper.transcribe import Segment, Word, get_ctranslate2_storage
 from tqdm import tqdm
 from resume import ResumeCheck
 
 
 class PipelinedBatchedInferencePipeline(ResumeCheck):
+    def _encode(self, features, group_size):
+        """WhisperModel.encode (faster-whisper 1.2.1) with each group of the batch encoded on its own."""
+        to_cpu = self.model.device == "cuda" and len(self.model.device_index) > 1
+        return self.model.model.encode(get_ctranslate2_storage(features), to_cpu=to_cpu, group_size=group_size)
+
     def _batched_segments_generator(self, features, tokenizer, chunks_metadata, batch_size, options, log_progress):
+        groups = int(os.environ.get("PIPE_GROUPS", "1"))
+        self._group_size = batch_size if groups > 1 else 0
+        batch_size *= groups                                 # whole batches of the ungrouped pipeline
         starts = list(range(0, len(features), batch_size))
         mode = os.environ.get("PIPE_ORDER", "desc")
         if mode == "desc":
@@ -35,7 +46,8 @@ class PipelinedBatchedInferencePipeline(ResumeCheck):
             try:
                 for i in order:
                     times[i].append(time.perf_counter())
-                    enc = WhisperModel.encode(self.model, features[i:i + batch_size])
+                    enc = (self._encode(features[i:i + batch_size], self._group_size) if self._group_size
+                           else WhisperModel.encode(self.model, features[i:i + batch_size]))
                     times[i].append(time.perf_counter())
                     ahead.put((i, enc))
             except Exception as e:                           # surface encoder errors in the caller
@@ -101,7 +113,8 @@ class PipelinedBatchedInferencePipeline(ResumeCheck):
             length_penalty=options.length_penalty, max_length=max_length,
             suppress_blank=options.suppress_blank, suppress_tokens=options.suppress_tokens,
             return_scores=True, return_no_speech_prob=True, sampling_temperature=options.temperatures[0],
-            repetition_penalty=options.repetition_penalty, no_repeat_ngram_size=options.no_repeat_ngram_size)
+            repetition_penalty=options.repetition_penalty, no_repeat_ngram_size=options.no_repeat_ngram_size,
+            **({"group_size": self._group_size} if getattr(self, "_group_size", 0) else {}))
         marks.append(time.perf_counter())
         output = []
         for result in results:

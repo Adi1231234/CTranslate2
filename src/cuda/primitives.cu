@@ -28,6 +28,7 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include "cuda/attention_scores_k64.cuh"
+#include "cuda/clip_groups.h"
 #include "cuda/encoder_gemm.h"
 #include "cuda/graph_host_copy.h"
 #endif
@@ -536,6 +537,13 @@ namespace ctranslate2 {
                                       float16_t* c, dim_t ldc,
                                       const float16_t*) {
 #ifndef CT2_USE_HIP
+    // Rows of several batches decoded together: each batch's rows on their own (cuda/clip_groups.h).
+    if (!transpose_a
+        && cuda::for_each_clip_group(m, [&](dim_t row, dim_t rows) {
+          gemm<float16_t, float16_t>(false, false, false, transpose_b, rows, n, k, alpha, a + row * lda, lda,
+                                     b, ldb, beta, c + row * ldc, ldc, nullptr);
+        }))
+      return;
     if (!transpose_a && transpose_b && alpha == 1 && beta == 0 && !cuda::use_true_fp16_gemm()
         && lda == k && ldb == k && ldc == n && cuda::encoder_gemm_applies(m, n, k, a, b, c)) {
       cuda::encoder_gemm(a, b, c, m, n, k);                   // cuBLAS's arithmetic, see cuda/encoder_gemm.h
@@ -656,6 +664,14 @@ namespace ctranslate2 {
                                                     float16_t* c, dim_t ldc, dim_t stridec,
                                                     dim_t batch_size) {
 #ifndef CT2_USE_HIP
+    // Entries of several batches decoded together: each batch's entries on their own (cuda/clip_groups.h).
+    if (cuda::for_each_clip_group(batch_size, [&](dim_t entry, dim_t entries) {
+          gemm_batch_strided<float16_t, float16_t>(transpose_a, transpose_b, m, n, k, alpha,
+                                                   a + entry * stridea, lda, stridea,
+                                                   b + entry * strideb, ldb, strideb, beta,
+                                                   c + entry * stridec, ldc, stridec, entries);
+        }))
+      return;
     // Whisper cross-attention scores (a few queries per head against 1500 keys of 64 dims): the same
     // arithmetic as the cuBLAS kernel, bit for bit, several times faster (attention_scores_k64.cuh).
     if (!transpose_a && transpose_b && !cuda::use_true_fp16_gemm() && beta == 0

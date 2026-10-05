@@ -9,6 +9,7 @@
 #include "ctranslate2/ops/ops.h"
 #include "dispatch.h"
 #ifdef CT2_WITH_CUDA
+#  include "cuda/clip_groups.h"
 #  include "cuda/graph.h"
 #endif
 
@@ -440,12 +441,14 @@ namespace ctranslate2 {
                          const float length_penalty,
                          const float coverage_penalty,
                          const float prefix_bias_beta,
-                         const float patience)
+                         const float patience,
+                         const dim_t group_size)
     : _beam_size(beam_size)
     , _length_penalty(length_penalty)
     , _coverage_penalty(coverage_penalty)
     , _prefix_bias_beta(prefix_bias_beta)
     , _max_candidates(get_max_candidates(beam_size, patience))
+    , _group_size(group_size)
   {
   }
 
@@ -529,6 +532,10 @@ namespace ctranslate2 {
       convert_to_original_word_ids(decoder, topk_ids);
       const StorageView step_ids = topk_ids.to(device);
       const bool with_attention = return_attention || _coverage_penalty != 0;
+#ifdef CT2_WITH_CUDA
+      // The groups' clips still decoding: each group's products as a batch of its own would run them.
+      const cuda::ClipGroupsScope clip_groups(cuda::make_clip_groups(batch_offset, _group_size));
+#endif
       run_decoder_step(device, step, !with_attention, [&] {
         decoder(start_step + step,
                 step_ids,
@@ -1125,7 +1132,8 @@ namespace ctranslate2 {
                                           options.length_penalty,
                                           options.coverage_penalty,
                                           options.prefix_bias_beta,
-                                          options.patience);
+                                          options.patience,
+                                          options.group_size);
   }
 
   static std::vector<std::shared_ptr<LogitsProcessor>>

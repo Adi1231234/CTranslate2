@@ -23,8 +23,8 @@ namespace ctranslate2 {
         return _pool->num_languages();
       }
 
-      StorageView encode(const StorageView& features, const bool to_cpu) {
-        return _pool->encode(features, to_cpu).get();
+      StorageView encode(const StorageView& features, const bool to_cpu, const size_t group_size) {
+        return _pool->encode(features, to_cpu, group_size).get();
       }
 
       std::variant<std::vector<models::WhisperGenerationResult>,
@@ -46,7 +46,8 @@ namespace ctranslate2 {
                bool suppress_blank,
                const std::optional<std::vector<int>>& suppress_tokens,
                size_t sampling_topk,
-               float sampling_temperature) {
+               float sampling_temperature,
+               size_t group_size) {
         std::vector<std::future<models::WhisperGenerationResult>> futures;
 
         models::WhisperOptions options;
@@ -64,6 +65,7 @@ namespace ctranslate2 {
         options.return_no_speech_prob = return_no_speech_prob;
         options.max_initial_timestamp_index = max_initial_timestamp_index;
         options.suppress_blank = suppress_blank;
+        options.group_size = group_size;
 
         if (suppress_tokens)
           options.suppress_tokens = suppress_tokens.value();
@@ -226,6 +228,7 @@ namespace ctranslate2 {
         .def("encode", &WhisperWrapper::encode,
              py::arg("features"),
              py::arg("to_cpu")=false,
+             py::arg("group_size")=0,
              py::call_guard<py::gil_scoped_release>(),
              R"pbdoc(
                  Encodes the input features.
@@ -234,6 +237,8 @@ namespace ctranslate2 {
                    features: Mel spectogram of the audio, as a float array with shape
                      ``[batch_size, n_mels, chunk_length]``.
                    to_cpu: Copy the encoder output to the CPU before returning the value.
+                   group_size: Encode consecutive groups of this many inputs as batches of their own
+                     (0: one batch), for :meth:`generate` with the same ``group_size``.
 
                  Returns:
                    The encoder output.
@@ -259,6 +264,7 @@ namespace ctranslate2 {
              py::arg("suppress_tokens")=std::vector<int>{-1},
              py::arg("sampling_topk")=1,
              py::arg("sampling_temperature")=1,
+             py::arg("group_size")=0,
              py::call_guard<py::gil_scoped_release>(),
              R"pbdoc(
                  Encodes the input features and generates from the given prompt.
@@ -291,6 +297,9 @@ namespace ctranslate2 {
                      of symbols as defined in the model ``config.json`` file.
                    sampling_topk: Randomly sample predictions from the top K candidates.
                    sampling_temperature: Sampling temperature to generate more random samples.
+                   group_size: Beam search on CUDA: decode consecutive groups of this many inputs, each
+                     exactly as a batch of its own would be (0: one batch); the groups' products run back to
+                     back, so the decoder weights are read once for all of them.
 
                  Returns:
                    A list of generation results.
