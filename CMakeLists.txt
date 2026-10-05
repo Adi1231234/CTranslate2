@@ -253,6 +253,7 @@ set(CUDA_SOURCES
   src/cuda/grouped_split_gemm.cu
   src/cuda/memory_slots.cc
   src/cuda/green_stream.cc
+  src/cuda/encoder_lt.cc
   src/cuda/persistent.cu
   src/cuda/primitives.cu
   src/cuda/random.cu
@@ -633,9 +634,10 @@ if (WITH_CUDA)
   endif()
 
   if(CUDA_DYNAMIC_LOADING)
-    list(APPEND SOURCES src/cuda/cublas_stub.cc)
+    list(APPEND SOURCES src/cuda/cublas_stub.cc src/cuda/cublaslt_stub.cc)
   else()
-    list(APPEND LIBRARIES ${CUDA_CUBLAS_LIBRARIES})
+    find_library(CUBLASLT_LIBRARY cublasLt HINTS ${CUDA_TOOLKIT_ROOT_DIR}/lib64 ${CUDA_TOOLKIT_ROOT_DIR}/lib/x64)
+    list(APPEND LIBRARIES ${CUDA_CUBLAS_LIBRARIES} ${CUBLASLT_LIBRARY})
   endif()
   if (WITH_FLASH_ATTN)
     add_definitions(-DCT2_WITH_FLASH_ATTN)

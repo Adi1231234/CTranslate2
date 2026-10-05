@@ -30,6 +30,7 @@
 #include "cuda/attention_scores_k64.cuh"
 #include "cuda/clip_groups.h"
 #include "cuda/encoder_gemm.h"
+#include "cuda/encoder_lt.h"
 #include "cuda/decoder_gemm.h"
 #include "cuda/grouped_split_gemm.h"
 #include "cuda/graph_host_copy.h"
@@ -570,6 +571,9 @@ namespace ctranslate2 {
       cuda::encoder_gemm(a, b, c, m, n, k);                   // cuBLAS's arithmetic, see cuda/encoder_gemm.h
       return;
     }
+    if (!transpose_a && transpose_b && alpha == 1 && beta == 0 && !cuda::use_true_fp16_gemm()
+        && lda == k && ldb == k && ldc == n && cuda::encoder_lt_gemm(a, b, c, m, n, k))
+      return;                                                 // cuBLAS's bits, less energy: cuda/encoder_lt.h
 #endif
     const __half alpha_h = alpha;
     const __half beta_h = beta;
