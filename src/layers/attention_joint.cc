@@ -9,11 +9,81 @@
 #include "kv_cache.h"
 #include "split_heads_fused.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/cache_reorder.h"
 #  include "cuda/clip_groups.h"
 #endif
 
 namespace ctranslate2 {
   namespace layers {
+
+    // Each part's self-attention caches with its beam order applied and the step's keys and values (rows of keys and
+    // values, [rows, heads, 1, depth]) appended: one launch for all the parts where it applies (CUDA, fp16), else
+    // reorder_and_append or Concat part by part. The same values either way (data movement).
+    static void append_parts(const JointStep& joint, StorageView& keys, StorageView& values) {
+      const Device device = keys.device();
+      const DataType dtype = keys.dtype();
+      for (const auto& part : joint.parts)
+        if (part.self_keys[joint.layer]->empty())
+          throw std::logic_error("A joint decoding step needs every part's self-attention cache");
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      const dim_t heads = keys.dim(1), depth = keys.dim(3);
+      bool fused = device == Device::CUDA && dtype == DataType::FLOAT16 && keys.dim(2) == 1
+        && joint.parts.size() <= static_cast<size_t>(cuda::CacheParts::max_parts)
+        && cuda::cache_reorder_supported(keys.buffer(), depth, keys.item_size())
+        && cuda::cache_reorder_supported(values.buffer(), depth, values.item_size());
+      for (const auto& part : joint.parts) {
+        const StorageView& cache = *part.self_keys[joint.layer];
+        fused = fused && cache.rank() == 4 && cache.dim(1) == heads && cache.dim(3) == depth
+          && cache.dim(0) == (part.cache_reorder ? cache.dim(0) : part.rows)
+          && (!part.cache_reorder || (part.cache_reorder->device() == Device::CUDA
+                                      && part.cache_reorder->size() == part.rows))
+          && (part.row_begin * heads * depth * keys.item_size()) % 16 == 0;
+      }
+      if (fused) {
+        cuda::CacheParts parts;
+        std::vector<StorageView> out;                        // each part's new keys and values
+        out.reserve(2 * joint.parts.size());
+        for (const auto& part : joint.parts) {
+          StorageView& cache_keys = *part.self_keys[joint.layer];
+          StorageView& cache_values = *part.self_values[joint.layer];
+          const dim_t time = cache_keys.dim(2);
+          out.emplace_back(Shape{part.rows, heads, time + 1, depth}, dtype, device);
+          out.emplace_back(Shape{part.rows, heads, time + 1, depth}, dtype, device);
+          const int p = parts.count++;
+          parts.cache[p][0] = cache_keys.buffer();
+          parts.cache[p][1] = cache_values.buffer();
+          parts.fresh[p][0] = keys.data<float16_t>() + part.row_begin * heads * depth;
+          parts.fresh[p][1] = values.data<float16_t>() + part.row_begin * heads * depth;
+          parts.out[p][0] = out[2 * p].buffer();
+          parts.out[p][1] = out[2 * p + 1].buffer();
+          parts.order[p] = part.cache_reorder ? part.cache_reorder->data<int32_t>() : nullptr;
+          parts.rows[p] = static_cast<int>(part.rows);
+          parts.time[p] = static_cast<int>(time);
+        }
+        cuda::reorder_append_parts(parts, heads, depth);
+        for (size_t p = 0; p < joint.parts.size(); ++p) {
+          *joint.parts[p].self_keys[joint.layer] = std::move(out[2 * p]);
+          *joint.parts[p].self_values[joint.layer] = std::move(out[2 * p + 1]);
+        }
+        return;
+      }
+#endif
+      for (const auto& part : joint.parts) {
+        StorageView& cached_keys = *part.self_keys[joint.layer];
+        StorageView& cached_values = *part.self_values[joint.layer];
+        StorageView part_keys = rows_view(keys, part.row_begin, part.rows);
+        StorageView part_values = rows_view(values, part.row_begin, part.rows);
+        if (part.cache_reorder) {
+          reorder_and_append(cached_keys, cached_values, *part.cache_reorder, part_keys, part_values);
+        } else {
+          StorageView tmp(dtype, device);
+          tmp = std::move(cached_keys);
+          ops::Concat(2)({&tmp, &part_keys}, cached_keys);
+          tmp = std::move(cached_values);
+          ops::Concat(2)({&tmp, &part_values}, cached_values);
+        }
+      }
+    }
 
     void MultiHeadAttention::joint_attention(const JointStep& joint, StorageView& fused_proj, bool fused_q,
                                              StorageView& context) const {
@@ -43,33 +113,24 @@ namespace ctranslate2 {
         return;
       }
 
-      // Self-attention: each part's rows on its own caches, as its own step (one batch per call, no clip groups).
+      // Self-attention: the head split of all the rows (each row's own values), every part's beam order and new
+      // step into its caches in one launch (data movement), then each part's attention on its own caches as its own
+      // step (one batch per call, no clip groups).
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       const cuda::ClipGroupsPause no_groups;
 #endif
+      StorageView all_queries(dtype, device);
+      StorageView all_keys(dtype, device);
+      StorageView all_values(dtype, device);
+      split_heads_with_bias(fused_proj, _linear[0].bias(), {&all_queries, &all_keys, &all_values}, _num_heads);
+      append_parts(joint, all_keys, all_values);
+
       std::vector<StorageView> contexts;
       contexts.reserve(joint.parts.size());
       for (const auto& part : joint.parts) {
-        StorageView proj = rows_view(fused_proj, part.row_begin, part.rows);
-        StorageView queries_proj(dtype, device);
-        StorageView keys_proj(dtype, device);
-        StorageView values_proj(dtype, device);
-        split_heads_with_bias(proj, _linear[0].bias(), {&queries_proj, &keys_proj, &values_proj}, _num_heads);
-
+        StorageView queries_proj = rows_view(all_queries, part.row_begin, part.rows);
         StorageView& cached_keys = *part.self_keys[joint.layer];
         StorageView& cached_values = *part.self_values[joint.layer];
-        if (cached_keys.empty())
-          throw std::logic_error("A joint decoding step needs every part's self-attention cache");
-        if (part.cache_reorder) {
-          reorder_and_append(cached_keys, cached_values, *part.cache_reorder, keys_proj, values_proj);
-        } else {
-          const ops::Concat concat_op(_cache_time_dim);
-          StorageView tmp(dtype, device);
-          tmp = std::move(cached_keys);
-          concat_op({&tmp, &keys_proj}, cached_keys);
-          tmp = std::move(cached_values);
-          concat_op({&tmp, &values_proj}, cached_values);
-        }
 
         contexts.emplace_back(dtype, device);
         StorageView& part_context = contexts.back();

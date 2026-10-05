@@ -60,6 +60,50 @@ namespace ctranslate2 {
     template void reorder_append(const float16_t* const*, const float16_t* const*, float16_t* const*,
                                  int, const int32_t*, dim_t, dim_t, dim_t, dim_t, dim_t);
 
+    // reorder_append_kernel for several parts: thread v belongs to the part whose range of output vectors holds it
+    // (the parts' keys, then values, in part order).
+    struct PartRanges {
+      size_t end[CacheParts::max_parts];                    // each part's vectors (keys and values) end here
+    };
+
+    __global__ void reorder_append_parts_kernel(CacheParts parts, PartRanges ranges, unsigned heads,
+                                                unsigned head_vecs, size_t total) {
+      size_t v = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (v >= total)
+        return;
+      int p = 0;
+      while (v >= ranges.end[p])
+        ++p;
+      v -= p ? ranges.end[p - 1] : 0;
+      const unsigned time = unsigned(parts.time[p]), out_time = time + 1;
+      const size_t per_cache = size_t(parts.rows[p]) * heads * out_time * head_vecs;
+      const unsigned c = unsigned(v / per_cache);
+      v -= c * per_cache;
+      const size_t rh = v / (size_t(out_time) * head_vecs);        // r * heads + h
+      const unsigned rest = unsigned(v - rh * out_time * head_vecs);
+      const unsigned s = rest / head_vecs, i = rest - s * head_vecs;
+      const size_t r = rh / heads, h = rh - r * heads;
+      const size_t from = parts.order[p] ? size_t(parts.order[p][r]) : r;
+      static_cast<uint4*>(parts.out[p][c])[v] = s < time
+        ? static_cast<const uint4*>(parts.cache[p][c])[((from * heads + h) * time + s) * head_vecs + i]
+        : static_cast<const uint4*>(parts.fresh[p][c])[rh * head_vecs + i];
+    }
+
+    void reorder_append_parts(const CacheParts& parts, dim_t heads, dim_t head_dim) {
+      const unsigned head_vecs = head_dim * sizeof (float16_t) / 16;
+      PartRanges ranges{};
+      size_t total = 0;
+      for (int p = 0; p < parts.count; ++p) {
+        total += 2 * size_t(parts.rows[p]) * heads * (parts.time[p] + 1) * head_vecs;
+        ranges.end[p] = total;
+      }
+      if (total == 0)
+        return;
+      constexpr unsigned threads = 256;
+      reorder_append_parts_kernel<<<(total + threads - 1) / threads, threads, 0, get_cuda_stream()>>>(
+        parts, ranges, heads, head_vecs, total);
+    }
+
   }
 }
 

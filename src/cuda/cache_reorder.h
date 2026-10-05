@@ -22,5 +22,21 @@ namespace ctranslate2 {
                         const int32_t* order, dim_t rows, dim_t heads, dim_t time, dim_t fresh_time,
                         dim_t head_dim);
 
+    // The same for the keys and values of several searches' caches in one launch (layers/joint_step.h), one step
+    // appended (fresh_time 1), fp16: part p's caches [rows, heads, time, head_dim] at cache[p], its fresh [rows,
+    // heads, 1, head_dim] at fresh[p], out [rows, heads, time + 1, head_dim] at out[p], its beam order (or null:
+    // row r keeps row r). At most max_parts parts.
+    struct CacheParts {
+      static constexpr int max_parts = 16;
+      int count = 0;
+      const void* cache[max_parts][2];
+      const void* fresh[max_parts][2];
+      void* out[max_parts][2];
+      const int32_t* order[max_parts];
+      int rows[max_parts];
+      int time[max_parts];
+    };
+    void reorder_append_parts(const CacheParts& parts, dim_t heads, dim_t head_dim);
+
   }
 }
