@@ -537,8 +537,10 @@ namespace ctranslate2 {
                                       float16_t* c, dim_t ldc,
                                       const float16_t*) {
 #ifndef CT2_USE_HIP
-    // Rows of several batches decoded together: each batch's rows on their own (cuda/clip_groups.h).
-    if (!transpose_a
+    // Rows of several batches decoded together: each batch's rows on their own (cuda/clip_groups.h), unless one
+    // call gives every row the same bits (then all groups share one read of the weights).
+    if (!transpose_a && !(transpose_b && lda == k && ldb == k && ldc == n
+                          && cuda::rows_independent_product(m, n, k))
         && cuda::for_each_clip_group(m, [&](dim_t row, dim_t rows) {
           gemm<float16_t, float16_t>(false, false, false, transpose_b, rows, n, k, alpha, a + row * lda, lda,
                                      b, ldb, beta, c + row * ldc, ldc, nullptr);

@@ -380,6 +380,15 @@ namespace ctranslate2 {
     }
 #endif
 
+    bool cublas_verified_on(int major, int minor) {
+#ifdef CT2_USE_HIP
+      (void)major; (void)minor;
+      return false;
+#else
+      return replicas_verified_on(major, minor);
+#endif
+    }
+
     bool cublas_replicas_verified() {
 #ifdef CT2_USE_HIP
       return false;

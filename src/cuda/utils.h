@@ -135,6 +135,9 @@ namespace ctranslate2 {
     bool hmma_replicas_verified();
     // The encoder GEMM's CUTLASS replica (cuda/encoder_gemm.cu): sm_120 with cuBLAS 12.9.2 only.
     bool encoder_gemm_replica_verified();
+    // The device is sm_<major><minor> and cuBLAS is the build the fork's probes ran on (12.9.2), and the stock
+    // kernels are not forced.
+    bool cublas_verified_on(int major, int minor);
 
     // Work of the calling thread goes to its low-priority stream while an instance lives (e.g. a
     // Whisper encoder run next to another thread's decoding): the GPU then runs the other threads'

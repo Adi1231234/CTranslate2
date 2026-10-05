@@ -1,0 +1,2 @@
+# rowinv2 on the decoder's Dense shapes (and the vocabulary): which can serve several batches in one call.
+scriptp|scripts/probes.sh|probes/probes-4029fe9e.tgz|rowinv2:3840,1280 rowinv2:1280,1280 rowinv2:5120,1280 rowinv2:1280,5120 rowinv2:51866,1280 rowinv2:2560,1280

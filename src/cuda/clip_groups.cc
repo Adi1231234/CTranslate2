@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "cuda/utils.h"
+
 namespace ctranslate2 {
   namespace cuda {
 
@@ -10,6 +12,18 @@ namespace ctranslate2 {
 
     const ClipGroups* clip_groups() {
       return active;
+    }
+
+    // rowinv2 on the L40S (sm_89, cuBLAS 12.9.2, 5.10.2026): Whisper large-v3's decoder self-attention input
+    // (3840 x 1280), output and cross-attention query and output (1280 x 1280), first feed-forward (5120 x 1280)
+    // and vocabulary (51866 x 1280, and 51872 as the decoder pads it to a multiple of 8) products: every row count
+    // 2..320 has the bits of 40-row calls, 3 fills. Not the second feed-forward (1280 x 5120): its split over k
+    // changes with the rows (17-27, 28-34, 35-44 rows ...).
+    bool rows_independent_product(dim_t m, dim_t n, dim_t k) {
+      static const bool sm89 = cublas_verified_on(8, 9);
+      if (!sm89 || m < 2 || m > 320 || k != 1280)
+        return false;
+      return n == 3840 || n == 1280 || n == 5120 || n == 51866 || n == 51872;
     }
 
     ClipGroups make_clip_groups(const std::vector<dim_t>& batch_offset, dim_t group_size) {
