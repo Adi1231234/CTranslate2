@@ -2,7 +2,7 @@
 role holds no secrets. The job needs no HF token at all (units.json and the units come from S3)."""
 import json, time
 from botocore.exceptions import ClientError
-from settings import BUCKET, S3_PREFIX, ECR_REPO, LOG_GROUP, REGION, ROLE_INSTANCE, ROLE_JOB, ROLE_CODEBUILD, \
+from settings import BUCKET, S3_PREFIX, ECR_REPO, HOME_REGION, LOG_GROUP, REGION, ROLE_INSTANCE, ROLE_JOB, ROLE_CODEBUILD, \
     account, client, tag_list
 
 MANAGED = "arn:aws:iam::aws:policy/"
@@ -61,8 +61,8 @@ def job_role():
 
 
 def codebuild_role():
-    repo = f"arn:aws:ecr:{REGION}:{account()}:repository/{ECR_REPO}"
-    logs = f"arn:aws:logs:{REGION}:{account()}:log-group:{LOG_GROUP}*"
+    repo = f"arn:aws:ecr:{HOME_REGION}:{account()}:repository/{ECR_REPO}"     # the image builds at home
+    logs = f"arn:aws:logs:{HOME_REGION}:{account()}:log-group:{LOG_GROUP}*"
     return _role(ROLE_CODEBUILD, "codebuild.amazonaws.com", inline={"Version": "2012-10-17", "Statement": _s3() + [
         {"Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*"},
         {"Effect": "Allow", "Resource": repo, "Action": [

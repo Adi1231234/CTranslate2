@@ -5,8 +5,8 @@ benchmark cannot keep a GPU billing. Prints the job id.
 driver keeps them to administrators (ERR_NVGPUCTRPERM).
 usage: python submit.py <image tag> <experiments file> [--fleet g6e|g6e2x] [--name n] [--minutes 90] [--privileged]"""
 import argparse
-from settings import (BUCKET, ECR_REPO, FLEETS, JOB_DEF, LOG_GROUP, REGION, ROLE_JOB, S3_PREFIX, TAGS, account,
-                      client, fleet_name)
+from settings import (BUCKET, ECR_REPO, FLEETS, HOME_REGION, JOB_DEF, LOG_GROUP, REGION, ROLE_JOB, S3_PREFIX, TAGS,
+                      account, client, fleet_name)
 
 p = argparse.ArgumentParser()
 p.add_argument("tag"); p.add_argument("experiments"); p.add_argument("--name", default="bench")
@@ -19,13 +19,13 @@ batch = client("batch")
 jd = batch.register_job_definition(jobDefinitionName=f"{JOB_DEF}-{a.fleet}", type="container", tags=TAGS, propagateTags=True,
     retryStrategy={"attempts": 1}, timeout={"attemptDurationSeconds": a.minutes * 60},
     containerProperties={
-        "image": f"{account()}.dkr.ecr.{REGION}.amazonaws.com/{ECR_REPO}:{a.tag}",
+        "image": f"{account()}.dkr.ecr.{HOME_REGION}.amazonaws.com/{ECR_REPO}:{a.tag}",
         "jobRoleArn": f"arn:aws:iam::{account()}:role/{ROLE_JOB}",
         "resourceRequirements": [{"type": "VCPU", "value": str(vcpus)},
                                  {"type": "MEMORY", "value": str(memory)}, {"type": "GPU", "value": "1"}],
         "linuxParameters": {"sharedMemorySize": 4096, "initProcessEnabled": True}, "privileged": a.privileged,
         "environment": [{"name": "BUCKET", "value": BUCKET}, {"name": "S3_PREFIX", "value": S3_PREFIX},
-                        {"name": "AWS_DEFAULT_REGION", "value": REGION}],
+                        {"name": "AWS_DEFAULT_REGION", "value": HOME_REGION}],
         "logConfiguration": {"logDriver": "awslogs", "options": {
             "awslogs-group": LOG_GROUP, "awslogs-region": REGION, "awslogs-stream-prefix": "job"}}})
 job = batch.submit_job(jobName=f"{JOB_DEF}-{a.name}", jobQueue=fleet_name(a.fleet), jobDefinition=jd["jobDefinitionArn"],

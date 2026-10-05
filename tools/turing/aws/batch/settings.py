@@ -1,8 +1,12 @@
 """Names and sizes of the whisper-bench AWS Batch stack (README.md). Every resource is named whisper-bench* and
 tagged Project=whisper-aws-bench, apart from the asr-training stack in the same account (never touch asr-train*)."""
+import os
 import boto3
 
-REGION = "us-east-1"
+# The Batch stack's region: us-east-1, or another one (WB_REGION) when its GPUs are sold out; the image (ECR), the
+# bucket and the image build stay in HOME_REGION, which every stack reads from.
+HOME_REGION = "us-east-1"
+REGION = os.environ.get("WB_REGION", HOME_REGION)
 NAME = "whisper-bench"
 BUCKET = "docvoice-042984981008-code"
 S3_PREFIX = "whisper-aws-bench"                 # packages, data/ (units.json, cache/), build/, results/
@@ -21,8 +25,9 @@ def fleet_name(fleet):
     return f"{NAME}-{fleet}"                     # the compute environment and its job queue
 
 
-def client(service):
-    return boto3.client(service, region_name=REGION)
+def client(service, region=None):
+    home = service in ("s3", "ecr", "codebuild")
+    return boto3.client(service, region_name=region or (HOME_REGION if home else REGION))
 
 
 def account():
