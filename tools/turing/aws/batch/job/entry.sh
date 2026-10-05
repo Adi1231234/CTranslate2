@@ -4,6 +4,8 @@
 #   label|package|runner dir|units list|processes|VAR=value ...   one configuration (../../box/run.sh)
 #   compare|reference label|label                                  compare.py on the two outputs
 #   profile<name>|package|runner dir|units list|n units|VAR=value   an Nsight Systems profile (../../box/profile.sh)
+#   script<name>|<key under $S3_PREFIX>|arg ...                    a bash script from S3, run in logs/<label>/
+#                                                                  (e.g. ../../box/probes.sh: kernel probes)
 set -uo pipefail
 B=/opt/wb; S3=s3://$BUCKET/$S3_PREFIX; OUT=$S3/results/${AWS_BATCH_JOB_ID:-local}
 cd $B
@@ -23,6 +25,10 @@ while IFS='|' read -r label a b c d extra; do
     venv/bin/python src/tools/turing/scale/compare.py "out/$a" "out/$b" | tee "logs/compare_${a}_${b}.txt"
   elif [[ "$label" == profile* ]]; then
     bash src/tools/turing/aws/box/profile.sh "$label" "$a" "$b" "$c" "$d" $extra
+  elif [[ "$label" == script* ]]; then
+    mkdir -p "logs/$label" && aws s3 cp --only-show-errors "$S3/$a" "logs/$label/run.sh"
+    (cd "logs/$label" && B=$B S3=$S3 LD_LIBRARY_PATH=$B/venv/lib/python3.12/site-packages/nvidia/cublas/lib \
+      bash run.sh $b $c $d $extra 2>&1 | tee out.txt)
   else
     bash src/tools/turing/aws/box/run.sh "$label" "$a" "$b" "$c" "$d" $extra
     tail -2 "logs/$label/root0/progress.log"
