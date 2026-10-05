@@ -17,15 +17,16 @@ using namespace ctranslate2::cuda;
 constexpr int MMAX = 320, KMAX = 5120, NMAX = 51872;
 
 struct Tile {
-  int tm, tn, stages;
+  int tm, tn, stages, ks;
   void (*run)(const __half*, const __half*, __half*, int, int, int, const SplitGroups&, cudaStream_t);
 };
 static const Tile tiles[] = {          // 16-row tiles: the 4 warps side by side; 16-column tiles: stacked
-  {16, 64, 4, tsg_launch<16, 64, 1>}, {16, 128, 4, tsg_launch<16, 128, 1>},
-  {32, 32, 4, tsg_launch<32, 32>}, {32, 64, 4, tsg_launch<32, 64>}, {64, 32, 4, tsg_launch<64, 32>},
-  {64, 64, 4, tsg_launch<64, 64>}, {32, 128, 4, tsg_launch<32, 128>}, {64, 128, 4, tsg_launch<64, 128>},
-  {64, 16, 4, tsg_launch<64, 16, 4>}, {64, 16, 8, tsg_launch<64, 16, 4, 8>}, {32, 32, 8, tsg_launch<32, 32, 2, 8>},
-  {64, 32, 8, tsg_launch<64, 32, 2, 8>}, {16, 64, 8, tsg_launch<16, 64, 1, 8>},
+  {64, 64, 3, 32, tsg_launch<64, 64, 2, 3>}, {64, 64, 4, 32, tsg_launch<64, 64>},
+  {64, 32, 8, 32, tsg_launch<64, 32, 2, 8>}, {32, 32, 8, 32, tsg_launch<32, 32, 2, 8>},
+  {64, 64, 6, 32, tsg_launch<64, 64, 2, 6>}, {64, 64, 8, 32, tsg_launch<64, 64, 2, 8>},
+  {64, 64, 4, 64, tsg_launch<64, 64, 2, 4, 64>}, {64, 64, 5, 64, tsg_launch<64, 64, 2, 5, 64>},
+  {64, 32, 6, 64, tsg_launch<64, 32, 2, 6, 64>}, {32, 64, 6, 64, tsg_launch<32, 64, 2, 6, 64>},
+  {32, 32, 8, 64, tsg_launch<32, 32, 2, 8, 64>},
 };
 constexpr int TILES = sizeof tiles / sizeof tiles[0];
 
@@ -75,7 +76,7 @@ int main() {
     }
     printf("%5d x %d, M 2..320 x 2 fills, mismatched values by tile:", n, k);
     for (int t = 0; t < TILES; ++t) {
-      printf(" %dx%d/%d %llu", tiles[t].tm, tiles[t].tn, tiles[t].stages, bad[t]);
+      printf(" %dx%dk%d/%d %llu", tiles[t].tm, tiles[t].tn, tiles[t].ks, tiles[t].stages, bad[t]);
       total += bad[t];
     }
     printf("\n");
@@ -105,7 +106,7 @@ int main() {
     }
     printf(" 1280 x 5120, %d group sequences, mismatched values by tile:", sequences);
     for (int t = 0; t < TILES; ++t) {
-      printf(" %dx%d/%d %llu", tiles[t].tm, tiles[t].tn, tiles[t].stages, bad[t]);
+      printf(" %dx%dk%d/%d %llu", tiles[t].tm, tiles[t].tn, tiles[t].ks, tiles[t].stages, bad[t]);
       total += bad[t];
     }
     printf("\n");
@@ -125,7 +126,7 @@ int main() {
   for (const auto& s : shapes) {
     const int n = s[0], k = s[1];
     printf("%5d x %d (%.1f MB): us at M = cuBLAS | tiles", n, k, 2e-6 * n * k);
-    for (int t = 0; t < TILES; ++t) printf(" %dx%d/%d", tiles[t].tm, tiles[t].tn, tiles[t].stages);
+    for (int t = 0; t < TILES; ++t) printf(" %dx%dk%d/%d", tiles[t].tm, tiles[t].tn, tiles[t].ks, tiles[t].stages);
     printf("\n");
     for (const int m : ms) {
       printf("  M %3d: %7.1f |", m, timed([&] { cublas(m, n, k, A, C); }));

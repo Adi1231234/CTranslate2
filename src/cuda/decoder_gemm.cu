@@ -25,6 +25,10 @@ namespace ctranslate2 {
         {"64x16/4", tsg_launch<64, 16, 4>}, {"64x16/8", tsg_launch<64, 16, 4, 8>},
         {"32x32/8", tsg_launch<32, 32, 2, 8>}, {"64x32/8", tsg_launch<64, 32, 2, 8>},
         {"16x64/8", tsg_launch<16, 64, 1, 8>},
+        {"64x64/6", tsg_launch<64, 64, 2, 6>}, {"64x64/8", tsg_launch<64, 64, 2, 8>},
+        {"64x64k64/4", tsg_launch<64, 64, 2, 4, 64>}, {"64x64k64/5", tsg_launch<64, 64, 2, 5, 64>},
+        {"64x32k64/6", tsg_launch<64, 32, 2, 6, 64>}, {"32x64k64/6", tsg_launch<32, 64, 2, 6, 64>},
+        {"32x32k64/8", tsg_launch<32, 32, 2, 8, 64>},
       };
       return launches;
     }
