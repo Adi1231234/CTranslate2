@@ -1,5 +1,9 @@
 # Turing (sm_75) performance work
 
+**The AWS L40S work (branch `ladder-probe`, October 2026)**, the crowd-v5 pipeline at 113x on the batched path and
+~90x for the full run with the same rows, is documented in [aws/README.md](aws/README.md): the stream, seeded and
+joined fallback ladders, temperature variants, the power limit, every round, the tools, and where it stopped.
+
 Goal: faster Whisper inference on an RTX 2080 (Windows, WDDM) with **bit-identical output**.
 Every change is measured with `bench_whisper.py`: same clips, same decode parameters, and hashes of
 every encoder output byte (`enc_sha`), every token + full-precision score + no-speech probability

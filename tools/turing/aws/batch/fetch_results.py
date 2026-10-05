@@ -1,8 +1,11 @@
 """Downloads a whisper-bench job's results next to each other for the laptop: results.jsonl, each script line's
-out.txt, each configuration's progress logs (<label>.<process>.log) and, with --out, its rows (out/<label>/, the
-first pass of a RUN_REPEAT run), then
+out.txt, each configuration's progress logs (<label>.<process>.log), its GPU samples (<label>.gpu.csv: nvidia-smi
+every 0.5 s) and, with --out, its rows (out/<label>/, the first pass of a RUN_REPEAT run), then
 prints every configuration's steady-state rate: the audio all processes wrote between the moment the last one
-logged its first unit and the moment the first one finished, over that span (no model load, no lone tail).
+logged its first unit and the moment the first one finished, over that span (no model load, no lone tail); and its
+GPU energy (power samples over the wall time) with the rate it would reach were all of it spent at the batched
+path's power (330 W): the batched path is power-bound, so in a long run a full run's lone tail of fallback ladders
+would run beside other work (round34: 85.7x against 83.9x wall).
 usage: python fetch_results.py <job id> <dest dir> [--out label ...]"""
 import argparse, datetime as dt, glob, json, os, re
 from settings import BUCKET, S3_PREFIX, client
@@ -24,6 +27,8 @@ for key in keys:
         dest = f"{m.group(1)}.{m.group(2)}.log"
     elif re.match(r"logs/[^/]+/p\d+\.out$", rel):
         dest = rel.split("/")[1] + "." + rel.split("/")[2]
+    elif re.match(r"logs/[^/]+/gpu\.csv$", rel):
+        dest = rel.split("/")[1] + ".gpu.csv"
     elif rel.startswith("out/") and rel.split("/")[1] in a.out and "~" not in rel:   # RUN_REPEAT's passes: not
         dest = rel
     else:
@@ -47,6 +52,14 @@ for line in open(os.path.join(a.dest, "results.jsonl")) if os.path.exists(os.pat
         span = (t1 - t0).total_seconds()
         if span > 0:
             steady = f", steady {sum(at(s, t1) - at(s, t0) for s in series) / span:.1f}x over {span:.0f} s"
+    energy = ""
+    gpu = os.path.join(a.dest, f"{r['label']}.gpu.csv")
+    samples = [l.split(",") for l in open(gpu)] if os.path.exists(gpu) else []
+    watts = [float(s[3]) for s in samples if len(s) == 5]
+    if watts and r["rows"]:
+        joules = sum(watts) * r["wall_s"] / len(watts)        # samples spread evenly over the wall time
+        energy = (f"; {joules / 1000:.1f} kJ, {joules / r['rows']:.1f} J a row, "
+                  f"{r['audio_h'] * 3600 / (joules / 330):.1f}x at 330 W")
     print(f"{r['label']}: {r['x_realtime']}x wall ({r['wall_s']} s, {r['audio_h']} h, {r['fallback_rows']} fallback rows,"
           f" GPU busy {r['gpu_busy_pct']}%, mem ctrl {r['gpu_mem_ctrl_pct']}%, peak {r['gpu_mem_peak_mib']} MiB,"
-          f" CPU {r['cpu_busy_pct']}%){steady}")
+          f" CPU {r['cpu_busy_pct']}%){steady}{energy}")

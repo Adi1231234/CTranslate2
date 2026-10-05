@@ -17,8 +17,23 @@ On Linux CTranslate2 loads cuBLAS with `dlopen("libcublas.so.12")`, so `run.sh` 
 `nvidia/cublas/lib` on `LD_LIBRARY_PATH` before the process starts (setting it from Python is too late).
 
 `batch/` is the same benchmark as our own AWS Batch stack (`provision.py`, `image/build.py` in CodeBuild,
-`submit.py <tag> experiments/<list> --fleet g6e|g6e2x`, `watch.py <job>`); results in
-`s3://docvoice-042984981008-code/whisper-aws-bench/results/<job id>/`.
+`submit.py <tag> experiments/<list> --fleet g6e|g6e2x [--privileged]`, `watch.py <job>`); results in
+`s3://docvoice-042984981008-code/whisper-aws-bench/results/<job id>/`. Every round is a file in
+`batch/experiments/` whose comment says what it tests and why. The laptop side:
+- `race.py <region>/<job> ...`: the same round queued in several regions; the first copy to start runs, the others
+  are cancelled (`follow_race.py <race.py's output>` then follows it with `watch.py`). Stacks (`WB_REGION`,
+  `provision.py`): us-east-1, us-east-2, us-west-2, eu-north-1, eu-central-1, ap-south-1, ap-northeast-2.
+- `fetch_results.py <job> <dir> [--out label ...]`: logs, rows, the GPU samples, and per configuration the wall and
+  steady rates and the GPU energy with the rate at 330 W (a long run's rate, without the lone tail of a short one).
+  `compare_ref.py <job> <dir> <label ...>`: the rows against the production reference (job d654b84b, `fullctx`).
+  `gpu_samples.py`: power and clock histograms; `ladder_stats.py`: where the fallback ladders ended.
+- `spend.py <day>`: what the day's jobs cost (on-demand price by region, plus a boot allowance).
+- Kernel probes: `box/probes.sh` (`../linux/build_probes.sh`), `box/ncu_probe.sh` (one kernel's executed
+  instructions by SASS opcode and line), `box/ncu_run.sh` (Nsight Compute on the runner); benches without the
+  batched path: `box/ladder_bench.sh` (the fallback ladders alone, energy a ladder, rows digest),
+  `box/encoder_bench.sh` (the encoder alone), `box/joined_check.sh` (sampled attempts alone against joined).
+- Fleet `g7e` (RTX PRO 6000 Blackwell): compute environments created and then DISABLED, never run (Adi: measure
+  only on g6e.xlarge, what production runs; dearer machines are not representative).
 
 **Results 5.10.2026** (g6e L40S, us-east-1c, the 30 units of `../scale/units_real.txt` = 4.38 h, wall time with
 model load, one run each; runs on two hosts of the same type differed by ~6%):
@@ -116,10 +131,17 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
   (up to 448 steps x 25 sampled rows a window), so their energy is mostly the work itself.
 
 **Where it stopped (5.10 night, Adi's call; every row IDENTICAL to production's; g6e.xlarge only):**
-- Best package pyct2-l41p (6d2c3ee5): the batched path alone 112.8-113.5x; the full run with the seeded, joined
-  ladders and their temperature variants 89.6-90.5x (`RUN_FALLBACK_SPEC_CLIPS=2`: 1 clip a search 877-889 J a
-  ladder, 2 788-832, 4 816, 8 867, 16 939; 4 also runs the GPU out of memory beside the batched path). At ~90x the
-  3,186 h take ~35 h on one g6e.xlarge, ~$66.
+- Best package pyct2-l41p (6d2c3ee5, `s3://.../whisper-aws-bench/pyct2-l41p.tgz`) with runner-ee6fc199: the batched
+  path alone 112.8-113.5x; the full run with the seeded, joined ladders and their temperature variants 89.6-90.5x
+  (`RUN_FALLBACK_SPEC_CLIPS=2`: 1 clip a search 877-889 J a ladder, 2 788-832, 4 816, 8 867, 16 939; 4 also runs the
+  GPU out of memory beside the batched path). At ~90x the 3,186 h take ~35 h on one g6e.xlarge, ~$66.
+- Its production configuration (round44 `lv2`): `run.sh <label> pyct2-l41p runner-ee6fc199 <units list> 2 MPS=1
+  MODE=stream8 STREAM_BATCHES=6 RUN_FALLBACK=batched RUN_FALLBACK_SEEDS=1 RUN_FALLBACK_SAMPLING=batched
+  RUN_FALLBACK_SPECULATE=1 RUN_FALLBACK_SPEC_CLIPS=2 RUN_FALLBACK_GATHER=8 RUN_FALLBACK_GATHER_S=120
+  CT2_CUDA_SCHEDULE=blocking`. Its deterministic rows equal the reference's; its sampled rows (temperature above 0,
+  ~0.5% of rows) are seeded, so every run of it gives the same ones, but not the unseeded reference's.
+- The whole benchmark cost ~$42 of g6e time (`spend.py 2026-10-05`: every whisper-bench job, all started that
+  local day), plus CodeBuild and S3.
 - The ceiling, measured: the encoder alone (`../scale/encoder_bench.py`) runs 263-274x at 347-349 W, ~7 J a clip;
   the batched path ~16 J a clip, so decoding is ~9 J (56%), most of it the cross-attention re-reading each clip's
   ~246 MB of memory keys and values every step. 140x needs ~13 J a clip, i.e. decoding a third cheaper with the same
@@ -131,8 +153,10 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
   TOTAL 0): 20% fewer instructions (Nsight Compute, `box/ncu_probe.sh`) but only 3% less energy for the kernel: its
   energy is the math and the shared-memory traffic, not the instruction count.
 
-**Beside other AWS work in the account** (the asr-training Batch queues): a standalone box, never their queues;
-no resource named `asr-train*` (their submit uses the newest `asr-train` job definition); another AZ than their
-running box; everything tagged. Their queues take g6e.xlarge in us-east-1 and us-east-2, and the account's on-demand
-G quota is 8 vCPU in us-east-2 and us-west-2 (64 in us-east-1, eu-north-1, eu-central-1): no g7e.2xlarge (8 vCPU)
-where it could fill their quota, and no race with their queue for g6e capacity while it waits.
+**Beside other AWS work in the account** (the asr-training Batch queues): each touches only its own resources:
+nothing named `asr-train*` here (their submit uses the newest `asr-train` job definition), nothing named
+`whisper-bench*` there (their CancelJob is limited by IAM to jobs tagged Project=asr-training); everything tagged.
+Capacity and the shared quota are first come, first served (Adi, 5.10): both may queue g6e.xlarge in any of the
+regions above, never Japan. The account's on-demand G quota (5.10 night): 64 vCPU in us-east-1, eu-north-1 and
+eu-central-1; 8 in us-east-2 and us-west-2 (requests for 32 open, July's for 64 closed with no increase there);
+ap-northeast-2 8 and ap-south-1 0, requests for 64 open in both.
