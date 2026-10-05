@@ -12,7 +12,6 @@
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/cache_reorder.h"
 #  include "cuda/clip_groups.h"
-#  include "cuda/copy_parts.h"
 #  include "cuda/softmax_parts.h"
 #endif
 
@@ -114,40 +113,6 @@ namespace ctranslate2 {
         ops::SoftMax()(s, nullptr, s);
     }
 
-    // The parts' outputs one after the other along the rows: one launch where it applies (CUDA), where ops::Concat
-    // copies each part on its own.
-    static void join_rows(std::vector<StorageView>& parts, StorageView& out) {
-#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      bool fused = !parts.empty() && parts.size() <= static_cast<size_t>(cuda::CopyParts::max_parts);
-      cuda::CopyParts copy;
-      dim_t rows = 0;
-      for (const StorageView& part : parts) {
-        fused = fused && part.device() == Device::CUDA && part.dtype() == parts[0].dtype()
-          && part.rank() == parts[0].rank() && part.size() / part.dim(0) == parts[0].size() / parts[0].dim(0)
-          && cuda::copy_parts_supported(part.buffer(), part.size() * part.item_size());
-        if (!fused)
-          break;
-        copy.src[copy.count] = part.buffer();
-        copy.bytes[copy.count++] = part.size() * part.item_size();
-        rows += part.dim(0);
-      }
-      if (fused) {
-        Shape shape = parts[0].shape();
-        shape[0] = rows;
-        out.resize(std::move(shape));
-        if (cuda::copy_parts_supported(out.buffer(), out.size() * out.item_size())) {
-          cuda::copy_parts(copy, out.buffer());
-          return;
-        }
-      }
-#endif
-      std::vector<const StorageView*> inputs;
-      inputs.reserve(parts.size());
-      for (const auto& part : parts)
-        inputs.push_back(&part);
-      ops::Concat(0)(inputs, out);
-    }
-
     void MultiHeadAttention::joint_attention(const JointStep& joint, StorageView& fused_proj, bool fused_q,
                                              StorageView& context) const {
       if (!fused_q || _num_heads_kv != _num_heads || _merge_time_and_head_dims || _q_norm || _k_norm || _v_norm
@@ -180,7 +145,8 @@ namespace ctranslate2 {
       // step into its caches in one launch (data movement), then each part's attention on its own caches as its own
       // step (one batch per call, no clip groups): dot_product_attention's three ops on a decoder step, the scores
       // MatMul and the values MatMul part by part (cuBLAS's arithmetic depends on a call's batch), the softmax of
-      // every part's scores in one launch where it applies (a row's arithmetic depends on its length only).
+      // every part's scores in one launch where it applies (a row's arithmetic depends on its length only); each
+      // part's values product written in its own rows of the context (no join).
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       const cuda::ClipGroupsPause no_groups;
 #endif
@@ -198,15 +164,13 @@ namespace ctranslate2 {
         keys_matmul(rows_view(all_queries, part.row_begin, part.rows), *part.self_keys[joint.layer], scores.back());
       }
       softmax_parts(scores);
-      std::vector<StorageView> contexts;
-      contexts.reserve(joint.parts.size());
+      context = StorageView(all_queries.shape(), dtype, device);   // [rows, heads, 1, depth]
       const ops::MatMul values_matmul;
       for (size_t p = 0; p < joint.parts.size(); ++p) {
-        contexts.emplace_back(dtype, device);
-        values_matmul(scores[p], *joint.parts[p].self_values[joint.layer], contexts.back());
-        combine_heads(contexts.back(), _num_heads, nullptr, 1, /*heads_combined=*/false);
+        StorageView part_context = rows_view(context, joint.parts[p].row_begin, joint.parts[p].rows);
+        values_matmul(scores[p], *joint.parts[p].self_values[joint.layer], part_context);
       }
-      join_rows(contexts, context);
+      combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/false);   // one step: a reshape
     }
 
   }
