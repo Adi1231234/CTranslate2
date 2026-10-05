@@ -5,7 +5,6 @@
 #include <cstdint>
 
 #include "exact_attention_launch.cuh"
-#include "exact_attention_stream.cuh"
 #include "cuda/persistent.h"
 #include "cuda/utils.h"
 #include "env.h"
@@ -32,26 +31,11 @@ namespace ctranslate2 {
       return rows;
     }
 
-    // CT2_EA_STREAM=<warps>x<tiles>s<stages> (ops/exact_attention_stream.cuh): the streamed kernel in that block
-    // shape, the same bits; unset, exact_attention.cuh's.
-    static at::native::EasItems stream_items() {
-      static const at::native::EasItems items =
-        at::native::exact_attention_stream_shape(read_string_from_env("CT2_EA_STREAM", ""));
-      return items;
-    }
-
     // CT2_EA_BLOCKS=<n>: persistent, n blocks per SM (cuda/persistent.h).
     void exact_attention(const float16_t* q, const float16_t* k, const float16_t* v, void* workspace,
                          float16_t* o, dim_t batch, dim_t heads, dim_t m, dim_t n, float alpha) {
       static const int per_sm = persistent_blocks_per_sm("CT2_EA_BLOCKS");
       cudaStream_t stream = get_cuda_stream();
-      if (const at::native::EasItems items = stream_items()) {
-        at::native::exact_attention_stream(items, reinterpret_cast<const __half*>(q),
-                                           reinterpret_cast<const __half*>(k), reinterpret_cast<const __half*>(v),
-                                           reinterpret_cast<__half*>(o), static_cast<int>(batch),
-                                           static_cast<int>(heads), alpha, stream);
-        return;
-      }
       at::native::exact_attention(reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
                                   reinterpret_cast<const __half*>(v), workspace,
                                   reinterpret_cast<__half*>(o), static_cast<int>(batch), static_cast<int>(heads),
@@ -76,13 +60,6 @@ namespace ctranslate2 {
                              dim_t clips, dim_t heads, dim_t n, float alpha) {
       static const int per_sm = persistent_blocks_per_sm("CT2_EA_BLOCKS");
       cudaStream_t stream = get_cuda_stream();
-      if (const at::native::EasItems items = stream_items()) {
-        at::native::exact_attention_stream_qkv(items, reinterpret_cast<const __half*>(x),
-                                               reinterpret_cast<const __half*>(bias), reinterpret_cast<__half*>(o),
-                                               static_cast<int>(clips), static_cast<int>(heads), static_cast<int>(n),
-                                               alpha, stream);
-        return;
-      }
       at::native::exact_attention_qkv(reinterpret_cast<const __half*>(x), reinterpret_cast<const __half*>(bias),
                                       workspace, reinterpret_cast<__half*>(o), static_cast<int>(clips),
                                       static_cast<int>(heads), static_cast<int>(n), alpha, stream,
