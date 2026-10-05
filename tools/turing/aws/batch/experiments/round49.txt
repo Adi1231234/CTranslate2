@@ -1,0 +1,3 @@
+# Round47's Nsight Compute step again (it found no ncu in the image and no python3): where the encoder attention's
+# instructions go, per SASS line, exact_attention_kernel at 8 clips (exact_attention_check, line info, sm_86 SASS).
+scriptn|scripts/ncu_probe.sh|probes/probes-ea-lineinfo-bf57dd6d.tgz|exact_attention_check|exact_attention_kernel|1

@@ -7,6 +7,11 @@
 set -uo pipefail
 aws s3 cp --only-show-errors "$S3/$1" probes.tgz && tar xzf probes.tgz
 PROBE=$2; KREGEX=$3; shift 3
+PY=${B:-/opt/wb}/venv/bin/python                      # the image has no system python3
+# Nsight Compute from NVIDIA's apt repository, as ncu_run.sh installs it (the image carries only Nsight Systems).
+apt-get update -qq > /dev/null 2>&1
+NCU_PKG=$(apt-cache search --names-only '^nsight-compute-2025\.3[0-9.]*$' | awk '{print $1}' | sort -V | tail -1)
+apt-get install -y -qq --no-install-recommends "$NCU_PKG" > /dev/null 2>&1
 NCU=$(ls /opt/nvidia/nsight-compute/*/ncu 2>/dev/null | sort -V | tail -1)
 echo "probes from $(cat probes/BUILD.txt) on $(nvidia-smi --query-gpu=name --format=csv,noheader), $NCU"
 "$NCU" -k "regex:$KREGEX" -c 64 --section LaunchStats --section InstructionStats --section SourceCounters \
@@ -14,7 +19,7 @@ echo "probes from $(cat probes/BUILD.txt) on $(nvidia-smi --query-gpu=name --for
 tail -3 probe.out
 "$NCU" --import rep.ncu-rep --page raw --csv --metrics launch__grid_size,smsp__inst_executed.sum,gpu__time_duration.sum \
   > raw.csv
-BEST=$(python3 - <<'EOF'
+BEST=$("$PY" - <<'EOF'
 import csv
 rows = list(csv.reader(open("raw.csv")))
 head, data = rows[0], rows[2:]
@@ -30,7 +35,7 @@ EOF
 "$NCU" --import rep.ncu-rep --launch-skip "$BEST" --launch-count 1 --page source --csv --print-source sass > sass.csv
 "$NCU" --import rep.ncu-rep --launch-skip "$BEST" --launch-count 1 --page details --section InstructionStats \
   | grep -vE "^\s*$" | head -40
-python3 - <<'EOF'
+"$PY" - <<'EOF'
 import csv, collections
 rows = list(csv.reader(open("sass.csv")))
 head = next(r for r in rows if any("Source" == c or c.startswith("Source") for c in r))
