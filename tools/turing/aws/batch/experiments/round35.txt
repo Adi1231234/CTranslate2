@@ -1,0 +1,4 @@
+# Every cuBLASLt algorithm and tile with no split-K for the encoder's products at 8 clips, the exact ones (the bits
+# of CTranslate2's cuBLAS call) ranked by energy (d40a315e, encoder_algo_search.cu): cuBLAS's heuristic picks for
+# time, and the batched path is bound by the 350 W limit.
+scripta|scripts/probes.sh|probes/probes-d40a315e.tgz|encoder_algo_search
