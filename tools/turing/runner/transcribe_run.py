@@ -5,6 +5,8 @@ Producer thread streams row groups from HF and decodes audio; the GPU side never
 RUN_CACHE=<dir>: row groups kept in a local folder (fetch.py), so a benchmark repeats on the same bytes.
 RUN_FALLBACK=async: fallback clips on a side thread beside the batches (default inline, fallback.py).
 Mode stream<N>: the batches of N through one CTranslate2 Whisper stream across units (stream_engine.py).
+RUN_REPEAT=<n> (measurement only): the units n times over, the k-th pass written as <unit>~<k>, so a benchmark on a
+few cached units runs long enough for a production rate (the model load and the last fallback ladders a small part).
 Each finished unit is written atomically to out/<unit_id>.jsonl, so a restart skips it.
 """
 import os, sys, json, time, queue, threading
@@ -48,19 +50,21 @@ def producer():
 
 def _produce():
     handles = {}
-    for u in units:
-        uid = unit_id(u)
-        why = should_stop(ROOT, uid)
-        if why: log(f"STOP ({why}) before {uid}"); break
-        if os.path.exists(os.path.join(OUT, uid + ".jsonl")) or should_skip(ROOT, uid): continue
-        t = read_unit(fs, handles, u, uid, log, CACHE)
-        if t is None:
-            log(f"FETCH FAILED {uid}"); continue
-        clips = []
-        for uu, a in zip(t.column("uuid").to_pylist(), t.column("audio").to_pylist()):
-            try: clips.append((uu, decode(a["bytes"], audio_format(a.get("path")))))
-            except Exception as e: clips.append((uu, None)); log(f"decode fail {uu}: {e}")
-        q.put((uid, clips))
+    for rep in range(int(os.environ.get("RUN_REPEAT", "1"))):
+        for u in units:
+            uid = unit_id(u)
+            name = uid if rep == 0 else f"{uid}~{rep}"
+            why = should_stop(ROOT, uid)
+            if why: log(f"STOP ({why}) before {uid}"); return
+            if os.path.exists(os.path.join(OUT, name + ".jsonl")) or should_skip(ROOT, uid): continue
+            t = read_unit(fs, handles, u, uid, log, CACHE)
+            if t is None:
+                log(f"FETCH FAILED {uid}"); continue
+            clips = []
+            for uu, a in zip(t.column("uuid").to_pylist(), t.column("audio").to_pylist()):
+                try: clips.append((uu, decode(a["bytes"], audio_format(a.get("path")))))
+                except Exception as e: clips.append((uu, None)); log(f"decode fail {uu}: {e}")
+            q.put((name, clips))
 
 threading.Thread(target=producer, daemon=True).start()
 BATCHED = MODE != "exact2"
