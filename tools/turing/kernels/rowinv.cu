@@ -4,8 +4,9 @@
 // rows shared by two calls are compared bit for bit (2 random fills). Part 1: which M give the M=40 bits on the
 // shared rows (the default's classes). Part 2: each cublasLt configuration with the default's bits at M=40, at
 // which M it still gives them (rows shared with M=40), so one fixed configuration could serve every batch size;
-// with its time at M=40 and M=160 against the default's.
-// usage: rowinv N K
+// with its time at M=40 and M=160 against the default's. The handle keeps cuBLAS's default workspace, as
+// CTranslate2's does (the workspace changes which kernels cuBLAS picks).
+// usage: rowinv N K [lt: also part 2]
 #include <cublasLt.h>
 #include "probe_common.h"
 #include "probe_data.cuh"
@@ -40,7 +41,8 @@ unsigned long long diff(const __half* a, const __half* b, int rows) {
 
 int main(int argc, char** argv) {
   N = atoi(argv[1]); K = atoi(argv[2]);
-  cublasHandle_t h; CK(cublasCreate(&h)); CK(cublasSetWorkspace(h, nullptr, 0));
+  const bool search = argc > 3 && !strcmp(argv[3], "lt");
+  cublasHandle_t h; CK(cublasCreate(&h));
   cublasLtHandle_t lt; CK(cublasLtCreate(&lt));
   for (int f = 0; f < FILLS; ++f) {
     CK(cudaMalloc(&A[f], 2ull * MMAX * K)); CK(cudaMalloc(&W[f], 2ull * N * K)); CK(cudaMalloc(&REF[f], 2ull * MMAX * N));
@@ -55,12 +57,15 @@ int main(int argc, char** argv) {
   for (int f = 0; f < FILLS; ++f) gemm(f, MREF, REF[f]);
   printf("N %d K %d: default at M=40 %.1f us, at M=160 %.1f us\n  default, rows shared with M=40:", N, K,
          time_us([&] { gemm(0, MREF, OUT); }), time_us([&] { gemm(0, 160, OUT); }));
-  for (int m : MS) {
+  int differ = 0;
+  for (int m = 5; m <= MMAX; m += 5) {                     // every row count of 5 beams a clip
     unsigned long long d = 0;
     for (int f = 0; f < FILLS; ++f) { gemm(f, m, OUT); d += diff(REF[f], OUT, m < MREF ? m : MREF); }
-    printf(" %d%s", m, d ? "x" : "=");
+    if (d) { printf(" %dx", m); ++differ; }
   }
-  printf("   (= same bits, x different)\n");
+  printf("   (x: different bits; %d of %d row counts 5..%d differ)\n", differ, MMAX / 5, MMAX);
+  if (!search)
+    return 0;
   cublasLtMatmulDesc_t op; CK(cublasLtMatmulDescCreate(&op, CUBLAS_COMPUTE_32F, CUDA_R_32F));
   const cublasOperation_t ta = CUBLAS_OP_T, tb = CUBLAS_OP_N;
   CK(cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_TRANSA, &ta, sizeof ta));
