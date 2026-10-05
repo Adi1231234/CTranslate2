@@ -1,0 +1,5 @@
+# Where the DRAM traffic goes (metrics2: reads 72%, writes 14% of the L40S's bandwidth at 4 MPS processes, SM issue
+# 12%): kernels plus hardware counters every 100 us (box/profile_metrics.sh), 1 process and 4 MPS processes of
+# pyct2-l40s with sleeping waits, 15 s windows after 60 s; split by kernel kind on the laptop (nsys_dram.py).
+scriptd1|scripts/profile_metrics.sh|d1|pyct2-l40s|runner|src/tools/turing/scale/units_real.txt|1|60|15|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=blocking
+scriptd4|scripts/profile_metrics.sh|d4|pyct2-l40s|runner|src/tools/turing/scale/units_real.txt|4|60|15|MPS=1|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=blocking
