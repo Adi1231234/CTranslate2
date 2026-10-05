@@ -1,0 +1,8 @@
+# Long recordings (the corpus transcribe list, 93% of its 3,186 h in recordings of 34 min to 24 h): the speed sample
+# (S3 data/longsample: 48 YODAS v3 iw recordings and 2 Knesset plenums, ../../scale/fetch_long_sample.py), each cut
+# to its first 10 minutes (8.3 h). stockseq: the stock wheel's own sequential transcribe with the fork's length, one
+# recording after the other (the reference and its speed), on 8 of them; forkseq: the production package the same
+# way and with the same random numbers (must equal stock, sampled windows too); long48: the long engine
+# (runner/longform.py), 48 recordings at once, seeded ladders: its speed, and its windows before any sampled one
+# must equal stock's.
+scriptL|scripts/longform.sh|runner-33b66a77|stockseq:stock:list_small.txt:MODE=seq,RUN_SEED=20261006,RUN_STOCK_FULL_CONTEXT=1,LONG_SECONDS=600|forkseq:pyct2-l41p:list_small.txt:MODE=seq,RUN_SEED=20261006,LONG_SECONDS=600|long48:pyct2-l41p:list.txt:MODE=long,LONG_THREADS=48,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600
