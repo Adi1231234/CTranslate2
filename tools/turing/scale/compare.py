@@ -3,8 +3,9 @@ production output against a build's re-run of the same units. A row is equal onl
 byte-identical (text, every segment's times, log-prob, no-speech probability, compression ratio, temperature,
 the clip's duration and the decoding path). Rows decoded at a sampling temperature (a segment with
 temperature > 0: the fallback's ladder after T=0 failed) draw random numbers that no two runs repeat, so they
-are listed apart (for seeded.py) instead of counted as differences.
-usage: compare.py <ref_dir> <new_dir> [--sampled <list file>]    (the units are the new run's files)"""
+are listed apart (for seeded.py) instead of counted as differences. --strict counts them as any other row: for two
+runs that draw the same random numbers (the runner's RUN_SEED with one worker and the inline fallback).
+usage: compare.py <ref_dir> <new_dir> [--sampled <list file>] [--strict]    (the units are the new run's files)"""
 import os, sys, json, glob
 
 
@@ -25,6 +26,7 @@ def changed(a, b):
 args = sys.argv[1:]
 ref_dir, new_dir = args[0], args[1]
 listing = args[args.index("--sampled") + 1] if "--sampled" in args else None
+strict = "--strict" in args
 n = dict(units=0, rows=0, equal=0, sampled=0, differ=0, audio_h=0.0, batch8=0, fallback=0, fallback_t0=0)
 found, notes = [], []
 for path in sorted(glob.glob(os.path.join(new_dir, "*.jsonl"))):
@@ -51,7 +53,7 @@ for path in sorted(glob.glob(os.path.join(new_dir, "*.jsonl"))):
             found.append(f"{uid} {rb['uuid']}")
         if a == b:
             n["equal"] += 1
-        elif at_random:
+        elif at_random and not strict:
             n["sampled_differ"] = n.get("sampled_differ", 0) + 1
         else:
             n["differ"] += 1

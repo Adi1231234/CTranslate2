@@ -7,6 +7,9 @@ RUN_FALLBACK=async: fallback clips on a side thread beside the batches (default 
 Mode stream<N>: the batches of N through one CTranslate2 Whisper stream across units (stream_engine.py).
 RUN_REPEAT=<n> (measurement only): the units n times over, the k-th pass written as <unit>~<k>, so a benchmark on a
 few cached units runs long enough for a production rate (the model load and the last fallback ladders a small part).
+Verification only: RUN_SEED=<n> seeds CTranslate2's shared sampler (set_random_seed; with one worker and the inline
+fallback a run draws the same numbers every time); RUN_STOCK_FULL_CONTEXT=1 lets the stock wheel decode as many
+tokens as the fork (stock_context.py).
 Each finished unit is written atomically to out/<unit_id>.jsonl, so a restart skips it.
 """
 import os, sys, json, time, queue, threading
@@ -74,9 +77,15 @@ pool, own = make_pool(os.environ.get("RUN_FALLBACK", "inline"), log) if BATCHED 
 workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith(("pipe", "stream"))) + own
 if STREAM:
     workers += int(os.environ.get("STREAM_COUNT", "1")) - 1   # a worker for every further stream
+if os.environ.get("RUN_SEED"):                  # before the model: its workers seed their sampler states from it
+    import ctranslate2
+    ctranslate2.set_random_seed(int(os.environ["RUN_SEED"]))
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers, cpu_threads=1,   # the OpenMP threads of the default only spin
                      flash_attention=MODE.endswith("-fa"))
+if os.environ.get("RUN_STOCK_FULL_CONTEXT") == "1":
+    from stock_context import full_context
+    full_context(model)
 done = queue.Queue()
 stats = {"units": 0, "audio": 0.0, "t0": time.time()}
 
