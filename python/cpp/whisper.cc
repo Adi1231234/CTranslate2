@@ -23,7 +23,8 @@ namespace ctranslate2 {
                                                   const std::optional<std::vector<int>>& suppress_tokens,
                                                   size_t sampling_topk,
                                                   float sampling_temperature,
-                                                  size_t group_size) {
+                                                  size_t group_size,
+                                                  std::vector<uint64_t> sampling_seeds = {}) {
       models::WhisperOptions options;
       options.beam_size = beam_size;
       options.patience = patience;
@@ -40,6 +41,7 @@ namespace ctranslate2 {
       options.max_initial_timestamp_index = max_initial_timestamp_index;
       options.suppress_blank = suppress_blank;
       options.group_size = group_size;
+      options.sampling_seeds = std::move(sampling_seeds);
 
       if (suppress_tokens)
         options.suppress_tokens = suppress_tokens.value();
@@ -121,13 +123,15 @@ namespace ctranslate2 {
                const std::optional<std::vector<int>>& suppress_tokens,
                size_t sampling_topk,
                float sampling_temperature,
-               size_t group_size) {
+               size_t group_size,
+               std::vector<uint64_t> sampling_seeds) {
         std::vector<std::future<models::WhisperGenerationResult>> futures;
 
         const models::WhisperOptions options = whisper_options(
           beam_size, patience, num_hypotheses, length_penalty, repetition_penalty, no_repeat_ngram_size,
           max_length, return_scores, return_logits_vocab, return_no_speech_prob, max_initial_timestamp_index,
-          suppress_blank, suppress_tokens, sampling_topk, sampling_temperature, group_size);
+          suppress_blank, suppress_tokens, sampling_topk, sampling_temperature, group_size,
+          std::move(sampling_seeds));
         std::shared_lock lock(_mutex);
         assert_model_is_ready();
 
@@ -379,6 +383,7 @@ namespace ctranslate2 {
              py::arg("sampling_topk")=1,
              py::arg("sampling_temperature")=1,
              py::arg("group_size")=0,
+             py::arg("sampling_seeds")=std::vector<uint64_t>(),
              py::call_guard<py::gil_scoped_release>(),
              R"pbdoc(
                  Encodes the input features and generates from the given prompt.
@@ -414,6 +419,8 @@ namespace ctranslate2 {
                    group_size: Beam search on CUDA: decode consecutive groups of this many inputs, each
                      exactly as a batch of its own would be (0: one batch); the groups' products run back to
                      back, so the decoder weights are read once for all of them.
+                   sampling_seeds: Random sampling on CUDA: a seed per input; each of its hypotheses draws a
+                     random stream of its own, so an input samples the same in any batch and on every run.
 
                  Returns:
                    A list of generation results.

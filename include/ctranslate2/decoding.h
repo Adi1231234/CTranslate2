@@ -159,10 +159,12 @@ namespace ctranslate2 {
   class GreedySearch : public SearchStrategy {
   public:
     // Penalties are only applied to return scores consistent with the beam search.
+    // seeds: on CUDA, each input's sampling seed (DecodingOptions::sampling_seeds), empty for the shared states.
     GreedySearch(const float length_penalty = 0,
                  const float coverage_penalty = 0,
                  std::function<bool(DecodingStepResult)> callback = nullptr,
-                 const dim_t group_size = 0);
+                 const dim_t group_size = 0,
+                 std::vector<uint64_t> seeds = {});
 
     std::vector<DecodingResult>
     search(layers::Decoder& decoder,
@@ -187,6 +189,7 @@ namespace ctranslate2 {
     const float _coverage_penalty;
     const std::function<bool(DecodingStepResult)> _callback;
     const dim_t _group_size;
+    const std::vector<uint64_t> _seeds;
   };
 
 
@@ -215,6 +218,9 @@ namespace ctranslate2 {
     // On CUDA: the batch is consecutive groups of this many inputs, each decoded with the arithmetic of a batch of
     // its own (cuda/clip_groups.h), in beam search and in sampling; 0 = one batch.
     dim_t group_size = 0;
+    // Random sampling on CUDA: a seed per input, from which each of its hypotheses draws a stream of its own
+    // (cuda/row_random.h), so an input draws the same in any batch and every run; empty: the thread's shared states.
+    std::vector<uint64_t> sampling_seeds;
     std::vector<size_t> disable_ids;
     std::vector<size_t> disable_ids_begin;
     std::vector<std::vector<size_t>> disable_sequences;

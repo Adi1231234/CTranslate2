@@ -257,6 +257,7 @@ set(CUDA_SOURCES
   src/cuda/random.cu
   src/cuda/split_heads.cu
   src/cuda/residual_norm.cu
+  src/cuda/row_random.cu
   src/cuda/shared_memory_rows.cu
   src/cuda/timestamp_rules.cu
   src/cuda/utils.cc

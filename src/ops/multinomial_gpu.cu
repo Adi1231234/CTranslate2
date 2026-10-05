@@ -12,6 +12,7 @@
 
 #include "cuda/helpers.h"
 #include "cuda/random.h"
+#include "cuda/row_random.h"
 
 namespace ctranslate2 {
   namespace ops {
@@ -30,14 +31,16 @@ namespace ctranslate2 {
 
     constexpr dim_t num_threads = 256;
 
+    // state_of_row (cuda/row_random.h): row i draws from states[state_of_row[i]]; else from states[i].
     template <typename In, typename Out>
     __global__ void multinomial_kernel(const In* probs,
                                        cuda::index_t class_size,
                                        Out* output,
-                                       curandStatePhilox4_32_10_t* states) {
+                                       curandStatePhilox4_32_10_t* states,
+                                       const int32_t* state_of_row) {
       __shared__ float random_sample;
       if (threadIdx.x == 0)
-        random_sample = curand_uniform(states + blockIdx.x);
+        random_sample = curand_uniform(states + (state_of_row ? state_of_row[blockIdx.x] : blockIdx.x));
       __syncthreads();
 
       typedef cub::BlockScan<float, num_threads> BlockScan;
@@ -84,14 +87,18 @@ namespace ctranslate2 {
       const dim_t batch_size = input.size() / depth;
       const dim_t blocks = std::min(batch_size, cuda::max_blocks);
 
-      // Get one curand state per block.
-      auto* curand_states = cuda::get_curand_states(blocks);
+      // Each row's own stream where the search seeded its rows, else one curand state per block.
+      const cuda::RowRandom* rows = cuda::row_random();
+      if (rows && rows->rows != batch_size)
+        throw std::logic_error("Seeded sampling rows do not match the batch");
+      auto* curand_states = rows ? rows->states : cuda::get_curand_states(blocks);
 
       multinomial_kernel<<<blocks, num_threads, 0, cuda::get_cuda_stream()>>>(
         cuda::device_cast(input.data<T>()),
         depth,
         output.data<int32_t>(),
-        curand_states);
+        curand_states,
+        rows ? rows->state_of_row : nullptr);
     }
 
 #define DECLARE_IMPL(T)                                                 \

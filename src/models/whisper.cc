@@ -361,6 +361,7 @@ namespace ctranslate2 {
       decoding_options.return_logits_vocab = options.return_logits_vocab;
       decoding_options.include_eos_in_hypotheses = false;
       decoding_options.group_size = static_cast<dim_t>(options.group_size);
+      decoding_options.sampling_seeds = options.sampling_seeds;
 
       for (const auto& id : options.suppress_tokens) {
         if (id >= 0)

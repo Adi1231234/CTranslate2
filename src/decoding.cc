@@ -12,6 +12,7 @@
 #  include "cuda/clip_groups.h"
 #  include "cuda/graph.h"
 #  include "cuda/memory_slots.h"
+#  include "cuda/row_random.h"
 #  include "cuda/shared_memory_rows.h"
 #endif
 
@@ -36,6 +37,21 @@ namespace ctranslate2 {
   // Likewise the rows of one group (group_size inputs x their hypotheses) for that search's groups
   // (cuda/clip_groups.h); 0: the search's own group_size.
   static thread_local dim_t greedy_group_rows = 0;
+
+  // Likewise each row's sampling stream (its input's seed, the hypothesis as subsequence; cuda/row_random.h), or
+  // null: the search's own seeds, one row per input.
+  using RowSeeds = std::vector<std::pair<uint64_t, uint64_t>>;
+  static thread_local const RowSeeds* greedy_row_seeds = nullptr;
+
+  struct GreedyRowSeeds {
+    explicit GreedyRowSeeds(const RowSeeds* seeds) : previous(greedy_row_seeds) {
+      greedy_row_seeds = seeds;
+    }
+    ~GreedyRowSeeds() {
+      greedy_row_seeds = previous;
+    }
+    const RowSeeds* previous;
+  };
 
   struct GreedyGroupRows {
     explicit GreedyGroupRows(dim_t rows) : previous(greedy_group_rows) {
@@ -981,11 +997,13 @@ namespace ctranslate2 {
   GreedySearch::GreedySearch(const float length_penalty,
                              const float coverage_penalty,
                              std::function<bool(DecodingStepResult)> callback,
-                             const dim_t group_size)
+                             const dim_t group_size,
+                             std::vector<uint64_t> seeds)
     : _length_penalty(length_penalty)
     , _coverage_penalty(coverage_penalty)
     , _callback(std::move(callback))
     , _group_size(group_size)
+    , _seeds(std::move(seeds))
   {
   }
 
@@ -1028,6 +1046,11 @@ namespace ctranslate2 {
       }
       const SharedMemoryHypotheses shared_memory(share ? static_cast<dim_t>(num_hypotheses) : 0);
       const GreedyGroupRows group_rows(_group_size * static_cast<dim_t>(num_hypotheses));
+      RowSeeds row_seeds;                                    // input i's hypothesis j: (seed i, j)
+      for (size_t i = 0; i < _seeds.size(); ++i)
+        for (size_t j = 0; j < num_hypotheses; ++j)
+          row_seeds.emplace_back(_seeds[i], j);
+      const GreedyRowSeeds seeded(_seeds.empty() ? nullptr : &row_seeds);
 
       std::vector<size_t> repeat_start_ids = repeat_vector(start_ids, num_hypotheses);
       std::vector<std::vector<size_t>> repeat_prefix_ids;
@@ -1134,6 +1157,19 @@ namespace ctranslate2 {
 
     const dim_t group_rows = greedy_group_rows ? greedy_group_rows : _group_size;
 
+    // Each row's own sampling stream where seeds were given (cuda/row_random.h), at its original index.
+    RowSeeds own_seeds;
+    for (const uint64_t seed : _seeds)
+      own_seeds.emplace_back(seed, 0);
+    const RowSeeds& row_seeds = greedy_row_seeds ? *greedy_row_seeds : own_seeds;
+    if (!row_seeds.empty() && static_cast<dim_t>(row_seeds.size()) != batch_size)
+      throw std::invalid_argument("sampling_seeds needs one seed per input");
+#ifdef CT2_WITH_CUDA
+    std::unique_ptr<cuda::RowStates> row_states;
+    if (!row_seeds.empty() && device == Device::CUDA)
+      row_states = std::make_unique<cuda::RowStates>(row_seeds);
+#endif
+
     for (dim_t step = 0; step < max_step; ++step) {
       convert_to_original_word_ids(decoder, sample_from);
       const StorageView step_ids = sample_from.to(device);
@@ -1183,7 +1219,21 @@ namespace ctranslate2 {
         ops::LogSoftMax()(logits);
       log_probs.shallow_copy(logits);
 
-      sampler(log_probs, best_ids, best_probs);
+      {
+#ifdef CT2_WITH_CUDA
+        StorageView state_of_row(DataType::INT32);            // the rows still sampling: their original index
+        cuda::RowRandom seeded;
+        std::unique_ptr<cuda::RowRandomScope> row_scope;
+        if (row_states) {
+          const dim_t rows = static_cast<dim_t>(batch_offset.size());
+          state_of_row = StorageView({rows}, std::vector<int32_t>(batch_offset.begin(), batch_offset.end()))
+            .to(device);
+          seeded = cuda::RowRandom{row_states->states(), state_of_row.data<int32_t>(), rows};
+          row_scope = std::make_unique<cuda::RowRandomScope>(seeded);
+        }
+#endif
+        sampler(log_probs, best_ids, best_probs);
+      }
       if (prefix_ids)
         update_sample_with_prefix(step, best_ids, best_probs, *prefix_ids, end_ids, batch_offset);
       if (attention_step_device)
@@ -1408,7 +1458,8 @@ namespace ctranslate2 {
       return std::make_unique<GreedySearch>(options.length_penalty,
                                             options.coverage_penalty,
                                             options.callback,
-                                            options.group_size);
+                                            options.group_size,
+                                            options.sampling_seeds);
     else
       return std::make_unique<BeamSearch>(options.beam_size,
                                           options.length_penalty,

@@ -61,6 +61,10 @@ namespace ctranslate2 {
       // Beam search on CUDA: the batch is consecutive groups of this many inputs, each decoded exactly as a
       // batch of its own would be, the groups' products back to back (cuda/clip_groups.h); 0 = one batch.
       size_t group_size = 0;
+
+      // Random sampling on CUDA: a seed per input, each of its hypotheses drawing a stream of its own
+      // (cuda/row_random.h): an input draws the same in any batch and on every run. Empty: shared states.
+      std::vector<uint64_t> sampling_seeds;
     };
 
     struct WhisperGenerationResult {
