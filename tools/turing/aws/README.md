@@ -153,6 +153,38 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
   TOTAL 0): 20% fewer instructions (Nsight Compute, `box/ncu_probe.sh`) but only 3% less energy for the kernel: its
   energy is the math and the shared-memory traffic, not the instruction count.
 
+**Bit-for-bit against the stock wheel (6.10.2026, `batch/experiments/verify1.txt` and `verify2.txt`, jobs
+994120ed in ap-northeast-2 and 1773cf47 in us-east-2, two L40S hosts; `python batch/verify_report.py 994120ed-8962-4581-
+9632-fb10549b5603 1773cf47-ce82-49a6-a284-ee991b6f3e2a <dir>` prints every verdict; $3.70):** the original is
+CTranslate2 4.8.2 from PyPI, unmodified, on the same GPU and the same cuBLAS (12.9.2.10; NVIDIA guarantees
+run-to-run bits only for one toolkit on one architecture and SM count, and MMA bits differ across architectures,
+so the reference has to be stock on the L40S itself). Stock decodes as many tokens as the fork through its own
+max_length rule (`runner/stock_context.py`, `RUN_STOCK_FULL_CONTEXT=1`): no stock code changes, one argument.
+- Stock twice (`RUN_SEED`, one worker, the inline fallback): 2,906 of 2,906 rows identical, the 13 sampled ones
+  too, so equality below means something.
+- pyct2-l41p in the same mode against stock, `compare.py --strict` (sampled rows counted): 2,906 of 2,906 on the
+  30 units and 6,000 of 6,000 on 60 units no run had seen (`../scale/units_verify60.txt`, 8.7 h, a seeded random
+  sample of the dataset): given the same random numbers, the fork's sampled rows are stock's too.
+- The production configuration (runner-ee6fc199, stream, seeded joined ladders) against stock: every deterministic
+  row identical (2,897 + 5,983); only sampled rows differ (its own per-clip seeds). Stock and production also equal
+  the fullctx reference (d654b84b, another host) in every deterministic row.
+- Every number the model outputs (`../scale/logits_check.py`): greedy decoding of 400 clips with every step's full
+  vocabulary logits, 892,354,016 values, sha256 per clip: identical.
+- The seeded draws (`../scale/seed_vs_stock.py`): stock's sampler on a fresh worker thread uses curand_init(seed,
+  row, 0), the fork's seeded rows curand_init(seed, hypothesis, 0), so one-row calls get the same random numbers:
+  75 calls (15 fallback clips x 5 temperatures), 16,557 sampled tokens and every score's bits identical.
+- Kernel bit checks at 6d2c3ee5 (probes-6d2c3ee5): TOTAL 0 on every path production routes (encoder attention,
+  softmax on every row length, softmax parts, cache reorder, pointer-array products, grouped split-K, encoder fc1
+  replica and cuBLASLt pick, decoder tiles, timestamp rules; the sm_89 cross-attention residue table reproduced on
+  a second host). The non-zero ones are the shapes the code excludes, i.e. the checks can see a difference: rowinv2
+  at 1 row (gemv; `rows_independent_product` refuses groups of one row) and at 1280 x 5120 (310 of 320 row counts:
+  the second feed-forward's split, hence `grouped_split_gemm`), selfattn_probe (363 pairs: self-attention runs per
+  group), cross_sweep m = 1 (outside the fused route, m 2..8), hmma_check 1280 x 5120 (the store PC's replica,
+  compiled into no sm_89 path: only `CT2_CROSS_Q`, off).
+- What production changes against stock as shipped: stock with the 224-token cap against stock with the full
+  context, same binary and seed: 15 of 2,906 rows, all 26-29 s clips whose text needs more than 224 tokens (14
+  went to the fallback cut short, one lost its tail). That is the one intended difference (fork 25cc1a32).
+
 **Beside other AWS work in the account** (the asr-training Batch queues): each touches only its own resources:
 nothing named `asr-train*` here (their submit uses the newest `asr-train` job definition), nothing named
 `whisper-bench*` there (their CancelJob is limited by IAM to jobs tagged Project=asr-training); everything tagged.
