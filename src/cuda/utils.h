@@ -129,9 +129,12 @@ namespace ctranslate2 {
     // Replacements that replay a cuBLAS kernel's arithmetic were verified on sm_75 against one cuBLAS
     // build (tools/turing/kernels/qk_check.cu); anywhere else the cuBLAS call runs.
     bool cublas_replicas_verified();
-    // The same for the sm_120 replicas (the encoder's exact_attention): sm_120 with cuBLAS 12.9.2
-    // (tools/turing/kernels/qk_hmma_probe.cu, av_hmma_probe.cu, exact_attention_check.cu).
+    // The same for the sm_120 replicas (the encoder's exact_attention, the decoder's cross-attention): sm_120
+    // and sm_89 with cuBLAS 12.9.2 (tools/turing/kernels/qk_hmma_probe.cu, av_hmma_probe.cu,
+    // exact_attention_check.cu, cross_sweep.cu).
     bool hmma_replicas_verified();
+    // The encoder GEMM's CUTLASS replica (cuda/encoder_gemm.cu): sm_120 with cuBLAS 12.9.2 only.
+    bool encoder_gemm_replica_verified();
 
     // Work of the calling thread goes to its low-priority stream while an instance lives (e.g. a
     // Whisper encoder run next to another thread's decoding): the GPU then runs the other threads'

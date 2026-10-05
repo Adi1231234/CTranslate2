@@ -24,7 +24,7 @@ namespace ctranslate2 {
       static const bool enabled = read_string_from_env("CT2_ENC_GEMM", "cublas") == "cutlass";
       static const dim_t min_rows = read_int_from_env("CT2_ENC_GEMM_MIN_ROWS", 1500);
       return enabled && m >= min_rows && n % 8 == 0 && k % 64 == 0
-        && aligned16(a) && aligned16(w) && aligned16(c) && hmma_replicas_verified();
+        && aligned16(a) && aligned16(w) && aligned16(c) && encoder_gemm_replica_verified();
     }
 
     template <int Tile, int KTile, int Stages, typename Op>

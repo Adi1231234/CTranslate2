@@ -11,10 +11,11 @@
 namespace ctranslate2 {
   namespace cuda {
 
-    // cuBLAS 12.9.2's key tile for the output product on sm_120, by queries (2..8) and batch / 20 (1..8):
-    // 32 or 64 keys (residue 1500 % 32 = 28) or 128 (residue 92). kernels/cross_sweep.cu, 400k outputs per
-    // shape, no mismatch.
-    static const unsigned char residues[7][8] = {
+    // cuBLAS 12.9.2's key tile for the output product, by queries (2..8) and batch / 20 (1..8): 32 or 64 keys
+    // (residue 1500 % 32 = 28) or 128 (residue 92). kernels/cross_sweep.cu on the device, 400k outputs per
+    // shape, no mismatch: sm_120 (the store PC's RTX 5060 Ti) and sm_89 (AWS L40S, 5.10.2026).
+    using Residues = unsigned char[7][8];
+    static const Residues residues_sm120 = {
       {92, 28, 92, 92, 92, 28, 28, 92},   // m 2
       {92, 28, 92, 92, 28, 28, 28, 92},   // m 3
       {92, 28, 92, 92, 28, 28, 28, 28},   // m 4
@@ -23,12 +24,22 @@ namespace ctranslate2 {
       {92, 28, 28, 28, 28, 28, 28, 28},   // m 7
       {92, 28, 28, 28, 28, 28, 28, 28},   // m 8
     };
+    static const Residues residues_sm89 = {
+      {92, 92, 92, 92, 28, 28, 28, 28},   // m 2
+      {92, 92, 92, 92, 28, 28, 28, 28},   // m 3
+      {92, 92, 92, 92, 28, 28, 28, 28},   // m 4
+      {92, 92, 92, 92, 28, 28, 28, 28},   // m 5
+      {92, 92, 92, 92, 28, 28, 28, 28},   // m 6
+      {92, 92, 92, 92, 28, 28, 28, 92},   // m 7
+      {92, 92, 92, 92, 28, 28, 28, 92},   // m 8
+    };
 
     int cross_attention_residue(dim_t m, dim_t batch, dim_t keys, dim_t depth) {
       static const bool enabled = read_bool_from_env("CT2_CROSS_ATTN", true);
       if (!enabled || keys != at::native::ca_keys || depth != at::native::ca_depth || m < 2 || m > 8
           || batch % 20 != 0 || batch < 20 || batch > 160 || !hmma_replicas_verified())
         return -1;
+      static const Residues& residues = get_device_properties().major == 8 ? residues_sm89 : residues_sm120;
       return residues[m - 2][batch / 20 - 1];
     }
 

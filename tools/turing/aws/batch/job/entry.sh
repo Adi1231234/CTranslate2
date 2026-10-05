@@ -21,6 +21,10 @@ while IFS='|' read -r label a b c d extra; do
   [ -z "$label" ] && continue
   extra=${extra//|/ }                                   # read leaves the later fields' separators in the last one
   echo "=== $(date +%T) $label $a $b $extra"
+  # A package the image does not carry comes from S3 (../../linux/build.sh's output, packed as <name>.tgz).
+  if [[ "$label" != compare && "$label" != script* && ! -d "$a" ]]; then
+    aws s3 cp --only-show-errors "$S3/$a.tgz" - | tar xz -C $B && cat "$a/ctranslate2/BUILD.txt"
+  fi
   if [ "$label" = compare ]; then
     venv/bin/python src/tools/turing/scale/compare.py "out/$a" "out/$b" | tee "logs/compare_${a}_${b}.txt"
   elif [[ "$label" == profile* ]]; then

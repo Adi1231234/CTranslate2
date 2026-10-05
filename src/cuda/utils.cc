@@ -363,7 +363,18 @@ namespace ctranslate2 {
 #ifdef CT2_USE_HIP
       return false;
 #else
-      return replicas_verified_on(12, 0);
+      // sm_89 (AWS L40S, the 8.6+PTX build's sm_86 code): exact_attention_check 0 mismatches, qk_hmma_probe and
+      // av_hmma_probe the same orders as sm_120, hmma_probe chain 16 for 1280 x 1280 at 2..48 rows, and the
+      // cross-attention residues of cross_sweep (cross_attention_gpu.cu).
+      return replicas_verified_on(12, 0) || replicas_verified_on(8, 9);
+#endif
+    }
+
+    bool encoder_gemm_replica_verified() {
+#ifdef CT2_USE_HIP
+      return false;
+#else
+      return replicas_verified_on(12, 0);   // sm_89's cuBLAS runs the encoder's FFN in 8-wide k steps (s1688)
 #endif
     }
 
