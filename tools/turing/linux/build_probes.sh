@@ -4,6 +4,7 @@
 # linked to cuBLAS. Default code: sm_86 SASS, what the 8.6+PTX library runs on sm_86 and sm_89 GPUs (AWS A10G,
 # L4, L40S). Output: <out>/probes.tgz with one executable per probe; at run time
 # put the production venv's nvidia/cublas/lib on LD_LIBRARY_PATH (the cuBLAS build the replicas are checked on).
+# LIBS replaces the libraries the probes link (e.g. energy_probe.cu: also -L/usr/local/cuda/lib64/stubs -lnvidia-ml).
 # usage: build_probes.sh <source checkout> <out dir> <probe> [probe ...]     (after setup_env.sh)
 set -euo pipefail
 SRC=$(realpath "$1"); OUT=$2; shift 2
@@ -14,7 +15,7 @@ for name in "$@"; do
   /usr/local/cuda/bin/nvcc -O3 -std=c++17 $GENCODE --expt-relaxed-constexpr -diag-suppress 2219 \
     -I "$CCCL/cub" -I "$CCCL/thrust" -I "$CCCL/libcudacxx/include" -I "$SRC/src" -I "$SRC/include" \
     -I "$SRC/src/cuda/cutlass_overrides" -I "$SRC/third_party/cutlass/include" \
-    -o "$BIN/$name" "$SRC/tools/turing/kernels/$name.cu" -lcublas -lcublasLt
+    -o "$BIN/$name" "$SRC/tools/turing/kernels/$name.cu" ${LIBS:--lcublas -lcublasLt}
   echo "built $name"
 done
 git -C "$SRC" log --oneline -1 > "$BIN/BUILD.txt"
