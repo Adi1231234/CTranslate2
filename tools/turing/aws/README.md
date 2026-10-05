@@ -109,7 +109,11 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
   path, as in a long run). The 15 fallback clips' ladders take ~24% of that run's energy, ~1 kJ a clip against
   16 J for a clip of the batched path: up to 6 attempts of up to 448 steps, mostly all 6 (7 of the 15 end at
   T = 1.0). Temperature variants (`sampling_temperatures`, runner `RUN_FALLBACK_SPECULATE=1`) sample a window's
-  attempts in one search, each exactly what its own seeded call samples (`../scale/sampled_check.py`, `CHECK=variants`).
+  attempts in one search, each exactly what its own seeded call samples (`../scale/sampled_check.py`, `CHECK=variants`:
+  75 of 75 attempts identical, alone 110.6 s against 44-48 s). The full run with them (round41, one machine):
+  89.6x against 85.1x, every row identical between the two (8,718 of 8,718, the 39 sampled ones too); energy
+  172.8 against 180.1 kJ, 90.3x at the batched path's power. The ladders are ~21% of all decoding row-steps
+  (up to 448 steps x 25 sampled rows a window), so their energy is mostly the work itself.
 
 **Beside other AWS work in the account** (the asr-training Batch queues): a standalone box, never their queues;
 no resource named `asr-train*` (their submit uses the newest `asr-train` job definition); another AZ than their
