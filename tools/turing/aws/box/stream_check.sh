@@ -2,9 +2,12 @@
 # ../../scale/stream_check.py on a package (an entry.sh "script" line): the Whisper stream against generate() on
 # each batch alone, bit for bit, and both timed. The check comes from S3 next to this script (the image may
 # predate it).
-# usage: stream_check.sh <package> [max clips] [max_batches:max_rows ...]
+# usage: stream_check.sh <package> [VAR=value ...] [max clips] [max_batches:max_rows ...]   (VAR=value: exported)
 set -uo pipefail
 PKG=$1; shift; B=${B:-/opt/wb}; T=$B/src/tools/turing
+args=()
+for a in "$@"; do if [[ "$a" == *=* ]]; then export "$a"; else args+=("$a"); fi; done
+set -- "${args[@]}"
 [ -d "$B/$PKG" ] || aws s3 cp --only-show-errors "$S3/$PKG.tgz" - | tar xz -C "$B"
 aws s3 cp --only-show-errors "$S3/scripts/stream_check.py" "$T/scale/stream_check.py"
 export HF_HOME=$B/hf PYTHONPATH=$B/$PKG
