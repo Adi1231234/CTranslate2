@@ -113,4 +113,6 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
 
 **Beside other AWS work in the account** (the asr-training Batch queues): a standalone box, never their queues;
 no resource named `asr-train*` (their submit uses the newest `asr-train` job definition); another AZ than their
-running box; everything tagged.
+running box; everything tagged. Their queues take g6e.xlarge in us-east-1 and us-east-2, and the account's on-demand
+G quota is 8 vCPU in us-east-2 and us-west-2 (64 in us-east-1, eu-north-1, eu-central-1): no g7e.2xlarge (8 vCPU)
+where it could fill their quota, and no race with their queue for g6e capacity while it waits.
