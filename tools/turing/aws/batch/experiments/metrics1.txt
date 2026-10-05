@@ -1,0 +1,4 @@
+# Hardware counters (DRAM bandwidth, SM and tensor activity) during production runs of efff0f55 on the L40S:
+# 4 MPS processes (53.7x) and 1 process (46.9x), 60 s windows after 60 s of warm-up (../../box/gpumetrics.sh).
+scriptm4|scripts/gpumetrics.sh|m4|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|4|60|60|MPS=1|RUN_FALLBACK=async
+scriptm1|scripts/gpumetrics.sh|m1|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|1|60|60|RUN_FALLBACK=async

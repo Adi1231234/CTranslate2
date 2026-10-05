@@ -1,0 +1,5 @@
+# Upper bound for sharing the decoder's weights between batches (efff0f55, NOT exact: a bigger batch changes some
+# rows): 16 and 32 clips a batch with MPS processes, against r4's 53.67x (8 clips, 4 processes).
+b16p4|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FALLBACK=async|MODE=pipe16
+b32p2|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=async|MODE=pipe32
+b32p3|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=async|MODE=pipe32

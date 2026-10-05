@@ -1,0 +1,7 @@
+# Several batches of 8 in one beam search (0cb74098, group_size = 8, PIPE_GROUPS=k): each batch's products as
+# that batch alone runs them, back to back so the decoder weights come from L2. Rows must be IDENTICAL to
+# round2's fullctx (compared on the laptop); speed against r1 46.86x (1 process) and r4 53.67x (4 MPS processes).
+g2|pyct2-l40g|runner|src/tools/turing/scale/units_real.txt|1|RUN_FALLBACK=async|PIPE_GROUPS=2
+g4|pyct2-l40g|runner|src/tools/turing/scale/units_real.txt|1|RUN_FALLBACK=async|PIPE_GROUPS=4
+g4p2|pyct2-l40g|runner|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=async|PIPE_GROUPS=4
+g4p3|pyct2-l40g|runner|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=async|PIPE_GROUPS=4
