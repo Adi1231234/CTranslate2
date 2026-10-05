@@ -1,0 +1,7 @@
+# Grouped decoding where one call serves all groups for the 5 row-independent products (pyct2-l40h, rowinv2), only
+# the second feed-forward and the attention per group; sleeping waits. First rowinv2 on the padded vocabulary.
+# Against s4b 56.12x / m4b 58.38x (4 MPS processes, ungrouped, sleeping waits). Rows compared with fullctx.
+scriptp|scripts/probes.sh|probes/probes-4029fe9e.tgz|rowinv2:51872,1280
+h1|pyct2-l40h|runner|src/tools/turing/scale/units_real.txt|1|RUN_FALLBACK=async|PIPE_GROUPS=4|CT2_CUDA_SCHEDULE=blocking
+h4p2|pyct2-l40h|runner|src/tools/turing/scale/units_real.txt|2|MPS=1|RUN_FALLBACK=async|PIPE_GROUPS=4|CT2_CUDA_SCHEDULE=blocking
+h2p3|pyct2-l40h|runner|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=async|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
