@@ -1,0 +1,6 @@
+# The store PC's exact kernels on the L40S (efff0f55: hmma replicas on sm_89, probes1 all 0 mismatches): the
+# encoder's fused attention and the decoder's fused cross-attention. Rows compared with round2's fullctx on the
+# laptop; then a profile of where the time goes now.
+r1|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|1|RUN_FALLBACK=async
+r4|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FALLBACK=async
+profiler|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|5|RUN_FALLBACK=async

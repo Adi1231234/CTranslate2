@@ -1,0 +1,4 @@
+# Kernel probes on the L40S (sm_89), sm_86 SASS as production runs, cuBLAS 12.9.2 of the venv: do the fork's
+# store-PC replicas (gated to sm_120) give cuBLAS's bits here too, and which orders does cuBLAS use here?
+# rowinv: does a decoder GEMM row depend on the call's row count, and can one cublasLt configuration serve all.
+scriptp|scripts/probes.sh|probes/probes-16f0ff88.tgz|exact_attention_check:3 qk_hmma_probe av_hmma_probe cross_sweep:8 softmax_check ts_check hmma_probe:48 rowinv:3840,1280 rowinv:1280,1280 rowinv:5120,1280 rowinv:1280,5120 rowinv:51866,1280
