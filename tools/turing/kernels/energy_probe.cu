@@ -22,6 +22,7 @@ namespace ctranslate2 {
     cudaStream_t get_cuda_stream() { return 0; }              // the probe links no library
   }
 }
+using namespace ctranslate2::cuda;
 
 // The three NVML calls the probe makes (nvml.h's signatures; a device handle is an opaque pointer).
 static void* device;
