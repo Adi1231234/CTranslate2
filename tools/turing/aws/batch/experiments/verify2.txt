@@ -1,0 +1,11 @@
+# Bit-for-bit verification against the stock wheel on 60 units no run had seen (scale/units_verify60.txt, a seeded
+# random sample of the whole dataset, in runner-87bb4efa): stock with the fork's length (stockN), the production
+# package in the same mode (forkN: every row equal, sampled ones too), the production configuration (prodN). Then the
+# bit check of every sm_89-gated exact path at the production package's commit (6d2c3ee5); rowinv2 1280x5120 (the
+# second feed-forward, whose cuBLAS split depends on the rows) is the control that must show differences.
+stockN|stock|runner-87bb4efa|runner-87bb4efa/units_verify60.txt|1|MODE=batch8|RUN_SEED=20261006|RUN_STOCK_FULL_CONTEXT=1
+forkN|pyct2-l41p|runner-87bb4efa|runner-87bb4efa/units_verify60.txt|1|MODE=batch8|RUN_SEED=20261006
+prodN|pyct2-l41p|runner-ee6fc199|runner-87bb4efa/units_verify60.txt|2|MPS=1|MODE=stream8|STREAM_BATCHES=6|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_SAMPLING=batched|RUN_FALLBACK_SPECULATE=1|RUN_FALLBACK_SPEC_CLIPS=2|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|CT2_CUDA_SCHEDULE=blocking
+compare|stockN|forkN
+compare|stockN|prodN
+scriptp|scripts/probes.sh|probes/probes-6d2c3ee5.tgz|exact_attention_check:3|softmax_check|cross_sweep|softmax_parts_check|cache_reorder_check|rowinv2:3840,1280|rowinv2:1280,1280|rowinv2:5120,1280|rowinv2:51866,1280|rowinv2:51872,1280|rowinv2:1280,5120|ptrbatch_probe|grouped_split_check|ffn2_probe:48|cross_ahead_probe|encoder_algo_search|encoder_ffn1_check:2|decoder_gemm_probe|ts_check|selfattn_probe|hmma_check:1

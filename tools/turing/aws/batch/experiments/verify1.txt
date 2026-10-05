@@ -1,0 +1,17 @@
+# Bit-for-bit verification against the stock wheel (CTranslate2 4.8.2 from PyPI, unmodified) on the 30 benchmark units
+# (4.38 h). Stock decodes as many tokens as the fork through its own max_length rule (runner stock_context.py,
+# RUN_STOCK_FULL_CONTEXT); one worker, the inline fallback and RUN_SEED, so a run draws the same random numbers each
+# time. stockA, stockB: stock twice (the run-to-run control, sampled rows included). forkS: the production package in
+# the same mode (its unseeded sampler is stock's): every row must equal stock's, the sampled ones too. prod: the
+# production configuration (sampled rows seeded per clip: other random numbers). stock224: stock as shipped (the
+# 224-token cap): the rows the length rule changes. Then every step's full logits and the seeded draws against stock's.
+stockA|stock|runner-87bb4efa|src/tools/turing/scale/units_real.txt|1|MODE=batch8|RUN_SEED=20261006|RUN_STOCK_FULL_CONTEXT=1
+stockB|stock|runner-87bb4efa|src/tools/turing/scale/units_real.txt|1|MODE=batch8|RUN_SEED=20261006|RUN_STOCK_FULL_CONTEXT=1
+forkS|pyct2-l41p|runner-87bb4efa|src/tools/turing/scale/units_real.txt|1|MODE=batch8|RUN_SEED=20261006
+prod|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|STREAM_BATCHES=6|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_SAMPLING=batched|RUN_FALLBACK_SPECULATE=1|RUN_FALLBACK_SPEC_CLIPS=2|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|CT2_CUDA_SCHEDULE=blocking
+stock224|stock|runner-87bb4efa|src/tools/turing/scale/units_real.txt|1|MODE=batch8|RUN_SEED=20261006
+compare|stockA|stockB
+compare|stockA|forkS
+compare|stockA|prod
+compare|stock224|stockA
+scriptv|scripts/verify_checks.sh|pyct2-l41p|runner-87bb4efa|fallback_uuids_real30.txt|4
