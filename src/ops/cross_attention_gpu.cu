@@ -61,8 +61,12 @@ namespace ctranslate2 {
         * static_cast<int>(sizeof (__half));
       auto h = [](const float16_t* p) { return reinterpret_cast<const __half*>(p); };
       const at::native::CaQueries queries{h(q), h(x), h(w), h(bias), static_cast<int>(k_inputs), h(dense)};
-      // L2 prefetch distance in steps (0 none): 2-4 were 0.3 s faster on the store PC's 150 clips than 0.
-      static const int ahead = read_int_from_env("CT2_CROSS_AHEAD", 4);
+      // L2 prefetch distance in steps (0 none): 2-4 were 0.3 s faster on the store PC's 150 clips than 0; on the
+      // L40S (sm_89) 1 took the least time and energy (cross_ahead_probe.cu: 74.2 against 79.5 mJ a launch at 4,
+      // round38) and ran the batched path 0.3% faster (round39, twice each).
+      static const int ahead = read_int_from_env(
+        "CT2_CROSS_AHEAD", ctranslate2::cuda::get_device_properties().major == 8
+                             && ctranslate2::cuda::get_device_properties().minor == 9 ? 1 : 4);
       at::native::cross_attention_kernel<<<static_cast<unsigned>(clips * heads), at::native::ca_warps * 32, smem,
                                            get_cuda_stream()>>>(
         queries, h(k), h(v), reinterpret_cast<__half*>(o), static_cast<int>(heads), static_cast<int>(m), rows,

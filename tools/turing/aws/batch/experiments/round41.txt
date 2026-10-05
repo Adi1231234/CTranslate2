@@ -1,0 +1,9 @@
+# Temperature variants (pyct2-l41o, ee6fc199; runner-ee6fc199): the fallback ladder's sampled attempts of a window in
+# one search (RUN_FALLBACK_SPECULATE=1), each what its own call samples. The 15 fallback clips' ladders cost ~24% of
+# the full run's energy (round34 ls: 185 kJ, the batched path alone ~140). First the engine check (every attempt
+# alone against the variants of a clip and of 4 clips, bit for bit), then the full run with the seeded, joined
+# sampling with and without the variants, and their rows compared (sampled rows too: both seeded).
+scriptv|scripts/joined_check.sh|pyct2-l41o|fallback_uuids_real30.txt|variants
+lv|pyct2-l41o|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|RUN_FALLBACK_SPECULATE=1
+ls|pyct2-l41o|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+compare|ls|lv
