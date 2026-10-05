@@ -7,6 +7,7 @@
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/clip_groups.h"
 #  include "cuda/cross_attention.h"
+#  include "cuda/memory_slots.h"
 #endif
 
 namespace ctranslate2 {
@@ -24,11 +25,24 @@ namespace ctranslate2 {
     }
 #endif
 
+    // Clips whose keys and values sit at slots of an uncompacted cache (cuda/memory_slots.h): the cache's rows
+    // need not match the queries'.
+    static bool slotted(const StorageView& queries, const StorageView& keys) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      const cuda::MemorySlots* slots = cuda::memory_slots();
+      return slots && queries.dim(0) == slots->inputs && keys.dim(0) >= slots->inputs;
+#else
+      (void)queries; (void)keys;
+      return false;
+#endif
+    }
+
     int cross_kernel_residue(const StorageView& queries, const StorageView& keys, const StorageView& values) {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       if (queries.device() != Device::CUDA || queries.dtype() != DataType::FLOAT16
           || keys.dtype() != DataType::FLOAT16 || values.dtype() != DataType::FLOAT16 || queries.rank() != 4
-          || keys.rank() != 4 || keys.shape() != values.shape() || queries.dim(0) != keys.dim(0)
+          || keys.rank() != 4 || keys.shape() != values.shape()
+          || (queries.dim(0) != keys.dim(0) && !slotted(queries, keys))
           || queries.dim(1) != keys.dim(1) || queries.dim(3) != keys.dim(3))
         return -1;
       // Several batches decoded together (cuda/clip_groups.h): each group runs with its own residue, so the
@@ -58,11 +72,14 @@ namespace ctranslate2 {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       const dim_t heads = queries.dim(1), m = queries.dim(2), per_query_clip = heads * m * queries.dim(3);
       const dim_t per_key_clip = heads * keys.dim(2) * keys.dim(3);
+      const int32_t* slot = slotted(queries, keys) ? cuda::memory_slots()->slot : nullptr;
       const auto launch = [&](dim_t clip, dim_t clips, int r) {
+        const dim_t key_clip = slot ? 0 : clip;              // slotted: the slots locate the keys
         cuda::cross_attention(queries.data<float16_t>() + clip * per_query_clip,
-                              keys.data<float16_t>() + clip * per_key_clip,
-                              values.data<float16_t>() + clip * per_key_clip,
-                              output.data<float16_t>() + clip * per_query_clip, clips, heads, m, scale, r);
+                              keys.data<float16_t>() + key_clip * per_key_clip,
+                              values.data<float16_t>() + key_clip * per_key_clip,
+                              output.data<float16_t>() + clip * per_query_clip, clips, heads, m, scale, r,
+                              nullptr, nullptr, nullptr, 0, slot ? slot + clip : nullptr);
       };
       if (!cuda::for_each_clip_group(queries.dim(0), [&](dim_t clip, dim_t clips) {
             launch(clip, clips, group_residue(queries, keys, clips));

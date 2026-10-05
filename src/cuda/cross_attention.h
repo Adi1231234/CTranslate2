@@ -17,11 +17,12 @@ namespace ctranslate2 {
     bool cross_attention_projects(dim_t rows, dim_t n, dim_t k);
 
     // q: [clips][heads][m][64] (or null with x: [clips * m][k], w: [heads * 64][k], bias: [heads * 64], the
-    // queries' Dense layer); k, v: [clips][heads][1500][64]; o: [clips][m][heads][64].
+    // queries' Dense layer); k, v: [clips][heads][1500][64] (with slot, on the device: clip c's are the cache's
+    // entry slot[c], cuda/memory_slots.h); o: [clips][m][heads][64].
     void cross_attention(const float16_t* q, const float16_t* k, const float16_t* v, float16_t* o,
                          dim_t clips, dim_t heads, dim_t m, float alpha, int residue,
                          const float16_t* x = nullptr, const float16_t* w = nullptr,
-                         const float16_t* bias = nullptr, dim_t k_inputs = 0);
+                         const float16_t* bias = nullptr, dim_t k_inputs = 0, const int32_t* slot = nullptr);
 
   }
 }

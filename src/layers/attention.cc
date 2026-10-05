@@ -15,6 +15,7 @@
 #include "cross_attention_fused.h"
 #include "split_heads_fused.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/memory_slots.h"
 #  include "cuda/shared_memory_rows.h"
 #endif
 
@@ -187,6 +188,16 @@ namespace ctranslate2 {
 #endif
     }
 
+    // Inputs of the cached memory keys: its rows, or the inputs still decoding when they sit at slots of an
+    // uncompacted cache (cuda/memory_slots.h).
+    static dim_t memory_inputs(const StorageView& cached_keys) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      if (const cuda::MemorySlots* slots = cuda::memory_slots())
+        return slots->inputs;
+#endif
+      return cached_keys.dim(0);
+    }
+
     // The stock path's MatMul, SoftMax and MatMul for those queries, each product the same cuBLAS arithmetic on the
     // same values through pointers to the shared copy.
     static void shared_memory_attention(const StorageView& queries, const StorageView& keys,
@@ -272,6 +283,10 @@ namespace ctranslate2 {
         cross_attention_fused(queries, keys, values, queries_scale, residue, output);   // decoder cross-attention
         return true;
       }
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      if (cuda::memory_slots() && queries.dim(0) != keys.dim(0))   // only the fused kernel reads memory slots
+        throw std::logic_error("Cross-attention on memory slots needs the fused kernel");
+#endif
 
       const ops::MatMul keys_matmul(/*trans_a=*/false, /*trans_b=*/true, queries_scale);
       keys_matmul(queries, keys, output);
@@ -507,7 +522,7 @@ namespace ctranslate2 {
 
       const StorageView& queries_raw = fused_queries ? fused_proj : queries_proj;
       if (queries_raw.dim(1) == 1 && cached_keys && !shares_memory(queries_raw, *cached_keys))
-        beam_size = queries_raw.dim(0) / cached_keys->dim(0);
+        beam_size = queries_raw.dim(0) / memory_inputs(*cached_keys);
 
       if (fused_queries)
         split_heads_with_bias(fused_proj, _linear[0].bias(), {&queries_proj}, _num_heads, beam_size);

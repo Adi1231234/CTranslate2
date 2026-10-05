@@ -40,7 +40,8 @@ namespace ctranslate2 {
     void Decoder::update_state(DecoderState& state,
                                StorageView beam_indices,
                                const dim_t beam_size,
-                               const StorageView* alive_batches) const {
+                               const StorageView* alive_batches,
+                               const bool keep_inputs_entries) const {
       flush_state_reorder(state);
       // alive_batches may be on the host: the state's batch-level entries (e.g. the memory keys and values)
       // are then compacted in place (ops::Gather) instead of copied whole into new buffers.
@@ -56,7 +57,7 @@ namespace ctranslate2 {
         if (replicate_state(name)) {
           if (!defer)
             ops::Gather()(value, beam_indices);
-        } else if (alive_batches) {
+        } else if (alive_batches && !keep_inputs_entries) {   // kept: read at slots (cuda/memory_slots.h)
           ops::Gather()(value, *alive_batches);
         }
       }

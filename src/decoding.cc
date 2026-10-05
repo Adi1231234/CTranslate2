@@ -11,6 +11,7 @@
 #ifdef CT2_WITH_CUDA
 #  include "cuda/clip_groups.h"
 #  include "cuda/graph.h"
+#  include "cuda/memory_slots.h"
 #  include "cuda/shared_memory_rows.h"
 #endif
 
@@ -539,6 +540,23 @@ namespace ctranslate2 {
                                         return_prefix,
                                         use_hard_prefix ? prefix_ids : nullptr);
 
+#ifdef CT2_WITH_CUDA
+    // Finished inputs leave the memory keys and values where they are (cuda/memory_slots.h): the fused
+    // cross-attention reads each input's at its slot, its original index, for groups (or a batch) of at most 8
+    // inputs, where that kernel runs every step.
+    const bool memory_slots = device == Device::CUDA && dtype == DataType::FLOAT16 && cuda::memory_slots_enabled()
+      && (_group_size > 0 ? _group_size <= 8 : batch_size <= 8);
+    StorageView slots(DataType::INT32);
+    auto upload_slots = [&] {
+      std::vector<int32_t> ids(batch_offset.begin(), batch_offset.end());
+      slots = StorageView({static_cast<dim_t>(ids.size())}, ids).to(device);
+    };
+    if (memory_slots)
+      upload_slots();
+#else
+    const bool memory_slots = false;
+#endif
+
     for (dim_t step = 0; step < max_step; ++step) {
       const bool is_expanded = (!expand_after_first_step || step > 0);
 
@@ -550,6 +568,11 @@ namespace ctranslate2 {
 #ifdef CT2_WITH_CUDA
       // The groups' clips still decoding: each group's products as a batch of its own would run them.
       const cuda::ClipGroupsScope clip_groups(cuda::make_clip_groups(batch_offset, _group_size));
+      const cuda::MemorySlots slot_view{memory_slots ? slots.data<int32_t>() : nullptr,
+                                        static_cast<dim_t>(batch_offset.size())};
+      std::unique_ptr<cuda::MemorySlotsScope> slot_scope;
+      if (memory_slots)
+        slot_scope = std::make_unique<cuda::MemorySlotsScope>(slot_view);
 #endif
       run_decoder_step(device, step, !with_attention, [&] {
         decoder(start_step + step,
@@ -763,7 +786,11 @@ namespace ctranslate2 {
 
       if (gather_indices.device() != device)
         gather_indices = gather_indices.to(device);
-      decoder.update_state(state, gather_indices, _beam_size, keep_batches.get());
+      decoder.update_state(state, gather_indices, _beam_size, keep_batches.get(), memory_slots);
+#ifdef CT2_WITH_CUDA
+      if (memory_slots && keep_batches)
+        upload_slots();                                      // batch_offset: the inputs still decoding
+#endif
 
       topk_ids.reshape({next_batch_size * _beam_size});
       topk_scores.reshape({next_batch_size * _beam_size});

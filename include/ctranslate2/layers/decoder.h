@@ -42,10 +42,13 @@ namespace ctranslate2 {
       // Update the decoder state in beam search. When defers_state_reorder(), the replicated
       // entries keep their order and the beam order waits in state[pending_reorder_key] for the
       // next step, which applies it while appending to the caches (TransformerDecoder).
+      // keep_inputs_entries: the entries kept one per input (the memory keys and values) stay uncompacted when
+      // inputs finish; the next steps read them at slots (cuda/memory_slots.h).
       void update_state(DecoderState& state,
                         StorageView beam_indices,
                         const dim_t beam_size,
-                        const StorageView* alive_batches = nullptr) const;
+                        const StorageView* alive_batches = nullptr,
+                        const bool keep_inputs_entries = false) const;
 
       // Applies a beam order left by update_state, so the state is complete again.
       void flush_state_reorder(DecoderState& state) const;

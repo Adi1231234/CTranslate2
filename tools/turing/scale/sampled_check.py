@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import common
 
 runner, cache, listing, uuids, result = sys.argv[1:6]
-fallback = set(open(uuids, encoding="utf-8").read().split())
+fallback = {line.rstrip("\n") for line in open(uuids, encoding="utf-8") if line.strip()}   # uuids hold spaces
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default", num_workers=1,
                      cpu_threads=1)
 tk = Tokenizer(model.hf_tokenizer, True, task="transcribe", language="he")
