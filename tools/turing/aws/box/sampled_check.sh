@@ -16,3 +16,6 @@ for mode in 0 1; do
   echo "CT2_SHARED_MEMORY_ROWS=$mode: $(( $(date +%s) - t0 )) s"
 done
 if cmp -s shared0.json shared1.json; then echo "IDENTICAL sampled attempts"; else echo "DIFFERENT"; fi
+# Clips joined in one call (group_size=1) against each alone, without random draws (sampling at temperature 0, beam).
+CHECK=joined $B/venv/bin/python "$T/scale/sampled_check.py" $B/runner $B/cache $T/scale/units_real.txt uuids.txt \
+  joined.json 2>&1 | tail -3
