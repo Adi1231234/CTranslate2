@@ -1,0 +1,7 @@
+# The cross-attention's L2 prefetch distance (CT2_CROSS_AHEAD, default 4, tuned on the store PC): alone on the L40S
+# (cross_ahead_probe, round38) distance 1 took 292.9 us and 74.2 mJ a launch against 295.4 us and 79.5 mJ at 4.
+# pyct2-l41n, alternately, twice each.
+a1|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+b1|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_CROSS_AHEAD=1
+a2|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+b2|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_CROSS_AHEAD=1
