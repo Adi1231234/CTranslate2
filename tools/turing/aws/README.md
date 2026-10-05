@@ -74,6 +74,28 @@ model load and the last fallback ladders weigh little; rows IDENTICAL to product
 - `batch/` runs in other regions too (`WB_REGION`, the image and bucket stay in us-east-1) and `race.py` keeps the
   first of several copies of a job to start: g6e capacity was often sold out in us-east-1.
 
+**What bounds it: the 350 W power limit (5.10 evening; rows IDENTICAL to production's in every change below):**
+- The batched path runs at the L40S's power limit, 350 W, which is also the board's maximum (`box/power_limit.sh`);
+  the SM clock sits at ~1800-1900 of 2520 MHz. The same run at 350 / 300 / 250 W: 110.6 / 100.2 / 80.0x
+  (round32). So a kernel's cost is its energy, not its time: one process with 12 batches 100.4x against two with 6;
+  side streams -3% (removed); the second feed-forward 45% faster alone, +0-1.3% on the run.
+- Energy a decoding step (`../kernels/energy_probe.cu`, each kernel alone at production shapes, NVML's counter;
+  9.2 of the ~10.8 J a step): cross-attention 2.54 J (DRAM-bound at 92% of peak, its 246 MB a clip a step are the
+  floor), encoder attention 1.65 J (678M instructions a launch, two thirds the exact softmax's exp and division),
+  encoder products 3.0 J (cuBLAS at 2.0-2.5 pJ a FLOP, power-limited at 141-178 TFLOPS), the second feed-forward 0.4,
+  the decoder's other products 0.6, the memory keys and values 0.4, the GELU pass 0.25 J.
+- Nsight Compute per kernel (`box/ncu_run.sh`): the cache reorder issued 346 instructions a 16-byte vector (64-bit
+  index divisions) and is now a block per head row (`src/cuda/cache_reorder.cu`, `../kernels/cache_reorder_check.cu`);
+  32-bit index math in the head split and the encoder attention's layout.
+- Kept: the joint step's self-attention softmax in one launch (`src/cuda/softmax_parts.cu`; +1.5%, a row's arithmetic
+  depends on its length only), each part's values product written in its rows of the context (no join kernel), the
+  second feed-forward on 5 stages of 64 k (`src/cuda/grouped_split_gemm.cuh`). Opt-in, no gain: the encoder's first
+  feed-forward on a CUTLASS replica with the bias and GELU in its epilogue (`CT2_ENC_GEMM=cutlass`; cuBLAS's s1688
+  kernel has the 16-wide chain's bits on sm_89). Dropped: an encoder attention streaming keys and values once per
+  128 queries in three passes (exact, 18% more instructions, -3%).
+- `mma.sync m16n8k16` gives the same bits only when the k positions within a pair are swapped; any other order of
+  the 16 changes them (`../kernels/mma_kperm_probe.cu`).
+
 **Beside other AWS work in the account** (the asr-training Batch queues): a standalone box, never their queues;
 no resource named `asr-train*` (their submit uses the newest `asr-train` job definition); another AZ than their
 running box; everything tagged.
