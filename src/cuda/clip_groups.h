@@ -23,8 +23,8 @@ namespace ctranslate2 {
 
     // True when one cuBLAS product C = A W^T (fp16, COMPUTE_32F, m rows of A, W of n x k) gives every row the
     // bits a call with that row's group alone would: the shapes whose every row count 2..320 matches 40-row
-    // calls bit for bit on this device and cuBLAS build (tools/turing/kernels/rowinv2.cu), and whose groups'
-    // calls run 2..48 rows. The groups then share one read of the weights.
+    // calls bit for bit on this device and cuBLAS build (tools/turing/kernels/rowinv2.cu), with every active
+    // group 2 rows or more (one row alone runs a gemv). The groups then share one read of the weights.
     bool rows_independent_product(dim_t m, dim_t n, dim_t k);
 
     // Groups of `group_size` clips by original batch index (`batch_offset[i]` is the original index of the

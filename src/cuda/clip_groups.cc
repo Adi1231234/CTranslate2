@@ -21,9 +21,16 @@ namespace ctranslate2 {
     // changes with the rows (17-27, 28-34, 35-44 rows ...).
     bool rows_independent_product(dim_t m, dim_t n, dim_t k) {
       static const bool sm89 = cublas_verified_on(8, 9);
-      if (!sm89 || m < 2 || m > 320 || k != 1280)
+      if (!sm89 || m < 2 || m > 320 || k != 1280
+          || !(n == 3840 || n == 1280 || n == 5120 || n == 51866 || n == 51872))
         return false;
-      return n == 3840 || n == 1280 || n == 5120 || n == 51866 || n == 51872;
+      // A group of one row alone runs cuBLAS's gemv, other bits (a sampled input whose other hypotheses finished).
+      const ClipGroups* groups = clip_groups();
+      if (groups && m % groups->total == 0)
+        for (const dim_t clips : groups->clips)
+          if (clips > 0 && clips * (m / groups->total) < 2)
+            return false;
+      return true;
     }
 
     ClipGroups make_clip_groups(const std::vector<dim_t>& batch_offset, dim_t group_size) {
