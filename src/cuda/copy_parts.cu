@@ -5,16 +5,25 @@
 namespace ctranslate2 {
   namespace cuda {
 
-    // One thread per 16-byte vector of out; its part from the parts' cumulative ends.
+    // One thread per 16-byte vector of out; its part from the parts' cumulative ends, picked in a loop over constant
+    // indices (a parameter array indexed by a computed part would be copied to local memory by every thread).
     __global__ void copy_parts_kernel(CopyParts parts, uint4* out, size_t total) {
       const size_t v = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
       if (v >= total)
         return;
-      size_t begin = 0;
-      int p = 0;
-      while (v >= begin + parts.bytes[p] / 16)
-        begin += parts.bytes[p++] / 16;
-      out[v] = static_cast<const uint4*>(parts.src[p])[v - begin];
+      size_t begin = 0, end = 0;
+      const void* src = nullptr;
+      #pragma unroll
+      for (int q = 0; q < CopyParts::max_parts; ++q)
+        if (q < parts.count) {
+          const size_t next = end + parts.bytes[q] / 16;
+          if (v >= end && v < next) {
+            begin = end;
+            src = parts.src[q];
+          }
+          end = next;
+        }
+      out[v] = static_cast<const uint4*>(src)[v - begin];
     }
 
     bool copy_parts_supported(const void* p, size_t bytes) {

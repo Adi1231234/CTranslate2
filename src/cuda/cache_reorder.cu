@@ -61,7 +61,8 @@ namespace ctranslate2 {
                                  int, const int32_t*, dim_t, dim_t, dim_t, dim_t, dim_t);
 
     // reorder_append_kernel for several parts: thread v belongs to the part whose range of output vectors holds it
-    // (the parts' keys, then values, in part order).
+    // (the parts' keys, then values, in part order). The parts' fields are picked in loops over constant indices: a
+    // parameter array indexed by a computed part would be copied to local memory by every thread.
     struct PartRanges {
       size_t end[CacheParts::max_parts];                    // each part's vectors (keys and values) end here
     };
@@ -71,22 +72,36 @@ namespace ctranslate2 {
       size_t v = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
       if (v >= total)
         return;
-      int p = 0;
-      while (v >= ranges.end[p])
-        ++p;
-      v -= p ? ranges.end[p - 1] : 0;
-      const unsigned time = unsigned(parts.time[p]), out_time = time + 1;
-      const size_t per_cache = size_t(parts.rows[p]) * heads * out_time * head_vecs;
+      size_t begin = 0;
+      unsigned time = 0, rows = 0;
+      const void* cache[2] = {};
+      const void* fresh[2] = {};
+      void* out[2] = {};
+      const int32_t* order = nullptr;
+      #pragma unroll
+      for (int q = 0; q < CacheParts::max_parts; ++q)
+        if (q < parts.count && v < ranges.end[q] && (q == 0 || v >= ranges.end[q - 1])) {
+          begin = q == 0 ? 0 : ranges.end[q - 1];
+          time = unsigned(parts.time[q]);
+          rows = unsigned(parts.rows[q]);
+          cache[0] = parts.cache[q][0]; cache[1] = parts.cache[q][1];
+          fresh[0] = parts.fresh[q][0]; fresh[1] = parts.fresh[q][1];
+          out[0] = parts.out[q][0]; out[1] = parts.out[q][1];
+          order = parts.order[q];
+        }
+      v -= begin;
+      const unsigned out_time = time + 1;
+      const size_t per_cache = size_t(rows) * heads * out_time * head_vecs;
       const unsigned c = unsigned(v / per_cache);
       v -= c * per_cache;
       const size_t rh = v / (size_t(out_time) * head_vecs);        // r * heads + h
       const unsigned rest = unsigned(v - rh * out_time * head_vecs);
       const unsigned s = rest / head_vecs, i = rest - s * head_vecs;
       const size_t r = rh / heads, h = rh - r * heads;
-      const size_t from = parts.order[p] ? size_t(parts.order[p][r]) : r;
-      static_cast<uint4*>(parts.out[p][c])[v] = s < time
-        ? static_cast<const uint4*>(parts.cache[p][c])[((from * heads + h) * time + s) * head_vecs + i]
-        : static_cast<const uint4*>(parts.fresh[p][c])[rh * head_vecs + i];
+      const size_t from = order ? size_t(order[r]) : r;
+      static_cast<uint4*>(c ? out[1] : out[0])[v] = s < time
+        ? static_cast<const uint4*>(c ? cache[1] : cache[0])[((from * heads + h) * time + s) * head_vecs + i]
+        : static_cast<const uint4*>(c ? fresh[1] : fresh[0])[rh * head_vecs + i];
     }
 
     void reorder_append_parts(const CacheParts& parts, dim_t heads, dim_t head_dim) {
