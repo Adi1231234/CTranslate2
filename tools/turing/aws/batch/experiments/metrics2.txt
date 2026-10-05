@@ -1,0 +1,3 @@
+# Hardware counters at saturation, privileged container (metrics1 hit ERR_NVGPUCTRPERM): 4 MPS processes of
+# pyct2-l40s with sleeping waits (s4b 56.12x), a 60 s window after 60 s.
+scriptm4|scripts/gpumetrics.sh|m4b|pyct2-l40s|runner|src/tools/turing/scale/units_real.txt|4|60|60|MPS=1|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=blocking
