@@ -1,0 +1,9 @@
+# The decoder's second feed-forward with more bytes in flight (480e7d4c, pyct2-l41g: tiled_split_gemm's k step a
+# template parameter; 64x64 tiles at 3 stages of 32 k had ~24 KB in flight, ~16 GB/s a block, 73-92 us against a
+# 16 us floor). decoder_gemm_probe first (bits of every new tile against cuBLAS, then time), then the batched path:
+# the default (64x64/3), CT2_DECODER_TILES=ffn2=64x64k64/5 and ffn2=64x32k64/6, the default again.
+scriptg|scripts/probes.sh|probes/probes-480e7d4c.tgz|decoder_gemm_probe
+d1|pyct2-l41g|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+f5|pyct2-l41g|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_DECODER_TILES=ffn2=64x64k64/5
+f6|pyct2-l41g|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_DECODER_TILES=ffn2=64x32k64/6
+d2|pyct2-l41g|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
