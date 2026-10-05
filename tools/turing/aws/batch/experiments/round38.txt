@@ -1,5 +1,7 @@
 # pyct2-l41n (5ed6a4b9): the encoder's first feed-forward on a pinned cuBLASLt algorithm (cuBLAS's bits, 20% less
 # energy alone, round35), on by default; CT2_ENC_LT=0 keeps cuBLAS's pick. Alternately, twice each, one machine.
+# First cross_ahead_probe: the cross-attention by L2 prefetch distance (225 MB from DRAM for 192 MB of keys and values).
+scriptx|scripts/probes.sh|probes/probes-6582889b.tgz|cross_ahead_probe
 o1|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_ENC_LT=0
 n1|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
 o2|pyct2-l41n|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_ENC_LT=0
