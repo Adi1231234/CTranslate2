@@ -482,6 +482,459 @@ namespace ctranslate2 {
   {
   }
 
+  // The loop state of one beam search between its steps (BeamSearchRun).
+  struct BeamSearchRun::Impl {
+    // The search's parameters.
+    dim_t beam_size;
+    float length_penalty;
+    float coverage_penalty;
+    float prefix_bias_beta;
+    size_t max_candidates;
+    dim_t group_size;
+    // Its arguments.
+    layers::Decoder& decoder;
+    layers::DecoderState& state;
+    const Sampler& sampler;
+    const std::vector<size_t> end_ids;
+    const dim_t start_step;
+    const dim_t max_length;
+    const dim_t min_length;
+    const bool return_scores;
+    const bool return_attention;
+    const bool return_logits_vocab;
+    const bool return_prefix;
+    const size_t num_hypotheses;
+    const bool include_eos_in_hypotheses;
+    const std::vector<std::shared_ptr<LogitsProcessor>> logits_processors;
+    const std::vector<std::vector<size_t>>* prefix_ids;
+
+    Device device;
+    DataType dtype;
+    dim_t vocabulary_size;
+    dim_t batch_size;
+    dim_t num_candidates;
+    bool expand_after_first_step;
+    bool allow_early_exit;
+    StorageView topk_ids;
+    StorageView topk_scores;
+    std::vector<bool> top_beam_finished;
+    std::vector<dim_t> batch_offset;
+    std::vector<DecodingResult> results;
+    std::unique_ptr<BiasedDecoder> biased_decoder;
+    std::vector<std::vector<bool>> beams_diverged_from_prefix;
+    bool bias_towards_prefix;
+    bool use_hard_prefix;
+    StorageView logits;
+    StorageView alive_seq;
+    StorageView alive_attention;
+    StorageView attention_step;
+    dim_t max_step;
+    bool memory_slots = false;
+    StorageView slots{DataType::INT32};
+    dim_t step = 0;
+    bool done = false;
+
+    void upload_slots() {
+      std::vector<int32_t> ids(batch_offset.begin(), batch_offset.end());
+      slots = StorageView({static_cast<dim_t>(ids.size())}, ids).to(device);
+    }
+  };
+
+#ifdef CT2_WITH_CUDA
+  // A run's clip groups (the groups' clips still decoding: each group's products as a batch of its own would run
+  // them) and memory slots, for its decoder step and its own update.
+  struct BeamSearchRunScopes {
+    explicit BeamSearchRunScopes(const BeamSearchRun::Impl& r)
+      : groups(cuda::make_clip_groups(r.batch_offset, r.group_size))
+      , view{r.memory_slots ? r.slots.data<int32_t>() : nullptr, static_cast<dim_t>(r.batch_offset.size())}
+    {
+      if (r.memory_slots)
+        slots = std::make_unique<cuda::MemorySlotsScope>(view);
+    }
+    const cuda::ClipGroupsScope groups;
+    const cuda::MemorySlots view;
+    std::unique_ptr<cuda::MemorySlotsScope> slots;
+  };
+#endif
+
+  std::unique_ptr<BeamSearchRun>
+  BeamSearch::start(layers::Decoder& decoder,
+                    layers::DecoderState& state,
+                    const Sampler& sampler,
+                    const std::vector<size_t>& start_ids,
+                    const std::vector<size_t>& end_ids,
+                    const dim_t start_step,
+                    const dim_t max_length,
+                    const dim_t min_length,
+                    const bool return_scores,
+                    const bool return_attention,
+                    const bool return_logits_vocab,
+                    const bool return_prefix,
+                    const size_t num_hypotheses,
+                    const bool include_eos_in_hypotheses,
+                    const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors,
+                    const std::vector<std::vector<size_t>>* prefix_ids) const {
+    auto run = std::unique_ptr<BeamSearchRun>(new BeamSearchRun());
+    run->_impl = std::unique_ptr<BeamSearchRun::Impl>(new BeamSearchRun::Impl{
+        _beam_size, _length_penalty, _coverage_penalty, _prefix_bias_beta, _max_candidates, _group_size,
+        decoder, state, sampler, end_ids, start_step, max_length, min_length, return_scores, return_attention,
+        return_logits_vocab, return_prefix, num_hypotheses, include_eos_in_hypotheses, logits_processors,
+        prefix_ids});
+    BeamSearchRun::Impl& r = *run->_impl;
+
+    r.device = decoder.device();
+    r.dtype = decoder.output_type();
+    r.vocabulary_size = decoder.output_size();
+    r.batch_size = start_ids.size();
+
+    // We get more candidates than the beam size so that if half the candidates are EOS,
+    // we can replace finished hypotheses with active beams.
+    r.num_candidates = _beam_size * 2;
+
+    // Only the first beam is considered in the first step. As an additional optimization
+    // we try to run the first step without expanding the batch size.
+    r.expand_after_first_step = (r.device == Device::CPU && r.num_candidates <= r.vocabulary_size);
+
+    // We can exit early when the first beam finishes and no penalties are used.
+    r.allow_early_exit = (_length_penalty == 0 && _coverage_penalty == 0);
+
+    r.topk_ids = StorageView({r.batch_size}, DataType::INT32);
+    r.topk_scores = StorageView(r.dtype);
+
+    r.top_beam_finished.assign(r.batch_size, false);
+    r.batch_offset.resize(r.batch_size);
+    r.results.resize(r.batch_size);
+    for (dim_t i = 0; i < r.batch_size; ++i) {
+      r.batch_offset[i] = i;
+      r.topk_ids.at<int32_t>(i) = start_ids[i];
+    }
+
+    if (!r.expand_after_first_step) {
+      decoder.replicate_state(state, _beam_size);
+      repeat_batch(r.topk_ids, _beam_size);
+      TYPE_DISPATCH(r.dtype, initialize_beam_scores<T>(r.topk_scores, r.batch_size, _beam_size));
+    }
+
+    r.bias_towards_prefix = prefix_ids && _prefix_bias_beta > 0;
+    if (r.bias_towards_prefix) {
+      r.biased_decoder = std::make_unique<BiasedDecoder>(_prefix_bias_beta, *prefix_ids);
+      r.beams_diverged_from_prefix.resize(r.batch_size, std::vector<bool>(_beam_size, false));
+    }
+    r.use_hard_prefix = prefix_ids && !r.bias_towards_prefix;
+
+    r.logits = StorageView(r.dtype, r.device);
+    r.alive_seq = StorageView(r.topk_ids.dtype());
+
+    r.max_step = get_max_step(max_length, return_prefix, r.use_hard_prefix ? prefix_ids : nullptr);
+
+#ifdef CT2_WITH_CUDA
+    // Finished inputs leave the memory keys and values where they are (cuda/memory_slots.h): the fused
+    // cross-attention reads each input's at its slot, its original index, for groups (or a batch) of at most 8
+    // inputs, where that kernel runs every step.
+    r.memory_slots = r.device == Device::CUDA && r.dtype == DataType::FLOAT16 && cuda::memory_slots_enabled()
+      && (_group_size > 0 ? _group_size <= 8 : r.batch_size <= 8);
+    if (r.memory_slots)
+      r.upload_slots();
+#endif
+    return run;
+  }
+
+  BeamSearchRun::~BeamSearchRun() = default;
+
+  bool BeamSearchRun::next_ids(StorageView& step_ids) {
+    Impl& r = *_impl;
+    if (r.done || r.step >= r.max_step) {
+      r.done = true;
+      return false;
+    }
+    r.attention_step = StorageView(r.dtype, r.device);
+    convert_to_original_word_ids(r.decoder, r.topk_ids);
+    step_ids = r.topk_ids.to(r.device);
+    return true;
+  }
+
+  dim_t BeamSearchRun::step() const {
+    return _impl->step;
+  }
+
+  dim_t BeamSearchRun::decoder_step() const {
+    return _impl->start_step + _impl->step;
+  }
+
+  bool BeamSearchRun::with_attention() const {
+    return _impl->return_attention || _impl->coverage_penalty != 0;
+  }
+
+  StorageView* BeamSearchRun::attention_output() {
+    return with_attention() ? &_impl->attention_step : nullptr;
+  }
+
+  StorageView& BeamSearchRun::logits() {
+    return _impl->logits;
+  }
+
+  std::shared_ptr<void> BeamSearchRun::own_scopes() {
+#ifdef CT2_WITH_CUDA
+    return std::make_shared<BeamSearchRunScopes>(*_impl);
+#else
+    return nullptr;
+#endif
+  }
+
+  const std::vector<dim_t>& BeamSearchRun::alive_inputs() const {
+    return _impl->batch_offset;
+  }
+
+  bool BeamSearchRun::keeps_memory_in_place() const {
+    return _impl->memory_slots;
+  }
+
+  bool BeamSearchRun::advance() {
+    Impl& r = *_impl;
+#ifdef CT2_WITH_CUDA
+    const BeamSearchRunScopes scopes(r);
+#endif
+    const dim_t step = r.step;
+    const dim_t beam_size = r.beam_size;
+    const dim_t num_candidates = r.num_candidates;
+    const bool is_expanded = (!r.expand_after_first_step || step > 0);
+    StorageView& logits = r.logits;
+    StorageView& topk_ids = r.topk_ids;
+    StorageView& topk_scores = r.topk_scores;
+    StorageView& alive_seq = r.alive_seq;
+    StorageView& alive_attention = r.alive_attention;
+    std::vector<dim_t>& batch_offset = r.batch_offset;
+    const auto* prefix_ids = r.prefix_ids;
+
+    const dim_t cur_batch_size = is_expanded ? logits.dim(0) / beam_size : logits.dim(0);
+
+    DisableTokens disable_tokens(logits);
+
+    // Prevent the generation of end_ids until the minimum length is reached.
+    apply_min_length(step,
+                     r.min_length,
+                     r.end_ids,
+                     disable_tokens,
+                     batch_offset,
+                     r.return_prefix,
+                     prefix_ids);
+
+    if (!r.logits_processors.empty()) {
+      if (alive_seq)
+        merge_batch_beam(alive_seq);
+      for (const auto& logits_processor : r.logits_processors)
+        logits_processor->apply(step, logits, disable_tokens, alive_seq, batch_offset, prefix_ids);
+      if (alive_seq)
+        split_batch_beam(alive_seq, beam_size);
+    }
+
+    disable_tokens.apply();
+    std::vector<StorageView> logits_vec;
+    if (r.return_logits_vocab) {
+      if (is_expanded)
+        logits_vec = build_logits(logits, cur_batch_size * beam_size);
+      else
+        logits_vec = build_logits(logits, cur_batch_size);
+    }
+
+    StorageView log_probs(r.dtype, r.device);
+    if (r.bias_towards_prefix) {
+      r.biased_decoder->decode(cur_batch_size,
+                               step,
+                               batch_offset,
+                               r.beams_diverged_from_prefix,
+                               logits,
+                               log_probs);
+    } else {
+      ops::LogSoftMax()(logits);
+      log_probs.shallow_copy(logits);
+    }
+
+    // Multiply by the current beam log probs.
+    if (topk_scores) {
+      DEVICE_AND_TYPE_DISPATCH(log_probs.device(), log_probs.dtype(),
+                               primitives<D>::add_depth_broadcast(topk_scores.to(r.device).data<T>(),
+                                                                  log_probs.data<T>(),
+                                                                  topk_scores.size(),
+                                                                  log_probs.size()));
+    }
+
+    // Flatten the probs into a list of candidates.
+    log_probs.reshape({cur_batch_size, -1});
+
+    // TopK candidates.
+    r.sampler(log_probs, topk_ids, topk_scores, num_candidates);
+
+    // Unflatten the ids.
+    StorageView gather_indices = unflatten_ids(topk_ids, beam_size, r.vocabulary_size, is_expanded);
+
+    if (prefix_ids) {
+      if (r.use_hard_prefix) {
+        update_sample_with_prefix(step,
+                                  topk_ids,
+                                  topk_scores,
+                                  *prefix_ids,
+                                  r.end_ids,
+                                  batch_offset,
+                                  beam_size,
+                                  &gather_indices,
+                                  is_expanded);
+      } else if (r.bias_towards_prefix) {
+        r.beams_diverged_from_prefix = get_beams_divergence_from_prefix(r.beams_diverged_from_prefix,
+                                                                        step,
+                                                                        topk_ids,
+                                                                        *prefix_ids,
+                                                                        batch_offset);
+      }
+    }
+
+    // Append last prediction.
+    append_step_output(alive_seq, topk_ids, &gather_indices);
+
+    if (r.attention_step) {
+      if (!is_expanded)
+        repeat_batch(r.attention_step, beam_size);
+      split_batch_beam(r.attention_step, beam_size);
+      append_step_output(alive_attention, r.attention_step.to_float32().to(Device::CPU));
+      gather_beam_flat(alive_attention, gather_indices, num_candidates);
+    }
+
+    // Check if some hypotheses are finished.
+    std::vector<int32_t> non_finished_index;
+    non_finished_index.reserve(cur_batch_size);
+
+    // Only keep the first beam_size candidates.
+    StorageView active_beams({cur_batch_size * beam_size}, DataType::INT32);
+
+    for (dim_t i = 0; i < cur_batch_size; ++i) {
+      const dim_t batch_id = batch_offset[i];
+      const dim_t prefix_length = r.use_hard_prefix ? prefix_ids->at(batch_id).size() : 0;
+      const bool is_last_step_for_batch = is_last_step(step,
+                                                       r.max_length,
+                                                       prefix_length,
+                                                       r.return_prefix);
+
+      auto& result = r.results[batch_id];
+      dim_t secondary_candidates_offset = beam_size;
+
+      for (dim_t k = 0; k < beam_size; ++k) {
+        const size_t last_id = topk_ids.at<int32_t>({i, k});
+        dim_t next_beam_id = k;
+
+        if ((is_eos(last_id, r.end_ids) && step >= prefix_length) || is_last_step_for_batch) {
+          if (k == 0)
+            r.top_beam_finished[i] = true;
+
+          const bool ignore_last_token = is_eos(last_id, r.end_ids) && !r.include_eos_in_hypotheses;
+          const dim_t start = r.return_prefix ? 0 : prefix_length;
+          const dim_t end = ignore_last_token ? step : step + 1;
+
+          // Register this hypothesis.
+          result.scores.emplace_back(topk_scores.scalar_at<float>({i, k}));
+          result.hypotheses.emplace_back(build_hypothesis(alive_seq, i, k, start, end));
+          if (alive_attention)
+            result.attention.emplace_back(build_attention(alive_attention, i, k, start, end));
+          if (r.return_logits_vocab) {
+            result.logits_vocab.emplace_back(std::move(logits_vec[i * k]));
+          }
+
+          // Move another active beam to this position.
+          for (dim_t j = secondary_candidates_offset; j < num_candidates; ++j) {
+            const auto candidate = topk_ids.at<int32_t>({i, j});
+            if (!is_eos(candidate, r.end_ids)) {
+              next_beam_id = j;
+              secondary_candidates_offset = j + 1;
+              break;
+            }
+          }
+        }
+
+        active_beams.at<int32_t>(i * beam_size + k) = i * num_candidates + next_beam_id;
+      }
+
+      bool is_finished = false;
+      if (is_last_step_for_batch)
+        is_finished = true;
+      else if (r.allow_early_exit)
+        is_finished = r.top_beam_finished[i] && result.hypotheses.size() >= r.num_hypotheses;
+      else
+        is_finished = result.hypotheses.size() >= r.max_candidates;
+
+      if (is_finished) {
+        finalize_result(result,
+                        r.num_hypotheses,
+                        r.length_penalty,
+                        r.coverage_penalty,
+                        r.return_scores,
+                        r.return_attention,
+                        r.return_logits_vocab);
+      } else {
+        non_finished_index.emplace_back(i);
+      }
+    }
+
+    const dim_t next_batch_size = non_finished_index.size();
+
+    // If all remaining sentences are finished, no need to go further.
+    if (next_batch_size == 0) {
+      if (!is_expanded) {
+        // We should ensure that states are replicated before exiting this function.
+        r.decoder.replicate_state(r.state, beam_size);
+      }
+      r.done = true;
+      return false;
+    }
+
+    gather(gather_indices, active_beams);
+    gather_beam_flat(topk_ids, active_beams, beam_size);
+    gather_beam_flat(topk_scores, active_beams, beam_size);
+    gather_beam_flat(alive_seq, active_beams, beam_size);
+    if (alive_attention)
+      gather_beam_flat(alive_attention, active_beams, beam_size);
+
+    // If some sentences finished on this step, ignore them for the next step.
+    std::unique_ptr<StorageView> keep_batches;
+    if (next_batch_size != cur_batch_size) {
+      batch_offset = index_vector(batch_offset, non_finished_index);
+      r.top_beam_finished = index_vector(r.top_beam_finished, non_finished_index);
+      if (r.bias_towards_prefix)
+        r.beams_diverged_from_prefix = index_vector(r.beams_diverged_from_prefix, non_finished_index);
+
+      keep_batches = std::make_unique<StorageView>(Shape{next_batch_size}, non_finished_index);
+      gather(topk_ids, *keep_batches);
+      gather(topk_scores, *keep_batches);
+      gather(alive_seq, *keep_batches);
+      if (alive_attention)
+        gather(alive_attention, *keep_batches);
+      // Left on the host: update_state then compacts the decoder state in place.
+    }
+
+    if (gather_indices.device() != r.device)
+      gather_indices = gather_indices.to(r.device);
+    r.decoder.update_state(r.state, gather_indices, beam_size, keep_batches.get(), r.memory_slots);
+#ifdef CT2_WITH_CUDA
+    if (r.memory_slots && keep_batches)
+      r.upload_slots();                                      // batch_offset: the inputs still decoding
+#endif
+
+    topk_ids.reshape({next_batch_size * beam_size});
+    topk_scores.reshape({next_batch_size * beam_size});
+
+    if (r.bias_towards_prefix)
+      r.bias_towards_prefix = !all_beams_diverged_from_prefix(r.beams_diverged_from_prefix);
+
+    if (++r.step >= r.max_step) {
+      r.done = true;
+      return false;
+    }
+    return true;
+  }
+
+  std::vector<DecodingResult> BeamSearchRun::finish() {
+    _impl->decoder.flush_state_reorder(_impl->state);  // callers may reuse the state
+    return std::move(_impl->results);
+  }
+
   std::vector<DecodingResult>
   BeamSearch::search(layers::Decoder& decoder,
                      layers::DecoderState& state,
@@ -503,318 +956,25 @@ namespace ctranslate2 {
 #ifdef CT2_WITH_CUDA
     const cuda::StepGraphScope step_graphs;           // releases the step graph and arenas at the end
 #endif
-    const Device device = decoder.device();
-    const DataType dtype = decoder.output_type();
-    const dim_t vocabulary_size = decoder.output_size();
-    const dim_t batch_size = start_ids.size();
-
-    // We get more candidates than the beam size so that if half the candidates are EOS,
-    // we can replace finished hypotheses with active beams.
-    const dim_t num_candidates = _beam_size * 2;
-
-    // Only the first beam is considered in the first step. As an additional optimization
-    // we try to run the first step without expanding the batch size.
-    const bool expand_after_first_step = (device == Device::CPU
-                                          && num_candidates <= vocabulary_size);
-
-    // We can exit early when the first beam finishes and no penalties are used.
-    const bool allow_early_exit = (_length_penalty == 0 && _coverage_penalty == 0);
-
-    StorageView topk_ids({batch_size}, DataType::INT32);
-    StorageView topk_scores(dtype);
-
-    std::vector<bool> top_beam_finished(batch_size, false);
-    std::vector<dim_t> batch_offset(batch_size);
-    std::vector<DecodingResult> results(batch_size);
-    for (dim_t i = 0; i < batch_size; ++i) {
-      batch_offset[i] = i;
-      topk_ids.at<int32_t>(i) = start_ids[i];
-    }
-
-    if (!expand_after_first_step) {
-      decoder.replicate_state(state, _beam_size);
-      repeat_batch(topk_ids, _beam_size);
-      TYPE_DISPATCH(dtype, initialize_beam_scores<T>(topk_scores, batch_size, _beam_size));
-    }
-
-    std::unique_ptr<BiasedDecoder> biased_decoder;
-    std::vector<std::vector<bool>> beams_diverged_from_prefix;
-    bool bias_towards_prefix = prefix_ids && _prefix_bias_beta > 0;
-    if (bias_towards_prefix) {
-      biased_decoder = std::make_unique<BiasedDecoder>(_prefix_bias_beta, *prefix_ids);
-      beams_diverged_from_prefix.resize(batch_size, std::vector<bool>(_beam_size, false));
-    }
-    const bool use_hard_prefix = prefix_ids && !bias_towards_prefix;
-
-    StorageView logits(dtype, device);
-    StorageView alive_seq(topk_ids.dtype());
-    StorageView alive_attention;
-
-    const dim_t max_step = get_max_step(max_length,
-                                        return_prefix,
-                                        use_hard_prefix ? prefix_ids : nullptr);
-
-#ifdef CT2_WITH_CUDA
-    // Finished inputs leave the memory keys and values where they are (cuda/memory_slots.h): the fused
-    // cross-attention reads each input's at its slot, its original index, for groups (or a batch) of at most 8
-    // inputs, where that kernel runs every step.
-    const bool memory_slots = device == Device::CUDA && dtype == DataType::FLOAT16 && cuda::memory_slots_enabled()
-      && (_group_size > 0 ? _group_size <= 8 : batch_size <= 8);
-    StorageView slots(DataType::INT32);
-    auto upload_slots = [&] {
-      std::vector<int32_t> ids(batch_offset.begin(), batch_offset.end());
-      slots = StorageView({static_cast<dim_t>(ids.size())}, ids).to(device);
-    };
-    if (memory_slots)
-      upload_slots();
-#else
-    const bool memory_slots = false;
-#endif
-
-    for (dim_t step = 0; step < max_step; ++step) {
-      const bool is_expanded = (!expand_after_first_step || step > 0);
-
-      // Compute log probs for the current step.
-      StorageView attention_step(dtype, device);
-      convert_to_original_word_ids(decoder, topk_ids);
-      const StorageView step_ids = topk_ids.to(device);
-      const bool with_attention = return_attention || _coverage_penalty != 0;
-#ifdef CT2_WITH_CUDA
-      // The groups' clips still decoding: each group's products as a batch of its own would run them.
-      const cuda::ClipGroupsScope clip_groups(cuda::make_clip_groups(batch_offset, _group_size));
-      const cuda::MemorySlots slot_view{memory_slots ? slots.data<int32_t>() : nullptr,
-                                        static_cast<dim_t>(batch_offset.size())};
-      std::unique_ptr<cuda::MemorySlotsScope> slot_scope;
-      if (memory_slots)
-        slot_scope = std::make_unique<cuda::MemorySlotsScope>(slot_view);
-#endif
-      run_decoder_step(device, step, !with_attention, [&] {
-        decoder(start_step + step,
-                step_ids,
-                state,
-                &logits,  // output shape: (cur_batch_size*beam_size x vocab_size), if not expanded beam_size is 1
-                with_attention ? &attention_step : nullptr);
-      });
-
-      const dim_t cur_batch_size = is_expanded ? logits.dim(0) / _beam_size : logits.dim(0);
-
-      DisableTokens disable_tokens(logits);
-
-      // Prevent the generation of end_ids until the minimum length is reached.
-      apply_min_length(step,
-                       min_length,
-                       end_ids,
-                       disable_tokens,
-                       batch_offset,
-                       return_prefix,
-                       prefix_ids);
-
-      if (!logits_processors.empty()) {
-        if (alive_seq)
-          merge_batch_beam(alive_seq);
-        for (const auto& logits_processor : logits_processors)
-          logits_processor->apply(step, logits, disable_tokens, alive_seq, batch_offset, prefix_ids);
-        if (alive_seq)
-          split_batch_beam(alive_seq, _beam_size);
+    const auto run = start(decoder, state, sampler, start_ids, end_ids, start_step, max_length, min_length,
+                           return_scores, return_attention, return_logits_vocab, return_prefix, num_hypotheses,
+                           include_eos_in_hypotheses, logits_processors, prefix_ids);
+    StorageView step_ids(DataType::INT32);
+    while (run->next_ids(step_ids)) {
+      {
+        const auto scopes = run->own_scopes();
+        run_decoder_step(decoder.device(), run->step(), !run->with_attention(), [&] {
+          decoder(run->decoder_step(),
+                  step_ids,
+                  state,
+                  &run->logits(),  // output shape: (cur_batch_size*beam_size x vocab_size), if not expanded beam_size is 1
+                  run->attention_output());
+        });
       }
-
-      disable_tokens.apply();
-      std::vector<StorageView> logits_vec;
-      if (return_logits_vocab) {
-        if (is_expanded)
-          logits_vec = build_logits(logits, cur_batch_size * _beam_size);
-        else
-          logits_vec = build_logits(logits, cur_batch_size);
-      }
-
-      StorageView log_probs(dtype, device);
-      if (bias_towards_prefix) {
-        biased_decoder->decode(cur_batch_size,
-                               step,
-                               batch_offset,
-                               beams_diverged_from_prefix,
-                               logits,
-                               log_probs);
-      } else {
-        ops::LogSoftMax()(logits);
-        log_probs.shallow_copy(logits);
-      }
-
-      // Multiply by the current beam log probs.
-      if (topk_scores) {
-        DEVICE_AND_TYPE_DISPATCH(log_probs.device(), log_probs.dtype(),
-                                 primitives<D>::add_depth_broadcast(topk_scores.to(device).data<T>(),
-                                                                    log_probs.data<T>(),
-                                                                    topk_scores.size(),
-                                                                    log_probs.size()));
-      }
-
-      // Flatten the probs into a list of candidates.
-      log_probs.reshape({cur_batch_size, -1});
-
-      // TopK candidates.
-      sampler(log_probs, topk_ids, topk_scores, num_candidates);
-
-      // Unflatten the ids.
-      StorageView gather_indices = unflatten_ids(topk_ids, _beam_size, vocabulary_size, is_expanded);
-
-      if (prefix_ids) {
-        if (use_hard_prefix) {
-          update_sample_with_prefix(step,
-                                    topk_ids,
-                                    topk_scores,
-                                    *prefix_ids,
-                                    end_ids,
-                                    batch_offset,
-                                    _beam_size,
-                                    &gather_indices,
-                                    is_expanded);
-        } else if (bias_towards_prefix) {
-          beams_diverged_from_prefix = get_beams_divergence_from_prefix(beams_diverged_from_prefix,
-                                                                        step,
-                                                                        topk_ids,
-                                                                        *prefix_ids,
-                                                                        batch_offset);
-        }
-      }
-
-      // Append last prediction.
-      append_step_output(alive_seq, topk_ids, &gather_indices);
-
-      if (attention_step) {
-        if (!is_expanded)
-          repeat_batch(attention_step, _beam_size);
-        split_batch_beam(attention_step, _beam_size);
-        append_step_output(alive_attention, attention_step.to_float32().to(Device::CPU));
-        gather_beam_flat(alive_attention, gather_indices, num_candidates);
-      }
-
-      // Check if some hypotheses are finished.
-      std::vector<int32_t> non_finished_index;
-      non_finished_index.reserve(cur_batch_size);
-
-      // Only keep the first beam_size candidates.
-      StorageView active_beams({cur_batch_size * _beam_size}, DataType::INT32);
-
-      for (dim_t i = 0; i < cur_batch_size; ++i) {
-        const dim_t batch_id = batch_offset[i];
-        const dim_t prefix_length = use_hard_prefix ? prefix_ids->at(batch_id).size() : 0;
-        const bool is_last_step_for_batch = is_last_step(step,
-                                                         max_length,
-                                                         prefix_length,
-                                                         return_prefix);
-
-        auto& result = results[batch_id];
-        dim_t secondary_candidates_offset = _beam_size;
-
-        for (dim_t k = 0; k < _beam_size; ++k) {
-          const size_t last_id = topk_ids.at<int32_t>({i, k});
-          dim_t next_beam_id = k;
-
-          if ((is_eos(last_id, end_ids) && step >= prefix_length) || is_last_step_for_batch) {
-            if (k == 0)
-              top_beam_finished[i] = true;
-
-            const bool ignore_last_token = is_eos(last_id, end_ids) && !include_eos_in_hypotheses;
-            const dim_t start = return_prefix ? 0 : prefix_length;
-            const dim_t end = ignore_last_token ? step : step + 1;
-
-            // Register this hypothesis.
-            result.scores.emplace_back(topk_scores.scalar_at<float>({i, k}));
-            result.hypotheses.emplace_back(build_hypothesis(alive_seq, i, k, start, end));
-            if (alive_attention)
-              result.attention.emplace_back(build_attention(alive_attention, i, k, start, end));
-            if (return_logits_vocab) {
-              result.logits_vocab.emplace_back(std::move(logits_vec[i * k]));
-            }
-
-            // Move another active beam to this position.
-            for (dim_t j = secondary_candidates_offset; j < num_candidates; ++j) {
-              const auto candidate = topk_ids.at<int32_t>({i, j});
-              if (!is_eos(candidate, end_ids)) {
-                next_beam_id = j;
-                secondary_candidates_offset = j + 1;
-                break;
-              }
-            }
-          }
-
-          active_beams.at<int32_t>(i * _beam_size + k) = i * num_candidates + next_beam_id;
-        }
-
-        bool is_finished = false;
-        if (is_last_step_for_batch)
-          is_finished = true;
-        else if (allow_early_exit)
-          is_finished = top_beam_finished[i] && result.hypotheses.size() >= num_hypotheses;
-        else
-          is_finished = result.hypotheses.size() >= _max_candidates;
-
-        if (is_finished) {
-          finalize_result(result,
-                          num_hypotheses,
-                          _length_penalty,
-                          _coverage_penalty,
-                          return_scores,
-                          return_attention,
-                          return_logits_vocab);
-        } else {
-          non_finished_index.emplace_back(i);
-        }
-      }
-
-      const dim_t next_batch_size = non_finished_index.size();
-
-      // If all remaining sentences are finished, no need to go further.
-      if (next_batch_size == 0) {
-        if (!is_expanded) {
-          // We should ensure that states are replicated before exiting this function.
-          decoder.replicate_state(state, _beam_size);
-        }
+      if (!run->advance())
         break;
-      }
-
-      gather(gather_indices, active_beams);
-      gather_beam_flat(topk_ids, active_beams, _beam_size);
-      gather_beam_flat(topk_scores, active_beams, _beam_size);
-      gather_beam_flat(alive_seq, active_beams, _beam_size);
-      if (alive_attention)
-        gather_beam_flat(alive_attention, active_beams, _beam_size);
-
-      // If some sentences finished on this step, ignore them for the next step.
-      std::unique_ptr<StorageView> keep_batches;
-      if (next_batch_size != cur_batch_size) {
-        batch_offset = index_vector(batch_offset, non_finished_index);
-        top_beam_finished = index_vector(top_beam_finished, non_finished_index);
-        if (bias_towards_prefix)
-          beams_diverged_from_prefix = index_vector(beams_diverged_from_prefix, non_finished_index);
-
-        keep_batches = std::make_unique<StorageView>(Shape{next_batch_size}, non_finished_index);
-        gather(topk_ids, *keep_batches);
-        gather(topk_scores, *keep_batches);
-        gather(alive_seq, *keep_batches);
-        if (alive_attention)
-          gather(alive_attention, *keep_batches);
-        // Left on the host: update_state then compacts the decoder state in place.
-      }
-
-      if (gather_indices.device() != device)
-        gather_indices = gather_indices.to(device);
-      decoder.update_state(state, gather_indices, _beam_size, keep_batches.get(), memory_slots);
-#ifdef CT2_WITH_CUDA
-      if (memory_slots && keep_batches)
-        upload_slots();                                      // batch_offset: the inputs still decoding
-#endif
-
-      topk_ids.reshape({next_batch_size * _beam_size});
-      topk_scores.reshape({next_batch_size * _beam_size});
-
-      if (bias_towards_prefix)
-        bias_towards_prefix = !all_beams_diverged_from_prefix(beams_diverged_from_prefix);
     }
-
-    decoder.flush_state_reorder(state);  // callers may reuse the state
-    return results;
+    return run->finish();
   }
 
 

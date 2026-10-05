@@ -51,6 +51,8 @@ namespace ctranslate2 {
            const std::vector<std::vector<size_t>>* prefix_ids = nullptr) const = 0;
   };
 
+  class BeamSearchRun;
+
   class BeamSearch : public SearchStrategy {
   public:
     BeamSearch(const dim_t beam_size,
@@ -78,13 +80,62 @@ namespace ctranslate2 {
            const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors = {},
            const std::vector<std::vector<size_t>>* prefix_ids = nullptr) const override;
 
+    // The same search a step at a time, the decoder step being the caller's (search() runs it to the end), so that
+    // several searches can share one decoder call (WhisperReplica::generate_groups). The run keeps references to
+    // its arguments.
+    std::unique_ptr<BeamSearchRun>
+    start(layers::Decoder& decoder,
+          layers::DecoderState& state,
+          const Sampler& sampler,
+          const std::vector<size_t>& start_ids,
+          const std::vector<size_t>& end_ids,
+          const dim_t start_step,
+          const dim_t max_length,
+          const dim_t min_length,
+          const bool return_scores,
+          const bool return_attention,
+          const bool return_logits_vocab,
+          const bool return_prefix,
+          const size_t num_hypotheses,
+          const bool include_eos_in_hypotheses,
+          const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors,
+          const std::vector<std::vector<size_t>>* prefix_ids) const;
+
   private:
+    friend class BeamSearchRun;
     const dim_t _beam_size;
     const float _length_penalty;
     const float _coverage_penalty;
     const float _prefix_bias_beta;
     const size_t _max_candidates;
     const dim_t _group_size;
+  };
+
+  // A beam search between steps (BeamSearch::start). Each step: next_ids() gives the ids to decode (false: the
+  // search is over), the caller runs the decoder on them (decoder_step(), attention_output()) into logits(), then
+  // advance() takes the step's logits (false: the search is over). finish() returns the results.
+  class BeamSearchRun {
+  public:
+    ~BeamSearchRun();
+    bool next_ids(StorageView& step_ids);
+    dim_t step() const;
+    dim_t decoder_step() const;
+    bool with_attention() const;
+    StorageView* attention_output();
+    StorageView& logits();
+    // The run's own clip groups and memory slots for a decoder call it makes alone (search()).
+    std::shared_ptr<void> own_scopes();
+    // The inputs still decoding (original indices, as in the decoder state's entries kept one per input).
+    const std::vector<dim_t>& alive_inputs() const;
+    bool keeps_memory_in_place() const;
+    bool advance();
+    std::vector<DecodingResult> finish();
+
+    struct Impl;                                       // the loop state (decoding.cc)
+
+  private:
+    friend class BeamSearch;
+    std::unique_ptr<Impl> _impl;
   };
 
   class BiasedDecoder {
