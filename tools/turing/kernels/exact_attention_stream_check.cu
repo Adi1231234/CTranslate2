@@ -1,8 +1,8 @@
 // Bit-for-bit check and timing of the streamed encoder attention (src/ops/exact_attention_stream.cuh) in each
 // block shape, against the three steps production replaces (the cuBLAS MatMul(trans_b, alpha 1/8), the library's
 // softmax_rows, the cuBLAS MatMul of the probabilities and the values; as exact_attention_check.cu) for 1, 4 and 8
-// clips of 20 heads, 1500 x 1500 x 64, three fills each; then from the fused projection and its bias (the split
-// kernel + the streamed attention) against exact_attention_qkv, 1..8 clips. Must end with TOTAL 0.
+// clips of 20 heads, 1500 x 1500 x 64, three fills each; then from the fused projection and its bias (read by the
+// streamed kernel itself) against exact_attention_qkv, 1..8 clips. Must end with TOTAL 0.
 // usage: exact_attention_stream_check [timing repetitions, default 10]
 #include <cstdio>
 #include "probe_common.h"
@@ -18,8 +18,7 @@ template <typename F> float time_us(F run, int reps) {
   float ms; CK(cudaEventElapsedTime(&ms, a, b)); return ms * 1000 / reps;
 }
 
-using StreamRun = void (*)(const __half*, const __half*, const __half*, __half*, int, int, float, cudaStream_t);
-struct Shape { const char* name; StreamRun run; };
+struct Shape { const char* name; at::native::EasItems run; };
 #define SHAPE(W, R, S) {#W " warps x " #R " tiles, " #S " stages", at::native::exact_attention_stream_items<W, R, S>}
 static const Shape shapes[] = {SHAPE(8, 1, 3), SHAPE(8, 1, 2), SHAPE(4, 2, 3), SHAPE(4, 1, 4), SHAPE(8, 2, 2)};
 
@@ -32,9 +31,9 @@ int main(int argc, char** argv) {
   const int reps = argc > 1 ? atoi(argv[1]) : 10, m = 1500, n = 1500, d = 64, heads = 20;
   const float alpha = 0.125f;
   Probe p(160, m, n, d);                                   // dQ, dK, and dC for the scores
-  __half *V, *O, *F, *X, *B, *S; void* W;
+  __half *V, *O, *F, *X, *B; void* W;
   const size_t vs = 160ull * n * d;
-  CK(cudaMalloc(&V, 2 * vs)); CK(cudaMalloc(&O, 2 * vs)); CK(cudaMalloc(&F, 2 * vs)); CK(cudaMalloc(&S, 6 * vs));
+  CK(cudaMalloc(&V, 2 * vs)); CK(cudaMalloc(&O, 2 * vs)); CK(cudaMalloc(&F, 2 * vs));
   CK(cudaMalloc(&W, at::native::exact_attention_workspace(160, n, true)));
   unsigned long long* dc; CK(cudaMalloc(&dc, 8));
   unsigned long long total = 0;
@@ -57,7 +56,7 @@ int main(int argc, char** argv) {
       three_steps();
       for (size_t s = 0; s < sizeof shapes / sizeof shapes[0]; ++s) {
         CK(cudaMemset(F, 0xff, 2 * vs));
-        shapes[s].run(p.dQ, p.dK, V, F, batch, 1, alpha, 0);
+        at::native::exact_attention_stream(shapes[s].run, p.dQ, p.dK, V, F, batch, 1, alpha, 0);
         CK(cudaGetLastError());
         bad[s] += diff(O, F, (size_t)batch * m * d, dc);
       }
@@ -66,7 +65,8 @@ int main(int argc, char** argv) {
            time_us(three_steps, reps), time_us(fused, reps));
     for (size_t s = 0; s < sizeof shapes / sizeof shapes[0]; ++s) {
       total += bad[s];
-      const float ts = time_us([&] { shapes[s].run(p.dQ, p.dK, V, F, batch, 1, alpha, 0); }, reps);
+      const float ts = time_us([&] { at::native::exact_attention_stream(shapes[s].run, p.dQ, p.dK, V, F, batch, 1,
+                                                                         alpha, 0); }, reps);
       printf("  %-28s %llu of %llu mismatched, %8.1f us\n", shapes[s].name, bad[s], 3ull * batch * m * d, ts);
     }
   }
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
     const size_t count = (size_t)clips * heads * n * d;
     auto qkv_path = [&] { at::native::exact_attention_qkv(X, B, W, O, clips, heads, n, alpha, 0); };
     auto stream_path = [&](const Shape& s) {
-      at::native::exact_attention_stream_qkv(s.run, X, B, S, F, clips, heads, n, alpha, 0);
+      at::native::exact_attention_stream_qkv(s.run, X, B, F, clips, heads, n, alpha, 0);
     };
     qkv_path();
     printf("qkv %d clips: exact_attention_qkv %8.1f us;", clips, time_us(qkv_path, reps));

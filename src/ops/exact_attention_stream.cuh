@@ -12,8 +12,10 @@
 //   3. p = half(exp(x - max) / sum) (rows1024_quotient where it is exact, the division elsewhere: the same value),
 //      and the output, one m16n8k16 chain per output over the keys in cuBLAS's 16-key groups: [0, 16), [16, 28)
 //      with zero values to 32, then from 28 on; a step stages 32 keys and their values, two groups.
-// Rows past 1500 compute on zero queries and are not stored. q, k and v are head-split [batch, 1500, 64]; o is
-// [clip, query, head, dim] as exact_attention's.
+// Rows past 1500 compute on zero queries and are not stored. q, k and v are read where their EalSource says
+// (head-split tensors, or the parts of the fused projection), each with its bias added as exact_attention_layout
+// adds it (__hadd(bias, x): the queries as they are loaded, the keys and values in shared memory by the thread
+// that staged them, before the step's barrier). o is [clip, query, head, dim] as exact_attention's.
 
 #include <string>
 
@@ -33,29 +35,57 @@ namespace at {
     template <int WARPS, int RT, int STAGES>
     constexpr int eas_smem_bytes = STAGES * eas_rows * eas_pitch * 2 + WARPS * RT * ea_rows * 33 * 4;
 
-    // Stage rows of step s: key rows (or, in pass 3, rows 32..63, the values) into rows 0..63, zeros where a row
+    // What stage row `row` of step s holds: a key row (or, in pass 3, rows 32..63, the values), or zeros where it
     // is past the keys (or a value past the 28 of the first output chunk).
+    struct EasRow {
+      int key;
+      bool valid, values;
+    };
+
+    __device__ __forceinline__ EasRow eas_row(int s, int row) {
+      if (s < eas_pass1)
+        return {64 * s + row, 64 * s + row < eas_n, false};
+      if (s < eas_pass1 + eas_pass2) {
+        const int L = s - eas_pass1, key = row < 32 ? 32 * L + row : 1024 + 32 * L + row - 32;
+        return {key, key < eas_n, false};
+      }
+      const int c = s - eas_pass1 - eas_pass2, key = (c == 0 ? 0 : eas_residue + 32 * (c - 1)) + row % 32;
+      const bool values = row >= 32;
+      return {key, key < eas_n && !(values && c == 0 && key >= eas_residue), values};
+    }
+
+    // The thread's 16-byte pieces of step s into dst (cp.async).
     template <int THREADS>
-    __device__ __forceinline__ void eas_load(__half* dst, const __half* kb, const __half* vb, int s) {
+    __device__ __forceinline__ void eas_load(__half* dst, const EalSource& ks, const EalSource& vs, int entry,
+                                             int heads, int s) {
       for (int p = threadIdx.x; p < eas_rows * 8; p += THREADS) {
         const int row = p / 8, piece = p % 8;
-        int key;
-        bool valid, values = false;
-        if (s < eas_pass1) {
-          key = 64 * s + row;
-          valid = key < eas_n;
-        } else if (s < eas_pass1 + eas_pass2) {
-          const int L = s - eas_pass1;
-          key = row < 32 ? 32 * L + row : 1024 + 32 * L + row - 32;
-          valid = key < eas_n;
-        } else {
-          const int c = s - eas_pass1 - eas_pass2;
-          key = (c == 0 ? 0 : eas_residue + 32 * (c - 1)) + row % 32;
-          values = row >= 32;
-          valid = key < eas_n && !(values && c == 0 && key >= eas_residue);
-        }
+        const EasRow r = eas_row(s, row);
+        const EalSource& src = r.values ? vs : ks;
         ctranslate2::cuda::gsg_cp16(dst + row * eas_pitch + piece * 8,
-                                    (values ? vb : kb) + (size_t)(valid ? key : 0) * ea_depth + piece * 8, valid);
+                                    eal_row(src, entry, heads, r.valid ? r.key : 0) + piece * 8, r.valid);
+      }
+    }
+
+    // The bias of the thread's pieces of step s, once they landed (cp.async.wait_group shows a thread its own).
+    template <int THREADS>
+    __device__ __forceinline__ void eas_bias(__half* dst, const EalSource& ks, const EalSource& vs, int entry,
+                                             int heads, int s) {
+      for (int p = threadIdx.x; p < eas_rows * 8; p += THREADS) {
+        const int row = p / 8, piece = p % 8;
+        const EasRow r = eas_row(s, row);
+        const __half* bias = r.values ? vs.bias : ks.bias;
+        if (!r.valid || !bias)
+          continue;
+        uint4* at = reinterpret_cast<uint4*>(dst + row * eas_pitch + piece * 8);
+        uint4 x = *at;
+        const uint4 b = *reinterpret_cast<const uint4*>(bias + (entry % heads) * ea_depth + piece * 8);
+        __half2* xs = reinterpret_cast<__half2*>(&x);
+        const __half2* bs = reinterpret_cast<const __half2*>(&b);
+        #pragma unroll
+        for (int e = 0; e < 4; ++e)
+          xs[e] = __hadd2(bs[e], xs[e]);
+        *at = x;
       }
     }
 
@@ -97,8 +127,7 @@ namespace at {
 
     template <int WARPS, int RT, int STAGES>
     __global__ void __launch_bounds__(WARPS * C10_WARP_SIZE)
-    exact_attention_stream_kernel(const __half* q, const __half* k, const __half* v, __half* o, int heads,
-                                  float alpha) {
+    exact_attention_stream_kernel(EalSource qs, EalSource ks, EalSource vs, __half* o, int heads, float alpha) {
 #if __CUDA_ARCH__ >= 800
       constexpr int THREADS = WARPS * C10_WARP_SIZE, stage_halves = eas_rows * eas_pitch;
       extern __shared__ __align__(16) unsigned char eas_smem[];
@@ -106,23 +135,24 @@ namespace at {
       const int warp = threadIdx.x / C10_WARP_SIZE, lane = threadIdx.x % C10_WARP_SIZE, g = lane / 4, t = lane % 4;
       float* tbuf = reinterpret_cast<float*>(stages + STAGES * stage_halves) + warp * RT * ea_rows * 33;
       const int entry = blockIdx.y, row0 = blockIdx.x * eas_queries<WARPS, RT> + warp * RT * ea_rows;
-      const __half* kb = k + (size_t)entry * eas_n * ea_depth;
-      const __half* vb = v + (size_t)entry * eas_n * ea_depth;
-      const __half* qb = q + (size_t)entry * eas_n * ea_depth;
 
       #pragma unroll
       for (int s = 0; s < STAGES - 1; ++s) {
-        eas_load<THREADS>(stages + s * stage_halves, kb, vb, s);
+        eas_load<THREADS>(stages + s * stage_halves, ks, vs, entry, heads, s);
         asm volatile("cp.async.commit_group;");
       }
       int step = 0;
       auto next = [&]() {                                       // wait for `step`, start step + STAGES - 1
+        __half* buf = stages + (step % STAGES) * stage_halves;
         asm volatile("cp.async.wait_group %0;" :: "n"(STAGES - 2));
+        eas_bias<THREADS>(buf, ks, vs, entry, heads, step);
         __syncthreads();
         if (step + STAGES - 1 < eas_steps)
-          eas_load<THREADS>(stages + ((step + STAGES - 1) % STAGES) * stage_halves, kb, vb, step + STAGES - 1);
+          eas_load<THREADS>(stages + ((step + STAGES - 1) % STAGES) * stage_halves, ks, vs, entry, heads,
+                            step + STAGES - 1);
         asm volatile("cp.async.commit_group;");
-        return stages + (step++ % STAGES) * stage_halves;
+        ++step;
+        return buf;
       };
 
       unsigned a[RT][4][4];                                     // the warp's RT x 16 queries, 4 groups of 16 dims
@@ -132,9 +162,8 @@ namespace at {
         for (int c = 0; c < 4; ++c)
           #pragma unroll
           for (int e = 0; e < 4; ++e) {
-            const int j = row0 + 16 * r + g + 8 * (e % 2);
-            a[r][c][e] = j < eas_n ? *reinterpret_cast<const unsigned*>(qb + (size_t)j * ea_depth + 16 * c
-                                                                        + 8 * (e / 2) + 2 * t) : 0u;
+            const int j = row0 + 16 * r + g + 8 * (e % 2), d = 16 * c + 8 * (e / 2) + 2 * t;
+            a[r][c][e] = j < eas_n ? eal_pair(qs, eal_row(qs, entry, heads, j), entry, heads, d, ea_depth) : 0u;
           }
 
       // 1. The row maxima: rows g and g + 8 of each tile r, in every lane of the quad.
@@ -280,20 +309,9 @@ namespace at {
 #endif
     }
 
-    // q, k and v head-split, each from its source (with its bias: exact_attention_layout's add), into dst: three
-    // [batch, n, 64] tensors one after the other.
-    static __global__ void exact_attention_stream_split(EalSource qs, EalSource ks, EalSource vs, __half* dst,
-                                                        int heads, int batch, int n) {
-      const size_t count = (size_t)batch * n * (ea_depth / 8);
-      for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < 3 * count; i += (size_t)gridDim.x * blockDim.x) {
-        const int part = int(i / count);
-        eal_query_vector(part == 0 ? qs : part == 1 ? ks : vs, dst + part * count * 8, heads, n, ea_depth, i % count);
-      }
-    }
-
     template <int WARPS, int RT, int STAGES>
-    inline void exact_attention_stream_items(const __half* q, const __half* k, const __half* v, __half* o, int batch,
-                                             int heads, float alpha, cudaStream_t stream) {
+    inline void exact_attention_stream_items(const EalSource& q, const EalSource& k, const EalSource& v, __half* o,
+                                             int batch, int heads, float alpha, cudaStream_t stream) {
       constexpr int smem = eas_smem_bytes<WARPS, RT, STAGES>;
       static const bool configured = cudaFuncSetAttribute(exact_attention_stream_kernel<WARPS, RT, STAGES>,
                                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -305,8 +323,9 @@ namespace at {
                                                                                                 alpha);
     }
 
-    // The attention of head-split q, k, v [batch, 1500, 64] in one block shape.
-    using EasItems = void (*)(const __half*, const __half*, const __half*, __half*, int, int, float, cudaStream_t);
+    // The attention of q, k, v (EalSource) in one block shape.
+    using EasItems = void (*)(const EalSource&, const EalSource&, const EalSource&, __half*, int, int, float,
+                              cudaStream_t);
 
     // A block shape by name, <warps>x<tiles>s<stages> (null for any other name).
     inline EasItems exact_attention_stream_shape(const std::string& name) {
@@ -318,18 +337,18 @@ namespace at {
       return nullptr;
     }
 
-    // From the fused projection x [clips, n, 3 * heads * 64] without its bias, and that bias (or null): q, k and v
-    // head-split with their bias into the workspace (3 x clips x heads x n x 64 halves, which
-    // exact_attention_workspace(clips * heads, n, true) holds), then `items` on them.
-    inline void exact_attention_stream_qkv(EasItems items, const __half* x, const __half* bias, void* workspace,
-                                           __half* o, int clips, int heads, int n, float alpha, cudaStream_t stream) {
-      __half* split = static_cast<__half*>(workspace);
-      const size_t count = (size_t)clips * heads * n * ea_depth;
-      exact_attention_stream_split<<<1024, 256, 0, stream>>>(eal_qkv_part(x, bias, heads, n, ea_depth, 0),
-                                                             eal_qkv_part(x, bias, heads, n, ea_depth, 1),
-                                                             eal_qkv_part(x, bias, heads, n, ea_depth, 2), split,
-                                                             heads, clips * heads, n);
-      items(split, split + count, split + 2 * count, o, clips * heads, heads, alpha, stream);
+    // From the fused projection x [clips, n, 3 * heads * 64] without its bias, and that bias (or null).
+    inline void exact_attention_stream_qkv(EasItems items, const __half* x, const __half* bias, __half* o, int clips,
+                                           int heads, int n, float alpha, cudaStream_t stream) {
+      items(eal_qkv_part(x, bias, heads, n, ea_depth, 0), eal_qkv_part(x, bias, heads, n, ea_depth, 1),
+            eal_qkv_part(x, bias, heads, n, ea_depth, 2), o, clips * heads, heads, alpha, stream);
+    }
+
+    // For head-split q [batch, 1500, 64] and k, v [batch, 1500, 64].
+    inline void exact_attention_stream(EasItems items, const __half* q, const __half* k, const __half* v, __half* o,
+                                       int batch, int heads, float alpha, cudaStream_t stream) {
+      items(eal_split(q, heads, eas_n, ea_depth), eal_split(k, heads, eas_n, ea_depth),
+            eal_split(v, heads, eas_n, ea_depth), o, batch, heads, alpha, stream);
     }
 
   }

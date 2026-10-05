@@ -46,9 +46,10 @@ namespace ctranslate2 {
       static const int per_sm = persistent_blocks_per_sm("CT2_EA_BLOCKS");
       cudaStream_t stream = get_cuda_stream();
       if (const at::native::EasItems items = stream_items()) {
-        items(reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
-              reinterpret_cast<const __half*>(v), reinterpret_cast<__half*>(o), static_cast<int>(batch),
-              static_cast<int>(heads), alpha, stream);
+        at::native::exact_attention_stream(items, reinterpret_cast<const __half*>(q),
+                                           reinterpret_cast<const __half*>(k), reinterpret_cast<const __half*>(v),
+                                           reinterpret_cast<__half*>(o), static_cast<int>(batch),
+                                           static_cast<int>(heads), alpha, stream);
         return;
       }
       at::native::exact_attention(reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
@@ -77,9 +78,9 @@ namespace ctranslate2 {
       cudaStream_t stream = get_cuda_stream();
       if (const at::native::EasItems items = stream_items()) {
         at::native::exact_attention_stream_qkv(items, reinterpret_cast<const __half*>(x),
-                                               reinterpret_cast<const __half*>(bias), workspace,
-                                               reinterpret_cast<__half*>(o), static_cast<int>(clips),
-                                               static_cast<int>(heads), static_cast<int>(n), alpha, stream);
+                                               reinterpret_cast<const __half*>(bias), reinterpret_cast<__half*>(o),
+                                               static_cast<int>(clips), static_cast<int>(heads), static_cast<int>(n),
+                                               alpha, stream);
         return;
       }
       at::native::exact_attention_qkv(reinterpret_cast<const __half*>(x), reinterpret_cast<const __half*>(bias),
