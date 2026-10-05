@@ -1,0 +1,8 @@
+# pyct2-l41p (6d2c3ee5: temperature variants + the cross-attention's prefetch distance 1 on sm_89) on the L40S: the
+# full run with the variants of 2 and of 4 clips in one search (RUN_FALLBACK_SPEC_CLIPS; round41 lv, 2 clips: 89.6x,
+# GPU memory peak 43.2 of 46 GB), and the batched path alone with 6 and 7 batches in each stream.
+lv2|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|RUN_FALLBACK_SPECULATE=1|RUN_FALLBACK_SPEC_CLIPS=2|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+lv4|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=batched|RUN_FALLBACK_SEEDS=1|RUN_FALLBACK_GATHER=8|RUN_FALLBACK_GATHER_S=120|RUN_FALLBACK_SAMPLING=batched|RUN_FALLBACK_SPECULATE=1|RUN_FALLBACK_SPEC_CLIPS=4|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+m6|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+m7|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=7|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+compare|lv2|lv4
