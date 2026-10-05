@@ -1,0 +1,7 @@
+# The 4-process profile (profile_mps1): the GPU's DRAM ~40% used, the 4 cores saturated: 2.2 cores spinning in
+# waits for the GPU, every launch 13 us. pyct2-l40s (CT2_CUDA_SCHEDULE): host threads that sleep (blocking) or yield
+# instead of spinning; with CUB's caching allocator (no driver call per tensor); 5 processes. Against r4 53.67x.
+s4b|pyct2-l40s|runner|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=blocking
+s4y|pyct2-l40s|runner|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=yield
+s4bc|pyct2-l40s|runner|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=blocking|CT2_CUDA_ALLOCATOR=cub_caching
+s5b|pyct2-l40s|runner|src/tools/turing/scale/units_real.txt|5|MPS=1|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=blocking

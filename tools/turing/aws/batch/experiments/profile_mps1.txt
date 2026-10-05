@@ -1,0 +1,5 @@
+# Where the L40S's time goes at saturation: Nsight Systems over r4's configuration (4 MPS processes, efff0f55,
+# 53.67x), a 25 s window after 100 s. Then rowinv with cuBLAS's default workspace on the decoder's products at every
+# row count of 5 beams up to 320 (can one product serve several batches of 8 with the same bits).
+scriptq|scripts/profile_mps.sh|q4|pyct2-l40r|runner|src/tools/turing/scale/units_real.txt|4|100|25|RUN_FALLBACK=async
+scriptr|scripts/probes.sh|probes/probes-7736a212.tgz|rowinv:51866,1280 rowinv:3840,1280 rowinv:1280,1280 rowinv:5120,1280 rowinv:1280,5120
