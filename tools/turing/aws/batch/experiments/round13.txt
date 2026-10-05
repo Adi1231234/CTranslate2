@@ -1,0 +1,6 @@
+# pyct2-l40m (24e5dc46): sampled hypotheses share one copy of the memory keys and values (pointer-array products).
+# First the seeded check (repeated vs shared, the 15 fallback clips x 5 temperatures, must be identical); then the
+# full production run, grouped as f3a 57.4x and ungrouped as s4b 56.12x. Deterministic rows compared with fullctx.
+scriptv|scripts/sampled_check.sh|pyct2-l40m|fallback_uuids_real30.txt
+m3a|pyct2-l40m|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|3|MPS=1|RUN_FALLBACK=async|PIPE_GROUPS=2|CT2_CUDA_SCHEDULE=blocking
+m4a|pyct2-l40m|runner-3ad71d3f|src/tools/turing/scale/units_real.txt|4|MPS=1|RUN_FALLBACK=async|CT2_CUDA_SCHEDULE=blocking
