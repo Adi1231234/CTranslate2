@@ -1,0 +1,10 @@
+# The encoder's first feed-forward on the CUTLASS replica with the bias and GELU in its epilogue (one pass less over
+# the 8 clips' 12000 x 5120 activations, the GELU pass ~0.25 J a step) at cuBLAS's large tile, 256 x 128, k 32,
+# 3 stages, 64 x 64 warps (CT2_ENC_GEMM_CFG=256x128k32s3; round29-33 tried only 128x32s4 and 64x64s4, slower than
+# cuBLAS), against the default (cuBLASLt algorithm 21 at that tile, then the BiasAdd GELU kernel), alternately on
+# one machine, twice each; rows compared.
+e1|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+c1|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_ENC_GEMM=cutlass|CT2_ENC_GEMM_CFG=256x128k32s3
+e2|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+c2|pyct2-l41p|runner-ee6fc199|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_ENC_GEMM=cutlass|CT2_ENC_GEMM_CFG=256x128k32s3
+compare|e1|c1
