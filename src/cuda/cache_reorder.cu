@@ -60,32 +60,26 @@ namespace ctranslate2 {
     template void reorder_append(const float16_t* const*, const float16_t* const*, float16_t* const*,
                                  int, const int32_t*, dim_t, dim_t, dim_t, dim_t, dim_t);
 
-    // reorder_append_kernel for several parts: thread v belongs to the part whose range of output vectors holds it
-    // (the parts' keys, then values, in part order). The parts' fields are picked in loops over constant indices: a
-    // parameter array indexed by a computed part would be copied to local memory by every thread.
-    struct PartRanges {
-      size_t end[CacheParts::max_parts];                    // each part's vectors (keys and values) end here
+    // reorder_append_kernel for several parts, a block per head row of a part's output (keys, then values, in part
+    // order): the parent's head row is one contiguous run of time x head_vecs vectors in the cache and in the
+    // output, so the threads copy it with no index arithmetic per vector, then the step's vectors. The block's part
+    // is found from its first head row (PartRows), its fields picked in loops over constant indices: a parameter
+    // array indexed by a computed part would be copied to local memory by every thread.
+    struct PartRows {
+      unsigned end[CacheParts::max_parts];                  // each part's head rows (keys and values) end here
     };
 
-    // A part's vectors are counted in 32 bits (at most 2 x 320 rows x 20 heads x 449 steps x 8 per head): 64-bit
-    // divisions cost the kernel more issue slots than its loads and stores (round27 profile: issue 64%).
-    // HEAD_VECS: the vectors of a head's row at compile time (8, 64 fp16 dims), or 0 for head_vecs.
-    template <unsigned HEAD_VECS>
-    __global__ void reorder_append_parts_kernel(CacheParts parts, PartRanges ranges, unsigned heads,
-                                                unsigned head_vecs_any, size_t total) {
-      const size_t global = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-      if (global >= total)
-        return;
-      const unsigned head_vecs = HEAD_VECS ? HEAD_VECS : head_vecs_any;
-      size_t begin = 0;
-      unsigned time = 0, rows = 0;
+    __global__ void reorder_append_parts_kernel(CacheParts parts, PartRows ranges, unsigned heads,
+                                                unsigned head_vecs) {
+      const unsigned block = blockIdx.x;
+      unsigned begin = 0, time = 0, rows = 0;
       const void* cache[2] = {};
       const void* fresh[2] = {};
       void* out[2] = {};
       const int32_t* order = nullptr;
       #pragma unroll
       for (int q = 0; q < CacheParts::max_parts; ++q)
-        if (q < parts.count && global < ranges.end[q] && (q == 0 || global >= ranges.end[q - 1])) {
+        if (q < parts.count && block < ranges.end[q] && (q == 0 || block >= ranges.end[q - 1])) {
           begin = q == 0 ? 0 : ranges.end[q - 1];
           time = unsigned(parts.time[q]);
           rows = unsigned(parts.rows[q]);
@@ -94,39 +88,33 @@ namespace ctranslate2 {
           out[0] = parts.out[q][0]; out[1] = parts.out[q][1];
           order = parts.order[q];
         }
-      unsigned v = unsigned(global - begin);
-      const unsigned out_time = time + 1, row_vecs = out_time * head_vecs;
-      const unsigned per_cache = rows * heads * row_vecs;
-      const unsigned c = v >= per_cache;                      // keys, then values
-      v -= c * per_cache;
-      const unsigned rh = v / row_vecs;                       // r * heads + h
-      const unsigned rest = v - rh * row_vecs;
-      const unsigned s = rest / head_vecs, i = rest - s * head_vecs;
+      unsigned rh = block - begin;                            // c * rows * heads + r * heads + h
+      const unsigned c = rh >= rows * heads;                  // keys, then values
+      rh -= c * rows * heads;
       const unsigned r = rh / heads, h = rh - r * heads;
-      const size_t from = order ? size_t(order[r]) : r;
-      static_cast<uint4*>(c ? out[1] : out[0])[v] = s < time
-        ? static_cast<const uint4*>(c ? cache[1] : cache[0])[((from * heads + h) * time + s) * head_vecs + i]
-        : static_cast<const uint4*>(c ? fresh[1] : fresh[0])[size_t(rh) * head_vecs + i];
+      const size_t from = order ? size_t(order[r]) * heads + h : rh;
+      const unsigned run = time * head_vecs;
+      const uint4* src = static_cast<const uint4*>(c ? cache[1] : cache[0]) + from * run;
+      uint4* dst = static_cast<uint4*>(c ? out[1] : out[0]) + size_t(rh) * (run + head_vecs);
+      for (unsigned v = threadIdx.x; v < run; v += blockDim.x)
+        dst[v] = src[v];
+      if (threadIdx.x < head_vecs)
+        dst[run + threadIdx.x] = static_cast<const uint4*>(c ? fresh[1] : fresh[0])[size_t(rh) * head_vecs
+                                                                                   + threadIdx.x];
     }
 
     void reorder_append_parts(const CacheParts& parts, dim_t heads, dim_t head_dim) {
       const unsigned head_vecs = head_dim * sizeof (float16_t) / 16;
-      PartRanges ranges{};
-      size_t total = 0;
+      PartRows ranges{};
+      unsigned blocks = 0;
       for (int p = 0; p < parts.count; ++p) {
-        total += 2 * size_t(parts.rows[p]) * heads * (parts.time[p] + 1) * head_vecs;
-        ranges.end[p] = total;
+        blocks += 2 * unsigned(parts.rows[p]) * unsigned(heads);
+        ranges.end[p] = blocks;
       }
-      if (total == 0)
+      if (blocks == 0)
         return;
-      constexpr unsigned threads = 256;
-      const size_t blocks = (total + threads - 1) / threads;
-      if (head_vecs == 8)
-        reorder_append_parts_kernel<8><<<blocks, threads, 0, get_cuda_stream()>>>(parts, ranges, heads, head_vecs,
-                                                                                   total);
-      else
-        reorder_append_parts_kernel<0><<<blocks, threads, 0, get_cuda_stream()>>>(parts, ranges, heads, head_vecs,
-                                                                                   total);
+      reorder_append_parts_kernel<<<blocks, 64, 0, get_cuda_stream()>>>(parts, ranges, unsigned(heads),
+                                                                        head_vecs);
     }
 
   }
