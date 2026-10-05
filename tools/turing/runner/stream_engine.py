@@ -6,6 +6,8 @@ add_unit (the main thread) runs BatchedInferencePipeline.transcribe's setup of a
 batches; a collector thread turns every finished batch into faster-whisper's segments (BatchedInferencePipeline.forward
 on its results) and, once all of a unit's batches are back, hands the unit's rows to the writer (engine.unit_rows:
 the fallback for the clips that fail). STREAM_BATCHES / STREAM_ROWS / STREAM_PENDING: the stream's limits (8, 320, 2).
+STREAM_COUNT=<n> (default 1): n streams, each on a CTranslate2 worker of its own (a decoding loop on its own CPU
+thread), the batches dealt to them in turn; a collector thread each.
 """
 import os, threading
 import engine
@@ -41,8 +43,8 @@ class _Collect(ResumeCheck):
 class StreamEngine:
     def __init__(self, model, pool, done, log, batch_size=8):
         self.model, self.pool, self.done, self.log, self.batch_size = model, pool, done, log, batch_size
-        self.submitter, self.collector = _Submit(model, self._submit), _Collect(model)
-        self.stream, self.key, self.thread, self.unit = None, None, None, None
+        self.submitter = _Submit(model, self._submit)
+        self.streams, self.threads, self.key, self.unit = [], [], None, None
         self.tags, self.next_tag, self.lock = {}, 0, threading.Lock()
 
     def add_unit(self, uid, clips):
@@ -60,9 +62,10 @@ class StreamEngine:
 
     def close(self):
         """Once every unit was added: waits until all their rows are with the writer."""
-        if self.stream is not None:
-            self.stream.close()
-            self.thread.join()
+        for stream in self.streams:
+            stream.close()
+        for thread in self.threads:
+            thread.join()
 
     def _submit(self, features, tokenizer, chunks_metadata, batch_size, options):
         unit = self.unit
@@ -82,7 +85,8 @@ class StreamEngine:
             with self.lock:
                 tag, self.next_tag = self.next_tag, self.next_tag + 1
                 self.tags[tag] = (unit, k, i)
-            self.stream.submit(tag, enc, [list(prompt) for _ in range(len(features[i:i + batch_size]))])
+            stream = self.streams[tag % len(self.streams)]                # the streams in turn
+            stream.submit(tag, enc, [list(prompt) for _ in range(len(features[i:i + batch_size]))])
 
     def _open(self, options, max_length):
         """The stream, with generate_segment_batched's generate() options (the same for every unit)."""
@@ -91,32 +95,38 @@ class StreamEngine:
                   suppress_tokens=list(options.suppress_tokens), return_scores=True, return_no_speech_prob=True,
                   repetition_penalty=options.repetition_penalty, no_repeat_ngram_size=options.no_repeat_ngram_size)
         key = (sorted(kw.items(), key=lambda kv: kv[0]), options.temperatures[0], options.multilingual)
-        if self.stream is None:
+        if not self.streams:
             if options.temperatures[0] != 0 or options.multilingual or options.word_timestamps:
                 raise ValueError("The stream decodes the batches' temperature-0 beam search, one language")
-            self.stream = self.model.model.open_stream(
-                max_batches=int(os.environ.get("STREAM_BATCHES", "8")),
-                max_rows=int(os.environ.get("STREAM_ROWS", "320")),
-                max_pending=int(os.environ.get("STREAM_PENDING", "2")), **kw)
+            for _ in range(int(os.environ.get("STREAM_COUNT", "1"))):
+                stream = self.model.model.open_stream(
+                    max_batches=int(os.environ.get("STREAM_BATCHES", "8")),
+                    max_rows=int(os.environ.get("STREAM_ROWS", "320")),
+                    max_pending=int(os.environ.get("STREAM_PENDING", "2")), **kw)
+                self.streams.append(stream)
+                self.threads.append(threading.Thread(target=self._collect, args=(stream, _Collect(self.model)),
+                                                     daemon=True))
+                self.threads[-1].start()
             self.key = key
-            self.thread = threading.Thread(target=self._collect, daemon=True)
-            self.thread.start()
         elif key != self.key:
             raise ValueError("A unit's decoding options differ from the stream's")
 
-    def _collect(self):
+    def _collect(self, stream, c):
+        """A stream's finished batches, through its own _Collect (c)."""
         try:
-            while (item := self.stream.next()) is not None:
+            while (item := stream.next()) is not None:
                 tag, results = item
                 with self.lock:
                     unit, k, i = self.tags.pop(tag)
-                c = self.collector
                 c.outputs = generate_outputs(results, unit.options.length_penalty)
                 c.unfinished.clear()
-                unit.batches[k] = c.forward(None, unit.tokenizer, unit.metadata[i:i + unit.size], unit.options)
-                unit.unfinished += c.unfinished
-                unit.left -= 1
-                if unit.left == 0:
+                segments = c.forward(None, unit.tokenizer, unit.metadata[i:i + unit.size], unit.options)
+                with self.lock:                              # the unit's batches may finish on several streams
+                    unit.batches[k] = segments
+                    unit.unfinished += c.unfinished
+                    unit.left -= 1
+                    last = unit.left == 0
+                if last:
                     self._finish(unit)
         except Exception as e:                               # never leave the writer waiting on a lost unit
             self.log(f"STREAM COLLECTOR CRASHED: {type(e).__name__}: {e}")

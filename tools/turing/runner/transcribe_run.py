@@ -72,6 +72,8 @@ STREAM = MODE.startswith("stream")
 pool, own = make_pool(os.environ.get("RUN_FALLBACK", "inline"), log) if BATCHED else (None, 0)
 # own: the async fallback's worker; pipe: the encoder's; stream: the encoder's beside the stream's
 workers = 2 if MODE == "exact2" else 1 + int(MODE.startswith(("pipe", "stream"))) + own
+if STREAM:
+    workers += int(os.environ.get("STREAM_COUNT", "1")) - 1   # a worker for every further stream
 model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
                      num_workers=workers, cpu_threads=1,   # the OpenMP threads of the default only spin
                      flash_attention=MODE.endswith("-fa"))
