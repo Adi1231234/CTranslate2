@@ -1,0 +1,10 @@
+# pyct2-l41k (4ba8bb16): l41j plus the cache reorder rewritten (a block per head row, no index arithmetic per vector;
+# round27: 346 instructions a 16-byte vector, issue 64%) and 32-bit index math in the head split and the encoder
+# attention's layout. The probes first (cache_reorder_check, exact_attention_check for the layout, softmax_parts),
+# then the batched path: l41j, l41k, l41k with the second feed-forward's deeper pipeline and the encoder's first
+# feed-forward on 256x128 tiles, l41k again.
+scriptc|scripts/probes.sh|probes/probes-4ba8bb16.tgz|cache_reorder_check|exact_attention_check:10|softmax_parts_check
+j1|pyct2-l41j|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+k1|pyct2-l41k|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+kx|pyct2-l41k|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_DECODER_TILES=ffn2=64x64k64/5|CT2_ENC_GEMM=cutlass|CT2_ENC_GEMM_CFG=256x128k32s3
+k2|pyct2-l41k|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
