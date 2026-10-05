@@ -1,0 +1,14 @@
+# Rounds 28 and 29 (never started: no capacity) in one job, with the streamed encoder attention reading its sources
+# (5dbd1c66, pyct2-l41i, every change off by default): the three kernels' bits and times first
+# (decoder_gemm_probe: the second feed-forward's deeper pipelines; encoder_ffn1_check: the 8-wide replica with the
+# bias and GELU fused; exact_attention_stream_check), then the batched path: the default, each change alone
+# (CT2_DECODER_TILES=ffn2=64x64k64/5, CT2_ENC_GEMM=cutlass at 128x32s4, CT2_EA_STREAM=8x1s3), all three, the default.
+scriptg|scripts/probes.sh|probes/probes-480e7d4c.tgz|decoder_gemm_probe
+scripte|scripts/probes.sh|probes/probes-f08ab071.tgz|encoder_ffn1_check:20
+scripta|scripts/probes.sh|probes/probes-5dbd1c66.tgz|exact_attention_stream_check:20
+d1|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
+f5|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_DECODER_TILES=ffn2=64x64k64/5
+e1|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_ENC_GEMM=cutlass|CT2_ENC_GEMM_CFG=128x32s4
+a1|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_EA_STREAM=8x1s3
+x1|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking|CT2_DECODER_TILES=ffn2=64x64k64/5|CT2_ENC_GEMM=cutlass|CT2_ENC_GEMM_CFG=128x32s4|CT2_EA_STREAM=8x1s3
+d2|pyct2-l41i|runner-a31eb938|src/tools/turing/scale/units_real.txt|2|MPS=1|MODE=stream8|RUN_FALLBACK=skip|STREAM_BATCHES=6|RUN_REPEAT=3|CT2_CUDA_SCHEDULE=blocking
