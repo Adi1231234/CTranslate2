@@ -3,15 +3,15 @@
 // C = A W^T (fp16, f32 accumulation) for the rows of several batches decoded together (cuda/clip_groups.h), each
 // group of rows with the arithmetic cuBLAS gives a call with that group alone: split-K in `slices` slices of
 // `slice` k, each slice one mma.sync m16n8k16 chain over its k in increasing 16-groups, rounded to half, the
-// slices summed in order in fp32, out = half(sum) (grouped_split_gemm.cuh's arithmetic; one slice of all of k is
-// cuBLAS's plain chain). Templated on the block's output tile TM x TN (4 warps, WARPS_M x 4 / WARPS_M), so the
+// slices summed in order in fp32, out = half(sum) (split_gemm_common.cuh; one slice of all of k is cuBLAS's plain
+// chain). A block's slice bookkeeping is per output row, so rows of different groups share a tile. Templated on the block's output tile TM x TN (4 warps, WARPS_M x 4 / WARPS_M), so the
 // grid can have enough blocks for few rows, and on the depth of its cp.async pipeline (STAGES 32-k steps in
 // flight: a chain over k is as slow as the loads it waits for): the arithmetic of an output depends on neither.
 // A [M x K], W [N x K], C [M x N] row-major; K a multiple of 32.
 
 #include <cuda_fp16.h>
 
-#include "cuda/grouped_split_gemm.cuh"
+#include "cuda/split_gemm_common.cuh"
 
 namespace ctranslate2 {
   namespace cuda {
