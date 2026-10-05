@@ -20,6 +20,7 @@ namespace ctranslate2 {
   }
 }
 using namespace ctranslate2::cuda;
+using ctranslate2::float16_t;
 
 static void* device;
 static int (*nvml_energy)(void*, unsigned long long*);
