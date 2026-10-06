@@ -252,7 +252,18 @@ in a recording ("fewest" >= 45 in the PROGRESS lines): f0 121.5x, m0 122.2x, n0 
   8 ladders' capacity caches (~1.8 GB each) ran the GPU out of memory. In a stream of their own beside the windows'
   (`LONG_LADDER_STREAM=1`, runner c4777ed7), up to 3 ladders together reading the weights once a step: **134.6x**
   against the lanes' 125.9x on the same host (`long26` t3, seconds 40-280; 2 together: 134.2x), a ladder ~27 s
-  (~10 threads in ladders), 41.6 GB at the peak. The pieces:
+  (~10 threads in ladders), 41.6 GB at the peak (long28, another host: 136.1-136.8x). Per CUDA stream there
+  (`prof3`, the trace flushed every 200 ms: `--cuda-flush-interval`, prof2's lost the ladders' stream): the windows'
+  stream 76% of 8 s (cross-attention 42%), the ladders' 69% (`lc_output` 24%, small-tile products 12%, slot
+  attention 20%, single-row gemv 8%), the encoder 17%.
+- Faster alone, slower in a run (every one exact): single rows in one launch (cbe37a07, `gemv_probe` recovered
+  cuBLAS's one-row arithmetic: T 16, 32 or 8 partials t, t + T, ..., a tree from the halves; `single_rows_check`
+  0 of 288, 2-16 rows in 0.2-0.6 of cuBLAS's time), `lc_output` 4 rows a block (152 us a launch instead of 455),
+  the slot output's beams in one block (`slot_attention_check` 0 of 2,502): long28/long29/long32 129-132x and
+  106.7x against 136x, a ladder 32-55 s against 26. Their fewer, longer blocks wait behind the other stream's
+  kernels, and the run is bound by how long a recording waits for its ladder, not by the GPU's work. Kept, off by
+  default (`CT2_SINGLE_ROWS=1`, `CT2_LC_ROWS`); the slot output is a beam a block again. Time a kernel in the run,
+  never alone. The pieces of the ladders' stream:
   `GreedySearchRun` (`GreedySearch::search` runs it), `WhisperStream.submit_sampled`, the joint step's groups counted
   in rows with the greedy parts last, their attention run as their own search runs it (`layers/attention_sampled.cc`).
 
