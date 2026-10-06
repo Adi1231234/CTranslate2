@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "ctranslate2/ops/ops.h"
+#include "attention_sampled.h"
 #include "cross_attention_fused.h"
 #include "dot_product_attention.h"
 #include "joint_step.h"
@@ -29,19 +30,35 @@ namespace ctranslate2 {
       const DataType dtype = fused_proj.dtype();
 
       if (!_self_attention) {
-        // Each part's clips against its memory keys and values with its own batch's arithmetic, in one launch that
-        // reads the queries from the projection with their bias (process_cross_attention's head split's values).
-        const dim_t beams = fused_proj.dim(0) / joint.clips;
+        // The beam parts' clips against their memory keys and values with each one's own batch's arithmetic, in
+        // one launch that reads the queries from the projection with their bias (process_cross_attention's head
+        // split's values); then each greedy part as its search alone (sampled_cross_attention). Every part's
+        // context in its own rows, heads combined.
+        dim_t beam_rows = 0, beam_clips = 0;
         std::vector<dim_t> part_clips;
         part_clips.reserve(joint.parts.size());
-        for (const auto& part : joint.parts) {
-          if (part.rows != part.clips * beams)
-            throw std::logic_error("A joint decoding step needs the same beams in every part");
-          part_clips.push_back(part.clips);
+        for (const auto& part : joint.parts)
+          if (!part.sampled) {
+            beam_rows += part.rows;
+            beam_clips += part.clips;
+            part_clips.push_back(part.clips);
+          }
+        const dim_t rows = fused_proj.dim(0), depth = fused_proj.dim(-1) / _num_heads;
+        context = StorageView({rows, _num_heads, 1, depth}, dtype, device);
+        if (beam_rows > 0) {
+          const dim_t beams = beam_rows / beam_clips;
+          for (const auto& part : joint.parts)
+            if (!part.sampled && part.rows != part.clips * beams)
+              throw std::logic_error("A joint decoding step needs the same beams in every beam part");
+          StorageView beam_proj = rows_view(fused_proj, 0, beam_rows);
+          StorageView beam_context = rows_view(context, 0, beam_rows);
+          cross_attention_joint(beam_proj, _linear[0].bias(), _num_heads, joint.memory(joint.layer), part_clips,
+                                _queries_scale, beam_context);
         }
-        cross_attention_joint(fused_proj, _linear[0].bias(), _num_heads, joint.memory(joint.layer), part_clips,
-                              _queries_scale, context);
-        combine_heads(context, _num_heads, nullptr, beams, /*heads_combined=*/true);
+        for (const auto& part : joint.parts)
+          if (part.sampled)
+            sampled_cross_attention(joint, part, fused_proj, _linear[0].bias(), _num_heads, _queries_scale, context);
+        context.reshape({rows, 1, _num_heads * depth});      // combine_heads: one step, every row's heads in order
         return;
       }
 
@@ -59,7 +76,7 @@ namespace ctranslate2 {
       StorageView all_keys(dtype, device);
       StorageView all_values(dtype, device);
       split_heads_with_bias(fused_proj, _linear[0].bias(), {&all_queries, &all_keys, &all_values}, _num_heads);
-      append_parts(joint, all_keys, all_values);             // the parts not in slots
+      append_parts(joint, all_keys, all_values);             // the beam parts not in slots
       slot_append(joint, all_keys, all_values);
       StorageView slot_q(dtype, device), slot_out(dtype, device);
       if (joint.slot_parts > 0) {
@@ -71,7 +88,8 @@ namespace ctranslate2 {
       std::vector<StorageView> scores;                       // allocated on the thread's own stream
       scores.reserve(joint.parts.size());
       const auto fused = [&](size_t p) { return joint.parts[p].scores_offset >= 0; };   // slot_attention.h
-      for (size_t p = 0; p < joint.parts.size(); ++p) {
+      const auto beam = [&](size_t p) { return !joint.parts[p].sampled; };
+      for (size_t p = 0; p < joint.parts.size() && beam(p); ++p) {   // the greedy parts come last
         const auto& part = joint.parts[p];
         const dim_t time = part.slots ? slot_time(joint, p) : part.self_keys[joint.layer]->dim(2);
         if (fused(p))
@@ -96,19 +114,22 @@ namespace ctranslate2 {
         else
           values_matmul(scores[p], *part.self_values[joint.layer], part_context);
       };
-      for (size_t p = 0; p < joint.parts.size(); ++p)
+      for (size_t p = 0; p < scores.size(); ++p)
         if (!fused(p))
           keys_product(p);
       if (joint.slot_fused > 0)
         fused_slot_scores(joint, slot_q, _queries_scale);
       softmax_parts(scores);
-      for (size_t p = 0; p < joint.parts.size(); ++p)
+      for (size_t p = 0; p < scores.size(); ++p)
         if (!fused(p))
           values_product(p);
       if (joint.slot_fused > 0)
         fused_slot_output(joint, slot_out);
       if (joint.slot_parts > 0)
         slot_context(joint, slot_out, context);
+      for (const auto& part : joint.parts)
+        if (part.sampled)
+          sampled_self_attention(joint, part, all_queries, all_keys, all_values, _queries_scale, context);
       combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/false);   // one step: a reshape
     }
 

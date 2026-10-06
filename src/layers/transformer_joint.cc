@@ -52,13 +52,28 @@ namespace ctranslate2 {
       JointStep joint;
       std::vector<const StorageView*> ids;
       dim_t rows = 0;
+      bool sampled_seen = false;
       for (const auto& part : parts) {
         JointStep::Part p;
         p.row_begin = rows;
         p.rows = part.ids->size();
         p.clips = part.memory_entries.size();
-        if (p.clips == 0 || p.rows % p.clips != 0)
+        p.sampled = part.sampled;
+        if (p.sampled) {
+          // A greedy search's rows read their input's memory entry (shared memory rows): any count of each.
+          if (p.clips == 0 || p.sampled->rows != p.rows || p.sampled->inputs != p.clips || !p.sampled->capacity)
+            throw std::invalid_argument("A joint decoding step's greedy part does not match its rows");
+          for (size_t l = 0; l < _layers.size(); ++l) {
+            const std::string l_str = std::to_string(l);
+            p.memory_keys.push_back(&part.state->at("memory_keys_" + l_str));
+            p.memory_values.push_back(&part.state->at("memory_values_" + l_str));
+          }
+          sampled_seen = true;
+        } else if (sampled_seen) {
+          throw std::invalid_argument("A joint decoding step's beam parts come before its greedy parts");
+        } else if (p.clips == 0 || p.rows % p.clips != 0) {
           throw std::invalid_argument("A joint decoding step's part has no whole beams of its clips");
+        }
         // The beam order its last update_state left for this step (defers_state_reorder).
         if (auto it = part.state->find(pending_reorder_key); it != part.state->end()) {
           p.cache_reorder = std::make_unique<StorageView>(std::move(it->second));
@@ -93,13 +108,20 @@ namespace ctranslate2 {
           (*_position_encoder)(part_in, parts[i].step);
         }
 
-      // Every product as each part's own batch would run it (cuda/clip_groups.h, a group per part); the
-      // attention layers take each part's own caches (joint_step.h).
+      // Every product as each part's own batch would run it (cuda/clip_groups.h, counted in rows: a group per beam
+      // search's part, a greedy search's own groups); the attention layers take each part's own caches
+      // (joint_step.h).
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       cuda::ClipGroups groups;
-      for (const auto& p : joint.parts)
-        groups.clips.push_back(p.clips);
-      groups.total = joint.clips;
+      for (const auto& p : joint.parts) {
+        if (!p.sampled)
+          groups.clips.push_back(p.rows);
+        else if (p.sampled->group_rows.empty())               // no groups: the search's rows as one batch
+          groups.clips.push_back(p.rows);
+        else
+          groups.clips.insert(groups.clips.end(), p.sampled->group_rows.begin(), p.sampled->group_rows.end());
+      }
+      groups.total = rows;
       const cuda::ClipGroupsScope clip_groups(std::move(groups));
 #endif
       const JointStepScope joint_scope(joint);

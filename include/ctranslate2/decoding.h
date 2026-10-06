@@ -11,6 +11,10 @@
 
 namespace ctranslate2 {
 
+  namespace layers {
+    struct SampledRows;                                // a greedy search's rows in a joint step (layers/joint_step.h)
+  }
+
   struct DecodingResult {
     std::vector<std::vector<size_t>> hypotheses;
     std::vector<float> scores;
@@ -175,6 +179,8 @@ namespace ctranslate2 {
   };
 
 
+  class GreedySearchRun;
+
   class GreedySearch : public SearchStrategy {
   public:
     // Penalties are only applied to return scores consistent with the beam search.
@@ -205,6 +211,27 @@ namespace ctranslate2 {
            const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors = {},
            const std::vector<std::vector<size_t>>* prefix_ids = nullptr) const override;
 
+    // The same search a step at a time (search() runs it to the end), as BeamSearch::start: its inputs' hypotheses
+    // and temperature variants expanded into rows at the start, their results merged by finish(). The run keeps
+    // references to decoder, state and sampler.
+    std::unique_ptr<GreedySearchRun>
+    start(layers::Decoder& decoder,
+          layers::DecoderState& state,
+          const Sampler& sampler,
+          const std::vector<size_t>& start_ids,
+          const std::vector<size_t>& end_ids,
+          const dim_t start_step,
+          const dim_t max_length,
+          const dim_t min_length,
+          const bool return_scores,
+          const bool return_attention,
+          const bool return_logits_vocab,
+          const bool return_prefix,
+          const size_t num_hypotheses,
+          const bool include_eos_in_hypotheses,
+          const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors,
+          const std::vector<std::vector<size_t>>* prefix_ids) const;
+
   private:
     const float _length_penalty;
     const float _coverage_penalty;
@@ -212,6 +239,39 @@ namespace ctranslate2 {
     const dim_t _group_size;
     const std::vector<uint64_t> _seeds;
     const std::vector<float> _temperatures;
+  };
+
+  // A greedy search between steps (GreedySearch::start), with BeamSearchRun's interface: next_ids(), the caller's
+  // decoder step into logits(), then advance() or its three phases (queue_processors, queue_candidates,
+  // take_candidates; the caller synchronizes the device between them), and finish().
+  class GreedySearchRun {
+  public:
+    ~GreedySearchRun();
+    bool next_ids(StorageView& step_ids);
+    dim_t step() const;
+    dim_t decoder_step() const;
+    bool with_attention() const;
+    StorageView* attention_output();
+    StorageView& logits();
+    // The run's clip groups, shared memory rows and capacity caches for a decoder call it makes alone (search()).
+    std::shared_ptr<void> own_scopes();
+    // The same for its rows in a joint decoder step (TransformerDecoder::decode_joint), valid until it advances.
+    const layers::SampledRows& joint_rows();
+    // The memory entries its rows still read (inputs still decoding, in order).
+    dim_t memory_inputs() const;
+    // Rows still decoding.
+    dim_t rows() const;
+    bool advance();
+    bool queue_processors();
+    void queue_candidates();
+    bool take_candidates();
+    std::vector<DecodingResult> finish();
+
+    struct Impl;                                       // the loop state (decoding.cc)
+
+  private:
+    friend class GreedySearch;
+    std::unique_ptr<Impl> _impl;
   };
 
 
@@ -263,10 +323,17 @@ namespace ctranslate2 {
          std::vector<size_t> end_ids,
          DecodingOptions options = DecodingOptions());
 
-  // decode()'s beam search a step at a time (start_decode): the BeamSearchRun with what decode() builds for it
-  // (the strategy, sampler and logits processors), so that several can share decoder steps.
+  // decode()'s search a step at a time (start_decode): its BeamSearchRun or GreedySearchRun with what decode()
+  // builds for it (the strategy, sampler and logits processors), so that several can share decoder steps.
   class DecodeRun {
   public:
+    // The beam search (null for a greedy one) and the greedy search (null for a beam one).
+    BeamSearchRun* beam() {
+      return _run.get();
+    }
+    GreedySearchRun* greedy() {
+      return _greedy_run.get();
+    }
     BeamSearchRun& search() {
       return *_run;
     }
@@ -284,12 +351,14 @@ namespace ctranslate2 {
     std::vector<size_t> _start_ids;
     std::vector<std::vector<size_t>> _prefix_ids;
     std::unique_ptr<const BeamSearch> _strategy;
+    std::unique_ptr<const GreedySearch> _greedy;
     std::unique_ptr<const Sampler> _sampler;
     std::vector<std::shared_ptr<LogitsProcessor>> _processors;
     std::unique_ptr<BeamSearchRun> _run;
+    std::unique_ptr<GreedySearchRun> _greedy_run;
   };
 
-  // decode() for a beam search (beam_size > 1, no alternatives) up to its first step.
+  // decode() for a beam search or a greedy search (no alternatives, no prefix bias) up to its first step.
   std::unique_ptr<DecodeRun> start_decode(layers::Decoder& decoder,
                                           layers::DecoderState& state,
                                           std::vector<std::vector<size_t>> start_tokens,

@@ -69,6 +69,33 @@ namespace ctranslate2 {
         _stream->submit(tag, encoder_output.sync_copy(), std::move(prompts));
       }
 
+      void submit_sampled(uint64_t tag,
+                          const StorageView& encoder_output,
+                          BatchIds prompts,
+                          size_t beam_size,
+                          float patience,
+                          size_t num_hypotheses,
+                          float length_penalty,
+                          float repetition_penalty,
+                          size_t no_repeat_ngram_size,
+                          size_t max_length,
+                          bool return_scores,
+                          bool return_no_speech_prob,
+                          size_t max_initial_timestamp_index,
+                          bool suppress_blank,
+                          const std::optional<std::vector<int>>& suppress_tokens,
+                          size_t sampling_topk,
+                          float sampling_temperature,
+                          size_t group_size,
+                          std::vector<uint64_t> sampling_seeds,
+                          std::vector<float> sampling_temperatures) {
+        _stream->submit_sampled(tag, encoder_output.sync_copy(), std::move(prompts), whisper_options(
+          beam_size, patience, num_hypotheses, length_penalty, repetition_penalty, no_repeat_ngram_size, max_length,
+          return_scores, /*return_logits_vocab=*/false, return_no_speech_prob, max_initial_timestamp_index,
+          suppress_blank, suppress_tokens, sampling_topk, sampling_temperature, group_size, std::move(sampling_seeds),
+          std::move(sampling_temperatures)));
+      }
+
       std::optional<std::pair<uint64_t, std::vector<models::WhisperGenerationResult>>> next() {
         uint64_t tag = 0;
         std::vector<models::WhisperGenerationResult> results;
@@ -267,6 +294,36 @@ namespace ctranslate2 {
                    tag: The batch's number, returned with its results.
                    encoder_output: Its encoder output (:meth:`Whisper.encode`, on the model's device).
                    prompts: Its prompts, as token IDs.
+             )pbdoc")
+        .def("submit_sampled", &WhisperStreamWrapper::submit_sampled,
+             py::arg("tag"),
+             py::arg("encoder_output"),
+             py::arg("prompts"),
+             py::kw_only(),
+             py::arg("beam_size")=1,
+             py::arg("patience")=1,
+             py::arg("num_hypotheses")=1,
+             py::arg("length_penalty")=1,
+             py::arg("repetition_penalty")=1,
+             py::arg("no_repeat_ngram_size")=0,
+             py::arg("max_length")=448,
+             py::arg("return_scores")=false,
+             py::arg("return_no_speech_prob")=false,
+             py::arg("max_initial_timestamp_index")=50,
+             py::arg("suppress_blank")=true,
+             py::arg("suppress_tokens")=std::vector<int>{-1},
+             py::arg("sampling_topk")=1,
+             py::arg("sampling_temperature")=1,
+             py::arg("group_size")=0,
+             py::arg("sampling_seeds")=std::vector<uint64_t>(),
+             py::arg("sampling_temperatures")=std::vector<float>(),
+             py::call_guard<py::gil_scoped_release>(),
+             R"pbdoc(
+                 Queues a batch of random sampling (``beam_size`` 1) with its own options, which
+                 :meth:`Whisper.generate` takes alike: decoded with the stream's other batches exactly as
+                 :meth:`Whisper.generate` alone decodes it (shared memory rows and capacity caches on CUDA:
+                 ``CT2_CAPACITY_CACHES=1``). Its results come from :meth:`next` under its tag, as
+                 :meth:`Whisper.generate` returns them.
              )pbdoc")
         .def("next", &WhisperStreamWrapper::next,
              py::call_guard<py::gil_scoped_release>(),

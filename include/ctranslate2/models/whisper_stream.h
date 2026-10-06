@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <memory>
 #include <mutex>
 
 #include "ctranslate2/models/whisper.h"
@@ -20,8 +21,9 @@ namespace ctranslate2 {
     // Batches decoded together, each exactly as WhisperReplica::generate decodes it alone (the same results, bit
     // for bit), a batch joining as soon as there is room: every step is one decoder call for all the batches
     // decoding (TransformerDecoder::decode_joint), so the decoder weights are read once for them all and a batch's
-    // last long hypotheses never decode alone. Beam search on CUDA; one worker of the pool runs it
-    // (Whisper::open_stream, WhisperReplica::decode_stream).
+    // last long hypotheses never decode alone. The stream's beam search on CUDA, and sampled batches with options
+    // of their own (submit_sampled); one worker of the pool runs it (Whisper::open_stream,
+    // WhisperReplica::decode_stream).
     class WhisperStream {
     public:
       WhisperStream(WhisperOptions options, WhisperStreamLimits limits);
@@ -29,6 +31,11 @@ namespace ctranslate2 {
       // A batch as generate takes it: its encoder output (on the model's device) and prompts. Blocks while
       // max_pending batches wait.
       void submit(uint64_t tag, StorageView encoder_output, std::vector<std::vector<size_t>> prompts);
+      // A batch of random sampling (beam_size 1) with its own options, decoded with the others exactly as generate()
+      // alone decodes it with these options: shared memory rows and capacity caches on CUDA (a long recording's
+      // sampled temperature fallback, the inputs' hypotheses and temperature variants as one search).
+      void submit_sampled(uint64_t tag, StorageView encoder_output, std::vector<std::vector<size_t>> prompts,
+                          WhisperOptions options);
       // No more batches.
       void close();
       // Blocks until a batch is finished; false once the stream is closed and every batch returned.
@@ -39,6 +46,7 @@ namespace ctranslate2 {
         uint64_t tag = 0;
         StorageView encoder_output;
         std::vector<std::vector<size_t>> prompts;
+        std::shared_ptr<const WhisperOptions> sampled;    // a sampled batch's options, or null (the stream's beam search)
       };
       // The next batch: false when none is waiting (with wait, only once the stream is closed and empty).
       bool take(Batch& batch, bool wait);

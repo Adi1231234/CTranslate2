@@ -133,6 +133,7 @@ set(SOURCES
   src/layers/attention_layer.cc
   src/layers/attention.cc
   src/layers/attention_joint.cc
+  src/layers/attention_sampled.cc
   src/layers/flash_attention.cc
   src/layers/common.cc
   src/layers/attention_fused.cc

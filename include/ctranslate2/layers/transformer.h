@@ -231,6 +231,8 @@ namespace ctranslate2 {
         DecoderState* state;
         std::vector<dim_t> memory_entries;   // for each input still decoding, its entry in the memory keys and values
         struct SlotCache* slots = nullptr;   // its self-attention caches in slots (CT2_JOINT_SLOTS), or null
+        // A greedy search's rows (GreedySearchRun::joint_rows; after every beam search's part), or null.
+        const struct SampledRows* sampled = nullptr;
       };
       void decode_joint(const std::vector<JointPart>& parts, StorageView& logits);
 

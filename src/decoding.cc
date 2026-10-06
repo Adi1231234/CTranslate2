@@ -10,6 +10,7 @@
 #include "ctranslate2/ops/ops.h"
 #include "dispatch.h"
 #include "layers/capacity_cache.h"
+#include "layers/joint_step.h"
 #ifdef CT2_WITH_CUDA
 #  include "cuda/clip_groups.h"
 #  include "cuda/graph.h"
@@ -28,62 +29,8 @@ namespace ctranslate2 {
 
   static const ops::Gather gather;
 
-  // Set by GreedySearch::search for the hypotheses of sampled inputs whose memory entries were not repeated: the
-  // number of consecutive rows of one input (0: every row has its own memory). Read by the search it then runs.
-  static thread_local dim_t shared_memory_hypotheses = 0;
-
-  struct SharedMemoryHypotheses {
-    explicit SharedMemoryHypotheses(dim_t rows_per_input) : previous(shared_memory_hypotheses) {
-      shared_memory_hypotheses = rows_per_input;
-    }
-    ~SharedMemoryHypotheses() {
-      shared_memory_hypotheses = previous;
-    }
-    const dim_t previous;
-  };
-
-  // Likewise the rows of one group (group_size inputs x their hypotheses) for that search's groups
-  // (cuda/clip_groups.h); 0: the search's own group_size.
-  static thread_local dim_t greedy_group_rows = 0;
-
-  // Likewise each row's sampling stream (its input's seed, the hypothesis as subsequence; cuda/row_random.h), or
-  // null: the search's own seeds, one row per input.
+  // Each row's sampling stream: its input's seed and the hypothesis as subsequence (cuda/row_random.h).
   using RowSeeds = std::vector<std::pair<uint64_t, uint64_t>>;
-  static thread_local const RowSeeds* greedy_row_seeds = nullptr;
-
-  struct GreedyRowSeeds {
-    explicit GreedyRowSeeds(const RowSeeds* seeds) : previous(greedy_row_seeds) {
-      greedy_row_seeds = seeds;
-    }
-    ~GreedyRowSeeds() {
-      greedy_row_seeds = previous;
-    }
-    const RowSeeds* previous;
-  };
-
-  // Likewise each row's temperature (its variant's, DecodingOptions::sampling_temperatures) at its original index,
-  // or null: the sampler's own.
-  static thread_local const std::vector<float>* greedy_row_temperatures = nullptr;
-
-  struct GreedyRowTemperatures {
-    explicit GreedyRowTemperatures(const std::vector<float>* temperatures) : previous(greedy_row_temperatures) {
-      greedy_row_temperatures = temperatures;
-    }
-    ~GreedyRowTemperatures() {
-      greedy_row_temperatures = previous;
-    }
-    const std::vector<float>* previous;
-  };
-
-  struct GreedyGroupRows {
-    explicit GreedyGroupRows(dim_t rows) : previous(greedy_group_rows) {
-      greedy_group_rows = rows;
-    }
-    ~GreedyGroupRows() {
-      greedy_group_rows = previous;
-    }
-    const dim_t previous;
-  };
 
   static void gather_beam_flat(StorageView& data, const StorageView& indices, dim_t beam_size) {
     merge_batch_beam(data);
@@ -1202,6 +1149,554 @@ namespace ctranslate2 {
   {
   }
 
+  // The loop state of one greedy search between its steps (GreedySearchRun): search()'s, its inputs' hypotheses and
+  // temperature variants expanded into rows (each row then a search of one hypothesis at its own temperature).
+  struct GreedySearchRun::Impl {
+    Impl(layers::Decoder& decoder_, layers::DecoderState& state_, const Sampler& sampler_)
+      : decoder(decoder_), state(state_), sampler(sampler_) {
+    }
+    layers::Decoder& decoder;
+    layers::DecoderState& state;
+    const Sampler& sampler;
+    std::vector<size_t> end_ids;
+    dim_t start_step = 0;
+    dim_t max_length = 0;
+    dim_t min_length = 0;
+    bool return_scores = false;                              // the rows' (with hypotheses: always)
+    bool return_attention = false;
+    bool return_logits_vocab = false;
+    bool return_prefix = true;
+    bool include_eos_in_hypotheses = true;
+    float length_penalty = 0;
+    float coverage_penalty = 0;
+    std::function<bool(DecodingStepResult)> callback;
+    std::vector<std::shared_ptr<LogitsProcessor>> logits_processors;
+    std::vector<std::vector<size_t>> prefix_storage;
+    const std::vector<std::vector<size_t>>* prefix_ids = nullptr;
+    // The expansion, undone by finish(): `expanded` with hypotheses or variants, the caller's return_scores.
+    bool expanded = false;
+    size_t inputs = 0;
+    size_t variants = 1;
+    size_t num_hypotheses = 1;
+    bool caller_return_scores = false;
+
+    Device device;
+    DataType dtype;
+    bool gather_attention = false;
+    dim_t max_step = 0;
+    StorageView sample_from{DataType::INT32};
+    StorageView logits;
+    std::vector<dim_t> batch_offset;
+    std::vector<DecodingResult> results;
+    StorageView alive_seq{DataType::INT32};
+    StorageView attention_step;
+    StorageView attention_step_device;
+    // Hypotheses sharing their input's memory entries (share rows an input): each row's input among those
+    // entries, which hold the inputs still decoding, in order.
+    dim_t share = 0;
+    std::vector<dim_t> memory_inputs;
+    StorageView row_input{DataType::INT32};
+    dim_t group_rows = 0;
+    RowSeeds row_seeds;                                      // each row's stream where seeds were given
+    std::vector<float> row_temperatures;                     // each row's (variants), at its original index
+#ifdef CT2_WITH_CUDA
+    std::unique_ptr<cuda::RowStates> row_states;
+#endif
+    layers::CapacityCaches capacity;
+    bool capacity_on = false;
+    layers::SampledRows joint;
+    dim_t step = 0;
+    bool done = false;
+    // A step between its phases (queue_processors, queue_candidates, take_candidates).
+    std::unique_ptr<DisableTokens> disable_tokens;
+    LogitsProcessor::Rest processors_rest;
+    std::vector<StorageView> logits_vec;
+    StorageView logits_orig;
+    StorageView best_ids{DataType::INT32};
+    StorageView best_probs;
+    StorageView device_ids{DataType::INT32};
+    StorageView device_probs;
+#if CT2_HOST_COPIES
+    cuda::PinnedBuffer host_ids;
+    cuda::PinnedBuffer host_probs;
+#endif
+
+    void map_rows() {
+      std::vector<int32_t> rows(batch_offset.size());
+      for (size_t i = 0; i < rows.size(); ++i)
+        rows[i] = static_cast<int32_t>(std::find(memory_inputs.begin(), memory_inputs.end(), batch_offset[i] / share)
+                                       - memory_inputs.begin());
+      row_input = StorageView({static_cast<dim_t>(rows.size())}, rows).to(device);
+    }
+  };
+
+#ifdef CT2_WITH_CUDA
+  // A run's clip groups (each group's products as a batch of its own), shared memory rows and capacity caches for
+  // its own decoder step.
+  struct GreedySearchRunScopes {
+    explicit GreedySearchRunScopes(GreedySearchRun::Impl& r)
+      : groups(cuda::make_clip_groups(r.batch_offset, r.group_rows))
+      , shared_rows{r.share ? r.row_input.data<int32_t>() : nullptr, static_cast<dim_t>(r.batch_offset.size()),
+                    static_cast<dim_t>(r.memory_inputs.size())}
+    {
+      if (r.share)
+        shared = std::make_unique<cuda::SharedMemoryRowsScope>(shared_rows);
+      if (r.capacity_on)
+        capacity = std::make_unique<layers::CapacityCacheScope>(&r.capacity);
+    }
+    const cuda::ClipGroupsScope groups;
+    const cuda::SharedMemoryRows shared_rows;
+    std::unique_ptr<cuda::SharedMemoryRowsScope> shared;
+    std::unique_ptr<layers::CapacityCacheScope> capacity;
+  };
+#endif
+
+  std::unique_ptr<GreedySearchRun>
+  GreedySearch::start(layers::Decoder& decoder,
+                      layers::DecoderState& state,
+                      const Sampler& sampler,
+                      const std::vector<size_t>& start_ids,
+                      const std::vector<size_t>& end_ids,
+                      const dim_t start_step,
+                      const dim_t max_length,
+                      const dim_t min_length,
+                      const bool return_scores,
+                      const bool return_attention,
+                      const bool return_logits_vocab,
+                      const bool return_prefix,
+                      const size_t num_hypotheses,
+                      const bool include_eos_in_hypotheses,
+                      const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors,
+                      const std::vector<std::vector<size_t>>* prefix_ids) const {
+    auto run = std::unique_ptr<GreedySearchRun>(new GreedySearchRun());
+    run->_impl = std::make_unique<GreedySearchRun::Impl>(decoder, state, sampler);
+    GreedySearchRun::Impl& r = *run->_impl;
+    r.end_ids = end_ids;
+    r.start_step = start_step;
+    r.max_length = max_length;
+    r.min_length = min_length;
+    r.return_attention = return_attention;
+    r.return_logits_vocab = return_logits_vocab;
+    r.return_prefix = return_prefix;
+    r.include_eos_in_hypotheses = include_eos_in_hypotheses;
+    r.length_penalty = _length_penalty;
+    r.coverage_penalty = _coverage_penalty;
+    r.logits_processors = logits_processors;
+    r.device = decoder.device();
+    r.dtype = decoder.output_type();
+    r.inputs = start_ids.size();
+    r.num_hypotheses = num_hypotheses;
+    r.caller_return_scores = return_scores;
+
+    // We can return multiple hypotheses from greedy search when random sampling is enabled.
+    // In that case we replicate the batches and then merge the hypotheses in a single result.
+    // Temperature variants likewise: an input's rows are its variants' hypotheses, variant-major.
+    std::vector<size_t> row_start_ids = start_ids;
+    const bool variants_here = !_temperatures.empty();
+    r.expanded = num_hypotheses > 1 || variants_here;
+    if (r.expanded) {
+      r.variants = variants_here ? _temperatures.size() : 1;
+      const size_t per_input = num_hypotheses * r.variants;
+#ifdef CT2_WITH_CUDA
+      // On CUDA the hypotheses read one copy of their input's memory keys and values (cuda/shared_memory_rows.h):
+      // the entries the decoder does not replicate for beams stay one per input.
+      const bool share = decoder.device() == Device::CUDA && decoder.output_type() == DataType::FLOAT16
+        && cuda::shared_memory_rows_enabled();
+#else
+      const bool share = false;
+#endif
+      for (auto& [name, value] : state) {
+        if (value && !(share && !decoder.replicate_state(name)))
+          repeat_batch(value, per_input);
+      }
+      r.share = share ? static_cast<dim_t>(per_input) : 0;
+      // A variant's hypotheses decode as the one group a search of their input alone would (cuda/clip_groups.h).
+      r.group_rows = static_cast<dim_t>(num_hypotheses) * (variants_here ? 1 : _group_size);
+      for (size_t s = 0; s < _seeds.size(); ++s)               // seed s (input i's variant v), hypothesis j: (s, j)
+        for (size_t j = 0; j < num_hypotheses; ++j)
+          r.row_seeds.emplace_back(_seeds[s], j);
+      if (variants_here)
+        for (size_t i = 0; i < r.inputs; ++i)
+          for (const float temperature : _temperatures)
+            r.row_temperatures.insert(r.row_temperatures.end(), num_hypotheses, temperature);
+      row_start_ids = repeat_vector(start_ids, per_input);
+      if (prefix_ids) {
+        r.prefix_storage = repeat_vector(*prefix_ids, per_input);
+        r.prefix_ids = &r.prefix_storage;
+      }
+      r.return_scores = num_hypotheses > 1 || return_scores;   // as a variant's search alone samples
+      if (_callback)
+        r.callback = [callback = _callback, num_hypotheses](DecodingStepResult result) {
+          result.hypothesis_id = result.batch_id % num_hypotheses;
+          result.batch_id /= num_hypotheses;
+          return callback(std::move(result));
+        };
+    } else {
+      r.group_rows = _group_size;
+      for (const uint64_t seed : _seeds)
+        r.row_seeds.emplace_back(seed, 0);
+      r.prefix_ids = prefix_ids;
+      r.return_scores = return_scores;
+      r.callback = _callback;
+    }
+
+    const dim_t batch_size = row_start_ids.size();
+    r.gather_attention = (return_attention || (r.return_scores && _coverage_penalty != 0));
+    r.sample_from = StorageView({batch_size}, DataType::INT32);
+    r.logits = StorageView(r.dtype, r.device);
+    r.batch_offset.resize(batch_size);
+    r.results.resize(batch_size);
+    for (dim_t i = 0; i < batch_size; ++i) {
+      r.batch_offset[i] = i;
+      r.sample_from.at<int32_t>(i) = row_start_ids[i];
+      r.results[i].hypotheses.resize(1);
+      if (r.return_scores)
+        r.results[i].scores.resize(1, 0.f);
+      if (return_attention)
+        r.results[i].attention.resize(1);
+    }
+    r.best_probs = StorageView(r.dtype);
+    r.attention_step_device = StorageView(r.dtype, r.device);
+    r.max_step = get_max_step(max_length, return_prefix, r.prefix_ids);
+
+    if (r.share) {
+      for (dim_t i = 0; i < batch_size / r.share; ++i)
+        r.memory_inputs.push_back(i);
+      r.map_rows();
+    }
+    // Each row's own sampling stream where seeds were given (cuda/row_random.h), at its original index.
+    if (!r.row_seeds.empty() && static_cast<dim_t>(r.row_seeds.size()) != batch_size)
+      throw std::invalid_argument("sampling_seeds needs one seed per input (and temperature variant)");
+#ifdef CT2_WITH_CUDA
+    if (!r.row_seeds.empty() && r.device == Device::CUDA)
+      r.row_states = std::make_unique<cuda::RowStates>(r.row_seeds);
+#endif
+    // The self-attention caches in place, with room for the search's steps (layers/capacity_cache.h).
+    r.capacity.steps = r.max_step;
+    r.capacity_on = layers::capacity_caches_enabled() && r.device == Device::CUDA && r.dtype == DataType::FLOAT16;
+    return run;
+  }
+
+  GreedySearchRun::~GreedySearchRun() = default;
+
+  bool GreedySearchRun::next_ids(StorageView& step_ids) {
+    Impl& r = *_impl;
+    if (r.done || r.step >= r.max_step) {
+      r.done = true;
+      return false;
+    }
+    convert_to_original_word_ids(r.decoder, r.sample_from);
+    step_ids = r.sample_from.to(r.device);
+    return true;
+  }
+
+  dim_t GreedySearchRun::step() const {
+    return _impl->step;
+  }
+
+  dim_t GreedySearchRun::decoder_step() const {
+    return _impl->start_step + _impl->step;
+  }
+
+  bool GreedySearchRun::with_attention() const {
+    return _impl->gather_attention;
+  }
+
+  StorageView* GreedySearchRun::attention_output() {
+    return _impl->gather_attention ? &_impl->attention_step_device : nullptr;
+  }
+
+  StorageView& GreedySearchRun::logits() {
+    return _impl->logits;
+  }
+
+  std::shared_ptr<void> GreedySearchRun::own_scopes() {
+#ifdef CT2_WITH_CUDA
+    return std::make_shared<GreedySearchRunScopes>(*_impl);
+#else
+    return nullptr;
+#endif
+  }
+
+  const layers::SampledRows& GreedySearchRun::joint_rows() {
+    Impl& r = *_impl;
+    if (!r.share || !r.capacity_on)
+      throw std::logic_error("A greedy search joins a joint step with shared memory rows and capacity caches only");
+#ifdef CT2_WITH_CUDA
+    r.joint.group_rows = cuda::make_clip_groups(r.batch_offset, r.group_rows).clips;
+#endif
+    r.joint.rows = static_cast<dim_t>(r.batch_offset.size());
+    r.joint.row_input = r.row_input.data<int32_t>();
+    r.joint.inputs = static_cast<dim_t>(r.memory_inputs.size());
+    r.joint.capacity = &r.capacity;
+    return r.joint;
+  }
+
+  dim_t GreedySearchRun::memory_inputs() const {
+    return _impl->share ? static_cast<dim_t>(_impl->memory_inputs.size())
+                        : static_cast<dim_t>(_impl->batch_offset.size());
+  }
+
+  dim_t GreedySearchRun::rows() const {
+    return static_cast<dim_t>(_impl->batch_offset.size());
+  }
+
+  bool GreedySearchRun::advance() {
+    if (queue_processors())
+      synchronize(_impl->device);
+    queue_candidates();
+    synchronize(_impl->device);
+    return take_candidates();
+  }
+
+  bool GreedySearchRun::queue_processors() {
+    Impl& r = *_impl;
+    r.capacity.advance();                                    // the decoder step has run
+    r.disable_tokens = std::make_unique<DisableTokens>(r.logits);
+    r.processors_rest = nullptr;
+
+    // Prevent the generation of end_id until the minimum length is reached.
+    apply_min_length(r.step,
+                     r.min_length,
+                     r.end_ids,
+                     *r.disable_tokens,
+                     r.batch_offset,
+                     r.return_prefix,
+                     r.prefix_ids);
+
+    for (size_t i = 0; i < r.logits_processors.size(); ++i) {
+      LogitsProcessor::Rest rest = r.logits_processors[i]->apply_queued(r.step, r.logits, *r.disable_tokens,
+                                                                        r.alive_seq, r.batch_offset, r.prefix_ids);
+      if (rest && i + 1 < r.logits_processors.size()) {     // the next processors see what it disables
+        synchronize(r.device);
+        rest(*r.disable_tokens);
+      } else {
+        r.processors_rest = std::move(rest);
+      }
+    }
+    return bool(r.processors_rest);
+  }
+
+  void GreedySearchRun::queue_candidates() {
+    Impl& r = *_impl;
+    if (r.processors_rest) {
+      r.processors_rest(*r.disable_tokens);
+      r.processors_rest = nullptr;
+    }
+    r.disable_tokens->apply();
+    r.disable_tokens.reset();
+
+    r.logits_vec.clear();
+    r.logits_orig = StorageView(r.dtype, r.device);
+    if (r.return_logits_vocab) {
+      r.logits_vec = build_logits(r.logits, r.logits.dim(0));
+      r.logits_orig.copy_from(r.logits);
+    }
+    // Compute log probs only if required.
+    StorageView log_probs(r.dtype, r.device);
+    if (r.return_scores)
+      ops::LogSoftMax()(r.logits);
+    log_probs.shallow_copy(r.logits);
+
+#ifdef CT2_WITH_CUDA
+    StorageView state_of_row(DataType::INT32);                // the rows still sampling: their original index
+    cuda::RowRandom seeded;
+    std::unique_ptr<cuda::RowRandomScope> row_scope;
+    if (r.row_states) {
+      const dim_t rows = static_cast<dim_t>(r.batch_offset.size());
+      state_of_row = StorageView({rows}, std::vector<int32_t>(r.batch_offset.begin(), r.batch_offset.end()))
+        .to(r.device);
+      seeded = cuda::RowRandom{r.row_states->states(), state_of_row.data<int32_t>(), rows};
+      row_scope = std::make_unique<cuda::RowRandomScope>(seeded);
+    }
+#endif
+    // The rows' 1 / temperature, converted as RandomSampler converts its own (StorageView(1 / t).to(dtype)).
+    StorageView row_scale(r.dtype, r.device);
+    std::unique_ptr<RowScalesScope> scales_scope;
+    if (!r.row_temperatures.empty()) {
+      std::vector<float> inverse;
+      inverse.reserve(r.batch_offset.size());
+      for (const dim_t row : r.batch_offset)
+        inverse.push_back(float(1) / r.row_temperatures[row]);
+      row_scale = StorageView({static_cast<dim_t>(inverse.size())}, inverse).to(r.dtype).to(r.device);
+      scales_scope = std::make_unique<RowScalesScope>(&row_scale);
+    }
+    // The samples on the GPU, copied to the host without waiting (take_candidates reads them).
+#if CT2_HOST_COPIES
+    if (r.device == Device::CUDA) {
+      r.device_ids = StorageView(DataType::INT32, r.device);
+      r.device_probs = StorageView(r.dtype, r.device);
+      r.sampler.sample_on_device(log_probs, r.device_ids, r.device_probs, 1);
+      r.host_ids.copy_from_device(r.device_ids.buffer(), r.device_ids.size() * r.device_ids.item_size());
+      r.host_probs.copy_from_device(r.device_probs.buffer(), r.device_probs.size() * r.device_probs.item_size());
+      return;
+    }
+#endif
+    r.sampler(log_probs, r.best_ids, r.best_probs);
+  }
+
+  bool GreedySearchRun::take_candidates() {
+    Impl& r = *_impl;
+#if CT2_HOST_COPIES
+    if (r.device == Device::CUDA) {                          // queue_candidates' copies, the stream synchronized
+      r.best_ids = StorageView(r.device_ids.shape(), DataType::INT32);
+      std::memcpy(r.best_ids.buffer(), r.host_ids.data(), r.best_ids.size() * r.best_ids.item_size());
+      r.best_probs = StorageView(r.device_probs.shape(), r.dtype);
+      std::memcpy(r.best_probs.buffer(), r.host_probs.data(), r.best_probs.size() * r.best_probs.item_size());
+    }
+#endif
+    const dim_t step = r.step;
+    StorageView& best_ids = r.best_ids;
+    StorageView& best_probs = r.best_probs;
+    std::vector<dim_t>& batch_offset = r.batch_offset;
+    const auto* prefix_ids = r.prefix_ids;
+    if (prefix_ids)
+      update_sample_with_prefix(step, best_ids, best_probs, *prefix_ids, r.end_ids, batch_offset);
+    if (r.attention_step_device)
+      r.attention_step.copy_from(r.attention_step_device.to_float32());
+
+    if (!r.logits_processors.empty()) {
+      if (r.alive_seq) {
+        const StorageView cur_alive_seq = std::move(r.alive_seq);
+        ops::Concat(-1)({&cur_alive_seq, &best_ids}, r.alive_seq);
+      } else {
+        r.alive_seq = best_ids;
+      }
+    }
+
+    const dim_t cur_batch_size = static_cast<dim_t>(batch_offset.size());
+    std::vector<int32_t> non_finished_index;
+    non_finished_index.reserve(cur_batch_size);
+
+    for (dim_t i = 0; i < cur_batch_size; ++i) {
+      const size_t word_id = best_ids.at<int32_t>(i);
+      const size_t batch_id = batch_offset[i];
+      const dim_t prefix_length = prefix_ids ? prefix_ids->at(batch_id).size() : 0;
+      const float score = best_probs.scalar_at<float>({i, 0});
+      DecodingResult& result = r.results[batch_id];
+
+      if (r.return_logits_vocab) {
+        result.logits_vocab.resize(1);
+        result.logits_vocab[0].emplace_back(std::move(r.logits_vec[i]));
+      }
+
+      if ((!is_eos(word_id, r.end_ids) || r.include_eos_in_hypotheses)
+          && (r.return_prefix || step >= prefix_length)) {
+        result.hypotheses[0].push_back(word_id);
+        if (r.attention_step) {
+          const auto* attn = r.attention_step.index<float>({i, 0});
+          result.attention[0].emplace_back(attn, attn + r.attention_step.dim(-1));
+        }
+      }
+
+      if (r.return_scores)
+        result.scores[0] += score;
+
+      bool is_finished = ((is_eos(word_id, r.end_ids) && step >= prefix_length)
+                          || (is_last_step(step, r.max_length, prefix_length, r.return_prefix)));
+
+      if (r.callback && (r.return_prefix || step >= prefix_length)) {
+        DecodingStepResult step_result;
+        step_result.step = step;
+        step_result.batch_id = batch_id;
+        step_result.token_id = word_id;
+        step_result.hypothesis_id = 0;
+        step_result.is_last = is_finished;
+        if (r.return_scores)
+          step_result.score = score;
+        if (r.return_logits_vocab)
+          step_result.logits = std::move(r.logits_orig);
+        if (r.callback(std::move(step_result))) {
+          is_finished = true;
+        }
+      }
+
+      if (is_finished) {
+        finalize_result(result,
+                        1,
+                        r.length_penalty,
+                        r.coverage_penalty,
+                        r.return_scores,
+                        r.return_attention,
+                        r.return_logits_vocab);
+      } else {
+        non_finished_index.emplace_back(i);
+        r.sample_from.at<int32_t>(i) = word_id;
+      }
+    }
+
+    const dim_t count_alive = non_finished_index.size();
+
+    // No more sentences are alive, stop here.
+    if (count_alive == 0) {
+      r.done = true;
+      return false;
+    }
+
+    // Remove finished sentences from the execution.
+    if (count_alive != cur_batch_size) {
+      batch_offset = index_vector(batch_offset, non_finished_index);
+
+      StorageView alive({count_alive}, non_finished_index);
+      if (r.alive_seq)
+        gather(r.alive_seq, alive);
+      gather(r.sample_from, alive);
+      if (r.share) {
+        // The rows' entries by the alive rows; the shared memory entries by the inputs still decoding.
+        std::vector<int32_t> keep;
+        std::vector<dim_t> kept;
+        for (size_t j = 0; j < r.memory_inputs.size(); ++j)
+          if (std::any_of(batch_offset.begin(), batch_offset.end(),
+                          [&](dim_t row) { return row / r.share == r.memory_inputs[j]; })) {
+            keep.push_back(static_cast<int32_t>(j));
+            kept.push_back(r.memory_inputs[j]);
+          }
+        r.decoder.flush_state_reorder(r.state);
+        const StorageView alive_rows = alive.to(r.device);
+        const StorageView keep_inputs = StorageView({static_cast<dim_t>(keep.size())}, keep).to(r.device);
+        for (auto& [name, value] : r.state) {
+          if (r.decoder.replicate_state(name))
+            gather(value, alive_rows);
+          else if (kept.size() != r.memory_inputs.size())
+            gather(value, keep_inputs);
+        }
+        r.memory_inputs = std::move(kept);
+        r.map_rows();
+      } else {
+        r.decoder.update_state(r.state, alive.to(r.device));
+      }
+    }
+
+    if (++r.step >= r.max_step) {
+      r.done = true;
+      return false;
+    }
+    return true;
+  }
+
+  std::vector<DecodingResult> GreedySearchRun::finish() {
+    Impl& r = *_impl;
+    if (!r.expanded)
+      return std::move(r.results);
+    std::vector<DecodingResult> final_results(r.inputs * r.variants);   // input i's variant v: i * variants + v
+    for (size_t i = 0; i < r.results.size(); ++i) {
+      auto& result = r.results[i];
+      auto& final_result = final_results[i / r.num_hypotheses];
+
+      final_result.hypotheses.emplace_back(std::move(result.hypotheses[0]));
+      if (!result.scores.empty())
+        final_result.scores.emplace_back(result.scores[0]);
+      if (r.return_attention)
+        final_result.attention.emplace_back(std::move(result.attention[0]));
+      if (r.return_logits_vocab)
+        final_result.logits_vocab.emplace_back(std::move(result.logits_vocab[0]));
+    }
+    if (r.num_hypotheses > 1)
+      for (auto& result : final_results)
+        sort_hypotheses(result, r.num_hypotheses, r.caller_return_scores, r.return_attention, r.return_logits_vocab);
+    return final_results;
+  }
+
   std::vector<DecodingResult>
   GreedySearch::search(layers::Decoder& decoder,
                        layers::DecoderState& state,
@@ -1219,364 +1714,25 @@ namespace ctranslate2 {
                        const bool include_eos_in_hypotheses,
                        const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors,
                        const std::vector<std::vector<size_t>>* prefix_ids) const {
+    PROFILE("greedy_search");
 #ifdef CT2_WITH_CUDA
     const cuda::StepGraphScope step_graphs;           // releases the step graph and arenas at the end
 #endif
-    const dim_t batch_size = start_ids.size();
-
-    // We can return multiple hypotheses from greedy search when random sampling is enabled.
-    // In that case we replicate the batches and then merge the hypotheses in a single result.
-    // Temperature variants likewise: an input's rows are its variants' hypotheses, variant-major (the search they
-    // then run sees greedy_row_temperatures set and expands no further).
-    const bool variants_here = !_temperatures.empty() && !greedy_row_temperatures;
-    if (num_hypotheses > 1 || variants_here) {
-      const size_t variants = variants_here ? _temperatures.size() : 1;
-      const size_t per_input = num_hypotheses * variants;
-#ifdef CT2_WITH_CUDA
-      // On CUDA the hypotheses read one copy of their input's memory keys and values (cuda/shared_memory_rows.h):
-      // the entries the decoder does not replicate for beams stay one per input.
-      const bool share = decoder.device() == Device::CUDA && decoder.output_type() == DataType::FLOAT16
-        && cuda::shared_memory_rows_enabled();
-#else
-      const bool share = false;
-#endif
-      for (auto& [name, value] : state) {
-        if (value && !(share && !decoder.replicate_state(name)))
-          repeat_batch(value, per_input);
-      }
-      const SharedMemoryHypotheses shared_memory(share ? static_cast<dim_t>(per_input) : 0);
-      // A variant's hypotheses decode as the one group a search of their input alone would (cuda/clip_groups.h).
-      const GreedyGroupRows group_rows(static_cast<dim_t>(num_hypotheses) * (variants_here ? 1 : _group_size));
-      RowSeeds row_seeds;                                    // seed s (input i's variant v), hypothesis j: (s, j)
-      for (size_t s = 0; s < _seeds.size(); ++s)
-        for (size_t j = 0; j < num_hypotheses; ++j)
-          row_seeds.emplace_back(_seeds[s], j);
-      const GreedyRowSeeds seeded(_seeds.empty() ? nullptr : &row_seeds);
-      std::vector<float> row_temperatures;                   // each row's variant's temperature
-      if (variants_here)
-        for (dim_t i = 0; i < batch_size; ++i)
-          for (const float temperature : _temperatures)
-            row_temperatures.insert(row_temperatures.end(), num_hypotheses, temperature);
-      const GreedyRowTemperatures tempered(variants_here ? &row_temperatures : nullptr);
-
-      std::vector<size_t> repeat_start_ids = repeat_vector(start_ids, per_input);
-      std::vector<std::vector<size_t>> repeat_prefix_ids;
-      if (prefix_ids)
-        repeat_prefix_ids = repeat_vector(*prefix_ids, per_input);
-
-      std::unique_ptr<GreedySearch> greedy;
-
-      if (_callback) {
-        auto hypothesis_callback = [this, num_hypotheses](DecodingStepResult result) {
-          result.hypothesis_id = result.batch_id % num_hypotheses;
-          result.batch_id /= num_hypotheses;
-          return _callback(std::move(result));
-        };
-
-        greedy = std::make_unique<GreedySearch>(_length_penalty,
-                                                _coverage_penalty,
-                                                std::move(hypothesis_callback));
-      }
-
-      std::vector<DecodingResult> results = (greedy ? greedy.get() : this)->search(
-        decoder,
-        state,
-        sampler,
-        repeat_start_ids,
-        end_ids,
-        start_step,
-        max_length,
-        min_length,
-        /*return_scores=*/num_hypotheses > 1 || return_scores,   // as a variant's search alone samples
-        return_attention,
-        return_logits_vocab,
-        return_prefix,
-        /*num_hypotheses=*/1,
-        include_eos_in_hypotheses,
-        logits_processors,
-        prefix_ids ? &repeat_prefix_ids : nullptr);
-
-      std::vector<DecodingResult> final_results(batch_size * variants);   // input i's variant v: i * variants + v
-
-      for (size_t i = 0; i < results.size(); ++i) {
-        auto& result = results[i];
-        auto& final_result = final_results[i / num_hypotheses];
-
-        final_result.hypotheses.emplace_back(std::move(result.hypotheses[0]));
-        if (!result.scores.empty())
-          final_result.scores.emplace_back(result.scores[0]);
-        if (return_attention)
-          final_result.attention.emplace_back(std::move(result.attention[0]));
-        if (return_logits_vocab)
-          final_result.logits_vocab.emplace_back(std::move(result.logits_vocab[0]));
-      }
-
-      if (num_hypotheses > 1)
-        for (auto& result : final_results)
-          sort_hypotheses(result, num_hypotheses, return_scores, return_attention, return_logits_vocab);
-
-      return final_results;
-    }
-
-    PROFILE("greedy_search");
-    const Device device = decoder.device();
-    const DataType dtype = decoder.output_type();
-    const bool gather_attention = (return_attention || (return_scores && _coverage_penalty != 0));
-
-    StorageView sample_from({batch_size}, DataType::INT32);
-
-    StorageView logits(dtype, device);
-    std::vector<dim_t> batch_offset(batch_size);
-    std::vector<DecodingResult> results(batch_size);
-    for (dim_t i = 0; i < batch_size; ++i) {
-      batch_offset[i] = i;
-      sample_from.at<int32_t>(i) = start_ids[i];
-      results[i].hypotheses.resize(1);
-      if (return_scores)
-        results[i].scores.resize(1, 0.f);
-      if (return_attention)
-        results[i].attention.resize(1);
-    }
-
-    StorageView best_ids(DataType::INT32);
-    StorageView best_probs(dtype);
-    StorageView alive_seq(DataType::INT32);
-    StorageView attention_step;
-    StorageView attention_step_device(dtype, device);
-
-    const dim_t max_step = get_max_step(max_length, return_prefix, prefix_ids);
-
-    // Hypotheses sharing their input's memory entries (shared_memory_hypotheses rows an input): each row's input
-    // among those entries, which hold the inputs still decoding, in order.
-    const dim_t share = shared_memory_hypotheses;
-    std::vector<dim_t> memory_inputs;
-    StorageView row_input(DataType::INT32);
-    auto map_rows = [&] {
-      std::vector<int32_t> rows(batch_offset.size());
-      for (size_t i = 0; i < rows.size(); ++i)
-        rows[i] = static_cast<int32_t>(std::find(memory_inputs.begin(), memory_inputs.end(), batch_offset[i] / share)
-                                       - memory_inputs.begin());
-      row_input = StorageView({static_cast<dim_t>(rows.size())}, rows).to(device);
-    };
-    if (share) {
-      for (dim_t i = 0; i < batch_size / share; ++i)
-        memory_inputs.push_back(i);
-      map_rows();
-    }
-
-    const dim_t group_rows = greedy_group_rows ? greedy_group_rows : _group_size;
-
-    // Each row's own sampling stream where seeds were given (cuda/row_random.h), at its original index.
-    RowSeeds own_seeds;
-    for (const uint64_t seed : _seeds)
-      own_seeds.emplace_back(seed, 0);
-    const RowSeeds& row_seeds = greedy_row_seeds ? *greedy_row_seeds : own_seeds;
-    if (!row_seeds.empty() && static_cast<dim_t>(row_seeds.size()) != batch_size)
-      throw std::invalid_argument("sampling_seeds needs one seed per input (and temperature variant)");
-    const std::vector<float>* row_temperatures = greedy_row_temperatures;   // each row's, at its original index
-#ifdef CT2_WITH_CUDA
-    std::unique_ptr<cuda::RowStates> row_states;
-    if (!row_seeds.empty() && device == Device::CUDA)
-      row_states = std::make_unique<cuda::RowStates>(row_seeds);
-#endif
-    // The self-attention caches in place, with room for the search's steps (layers/capacity_cache.h).
-    layers::CapacityCaches capacity{max_step};
-    std::unique_ptr<layers::CapacityCacheScope> capacity_scope;
-    if (layers::capacity_caches_enabled() && device == Device::CUDA && dtype == DataType::FLOAT16)
-      capacity_scope = std::make_unique<layers::CapacityCacheScope>(&capacity);
-
-    for (dim_t step = 0; step < max_step; ++step) {
-      convert_to_original_word_ids(decoder, sample_from);
-      const StorageView step_ids = sample_from.to(device);
-#ifdef CT2_WITH_CUDA
-      // The groups' rows still decoding: each group's products as a batch of its own would run them.
-      const cuda::ClipGroupsScope clip_groups(cuda::make_clip_groups(batch_offset, group_rows));
-      const cuda::SharedMemoryRows shared_rows{share ? row_input.data<int32_t>() : nullptr,
-                                               static_cast<dim_t>(batch_offset.size()),
-                                               static_cast<dim_t>(memory_inputs.size())};
-      std::unique_ptr<cuda::SharedMemoryRowsScope> shared_scope;
-      if (share)
-        shared_scope = std::make_unique<cuda::SharedMemoryRowsScope>(shared_rows);
-#endif
-      run_decoder_step(device, step, !gather_attention, [&] {
-        decoder(start_step + step,
-                step_ids,
-                state,
-                &logits,
-                gather_attention ? &attention_step_device : nullptr);
-      });
-      capacity.advance();
-
-      DisableTokens disable_tokens(logits);
-
-      // Prevent the generation of end_id until the minimum length is reached.
-      apply_min_length(step,
-                       min_length,
-                       end_ids,
-                       disable_tokens,
-                       batch_offset,
-                       return_prefix,
-                       prefix_ids);
-
-      for (const auto& logits_processor : logits_processors)
-        logits_processor->apply(step, logits, disable_tokens, alive_seq, batch_offset, prefix_ids);
-
-      disable_tokens.apply();
-
-      std::vector<StorageView> logits_vec;
-      StorageView logits_orig(dtype, device);
-      if (return_logits_vocab) {
-        logits_vec = build_logits(logits, logits.dim(0));
-        logits_orig.copy_from(logits);
-      }
-      // Compute log probs only if required.
-      StorageView log_probs(dtype, device);
-      if (return_scores)
-        ops::LogSoftMax()(logits);
-      log_probs.shallow_copy(logits);
-
+    const auto run = start(decoder, state, sampler, start_ids, end_ids, start_step, max_length, min_length,
+                           return_scores, return_attention, return_logits_vocab, return_prefix, num_hypotheses,
+                           include_eos_in_hypotheses, logits_processors, prefix_ids);
+    StorageView step_ids(DataType::INT32);
+    while (run->next_ids(step_ids)) {
       {
-#ifdef CT2_WITH_CUDA
-        StorageView state_of_row(DataType::INT32);            // the rows still sampling: their original index
-        cuda::RowRandom seeded;
-        std::unique_ptr<cuda::RowRandomScope> row_scope;
-        if (row_states) {
-          const dim_t rows = static_cast<dim_t>(batch_offset.size());
-          state_of_row = StorageView({rows}, std::vector<int32_t>(batch_offset.begin(), batch_offset.end()))
-            .to(device);
-          seeded = cuda::RowRandom{row_states->states(), state_of_row.data<int32_t>(), rows};
-          row_scope = std::make_unique<cuda::RowRandomScope>(seeded);
-        }
-#endif
-        // The rows' 1 / temperature, converted as RandomSampler converts its own (StorageView(1 / t).to(dtype)).
-        StorageView row_scale(dtype, device);
-        std::unique_ptr<RowScalesScope> scales_scope;
-        if (row_temperatures) {
-          std::vector<float> inverse;
-          inverse.reserve(batch_offset.size());
-          for (const dim_t row : batch_offset)
-            inverse.push_back(float(1) / (*row_temperatures)[row]);
-          row_scale = StorageView({static_cast<dim_t>(inverse.size())}, inverse).to(dtype).to(device);
-          scales_scope = std::make_unique<RowScalesScope>(&row_scale);
-        }
-        sampler(log_probs, best_ids, best_probs);
+        const auto scopes = run->own_scopes();
+        run_decoder_step(decoder.device(), run->step(), !run->with_attention(), [&] {
+          decoder(run->decoder_step(), step_ids, state, &run->logits(), run->attention_output());
+        });
       }
-      if (prefix_ids)
-        update_sample_with_prefix(step, best_ids, best_probs, *prefix_ids, end_ids, batch_offset);
-      if (attention_step_device)
-        attention_step.copy_from(attention_step_device.to_float32());
-
-      if (!logits_processors.empty()) {
-        if (alive_seq) {
-          const StorageView cur_alive_seq = std::move(alive_seq);
-          ops::Concat(-1)({&cur_alive_seq, &best_ids}, alive_seq);
-        } else {
-          alive_seq = best_ids;
-        }
-      }
-
-      const dim_t cur_batch_size = log_probs.dim(0);
-      std::vector<int32_t> non_finished_index;
-      non_finished_index.reserve(cur_batch_size);
-
-      for (dim_t i = 0; i < cur_batch_size; ++i) {
-        const size_t word_id = best_ids.at<int32_t>(i);
-        const size_t batch_id = batch_offset[i];
-        const dim_t prefix_length = prefix_ids ? prefix_ids->at(batch_id).size() : 0;
-        const float score = best_probs.scalar_at<float>({i, 0});
-
-        if (return_logits_vocab) {
-          results[batch_id].logits_vocab.resize(1);
-          results[batch_id].logits_vocab[0].emplace_back(std::move(logits_vec[i]));
-        }
-
-        if ((!is_eos(word_id, end_ids) || include_eos_in_hypotheses)
-            && (return_prefix || step >= prefix_length)) {
-          results[batch_id].hypotheses[0].push_back(word_id);
-          if (attention_step) {
-            const auto* attn = attention_step.index<float>({i, 0});
-            results[batch_id].attention[0].emplace_back(attn, attn + attention_step.dim(-1));
-          }
-        }
-
-        if (return_scores)
-          results[batch_id].scores[0] += score;
-
-        bool is_finished = ((is_eos(word_id, end_ids) && step >= prefix_length)
-                            || (is_last_step(step, max_length, prefix_length, return_prefix)));
-
-        if (_callback && (return_prefix || step >= prefix_length)) {
-          DecodingStepResult step_result;
-          step_result.step = step;
-          step_result.batch_id = batch_id;
-          step_result.token_id = word_id;
-          step_result.hypothesis_id = 0;
-          step_result.is_last = is_finished;
-          if (return_scores)
-            step_result.score = score;
-          if (return_logits_vocab)
-            step_result.logits = std::move(logits_orig);
-          if (_callback(std::move(step_result))) {
-            is_finished = true;
-          }
-        }
-
-        if (is_finished) {
-          finalize_result(results[batch_id],
-                          1,
-                          _length_penalty,
-                          _coverage_penalty,
-                          return_scores,
-                          return_attention,
-                          return_logits_vocab);
-        } else {
-          non_finished_index.emplace_back(i);
-          sample_from.at<int32_t>(i) = word_id;
-        }
-      }
-
-      const dim_t count_alive = non_finished_index.size();
-
-      // No more sentences are alive, stop here.
-      if (count_alive == 0)
+      if (!run->advance())
         break;
-
-      // Remove finished sentences from the execution.
-      if (count_alive != cur_batch_size) {
-        batch_offset = index_vector(batch_offset, non_finished_index);
-
-        StorageView alive({count_alive}, non_finished_index);
-        if (alive_seq)
-          gather(alive_seq, alive);
-        gather(sample_from, alive);
-        if (share) {
-          // The rows' entries by the alive rows; the shared memory entries by the inputs still decoding.
-          std::vector<int32_t> keep;
-          std::vector<dim_t> kept;
-          for (size_t j = 0; j < memory_inputs.size(); ++j)
-            if (std::any_of(batch_offset.begin(), batch_offset.end(),
-                            [&](dim_t row) { return row / share == memory_inputs[j]; })) {
-              keep.push_back(static_cast<int32_t>(j));
-              kept.push_back(memory_inputs[j]);
-            }
-          decoder.flush_state_reorder(state);
-          const StorageView alive_rows = alive.to(device);
-          const StorageView keep_inputs = StorageView({static_cast<dim_t>(keep.size())}, keep).to(device);
-          for (auto& [name, value] : state) {
-            if (decoder.replicate_state(name))
-              gather(value, alive_rows);
-            else if (kept.size() != memory_inputs.size())
-              gather(value, keep_inputs);
-          }
-          memory_inputs = std::move(kept);
-          map_rows();
-        } else {
-          decoder.update_state(state, alive.to(device));
-        }
-      }
     }
-
-    return results;
+    return run->finish();
   }
 
   static layers::DecoderState get_batch_state(const layers::DecoderState& state,
@@ -2019,8 +2175,8 @@ namespace ctranslate2 {
                                           std::vector<size_t> end_ids,
                                           DecodingOptions options) {
     prepare_decode(decoder, start_tokens, end_ids, options);
-    if (options.return_alternatives || (options.beam_size == 1 && options.prefix_bias_beta == 0))
-      throw std::invalid_argument("A decoding a step at a time is a beam search without alternatives");
+    if (options.return_alternatives)
+      throw std::invalid_argument("A decoding a step at a time is a search without alternatives");
 
     auto run = std::unique_ptr<DecodeRun>(new DecodeRun());
     run->_decoder = &decoder;
@@ -2028,10 +2184,21 @@ namespace ctranslate2 {
     run->_end_ids = std::move(end_ids);
     std::tie(run->_start_ids, run->_prefix_ids) = split_start_tokens(start_tokens);
     const DecodingOptions& o = run->_options;
-    run->_strategy = std::make_unique<BeamSearch>(o.beam_size, o.length_penalty, o.coverage_penalty,
-                                                  o.prefix_bias_beta, o.patience, o.group_size);
     run->_sampler = make_sampler(o);
     run->_processors = make_logits_processors(o);
+    const auto* prefix_ids = run->_prefix_ids.empty() ? nullptr : &run->_prefix_ids;
+    if (o.beam_size == 1 && o.prefix_bias_beta == 0) {     // make_search_strategy's greedy search
+      run->_greedy = std::make_unique<GreedySearch>(o.length_penalty, o.coverage_penalty, o.callback, o.group_size,
+                                                    o.sampling_seeds, o.sampling_temperatures);
+      run->_greedy_run = run->_greedy->start(decoder, state, *run->_sampler, run->_start_ids, run->_end_ids,
+                                             o.start_step, o.max_length, o.min_length, o.return_scores,
+                                             o.return_attention, o.return_logits_vocab, o.return_prefix,
+                                             o.num_hypotheses, o.include_eos_in_hypotheses, run->_processors,
+                                             prefix_ids);
+      return run;
+    }
+    run->_strategy = std::make_unique<BeamSearch>(o.beam_size, o.length_penalty, o.coverage_penalty,
+                                                  o.prefix_bias_beta, o.patience, o.group_size);
     run->_run = run->_strategy->start(decoder,
                                       state,
                                       *run->_sampler,
@@ -2047,12 +2214,12 @@ namespace ctranslate2 {
                                       o.num_hypotheses,
                                       o.include_eos_in_hypotheses,
                                       run->_processors,
-                                      run->_prefix_ids.empty() ? nullptr : &run->_prefix_ids);
+                                      prefix_ids);
     return run;
   }
 
   std::vector<DecodingResult> DecodeRun::finish() {
-    std::vector<DecodingResult> results = _run->finish();
+    std::vector<DecodingResult> results = _run ? _run->finish() : _greedy_run->finish();
     restore_word_ids(*_decoder, results);
     return results;
   }

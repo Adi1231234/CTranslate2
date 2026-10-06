@@ -36,6 +36,22 @@ namespace ctranslate2 {
       _changed.notify_all();
     }
 
+    void WhisperStream::submit_sampled(uint64_t tag, StorageView encoder_output,
+                                       std::vector<std::vector<size_t>> prompts, WhisperOptions options) {
+      if (options.beam_size != 1)
+        throw std::invalid_argument("A sampled batch of a Whisper stream decodes with beam_size 1");
+      std::unique_lock lock(_mutex);
+      _changed.wait(lock, [&] { return _pending.size() < _limits.max_pending || _error; });
+      if (_error)
+        std::rethrow_exception(_error);
+      if (_closed)
+        throw std::logic_error("A batch submitted to a closed Whisper stream");
+      _pending.push_back(Batch{tag, std::move(encoder_output), std::move(prompts),
+                               std::make_shared<const WhisperOptions>(std::move(options))});
+      ++_submitted;
+      _changed.notify_all();
+    }
+
     void WhisperStream::close() {
       const std::lock_guard lock(_mutex);
       _closed = true;
@@ -101,9 +117,11 @@ namespace ctranslate2 {
 #endif
       };
 
-      // A batch decoding: generate()'s state for it and its beam search between steps.
+      // A batch decoding: generate()'s state for it and its search between steps (the stream's beam search, or a
+      // sampled batch's greedy search with its own options).
       struct Active {
         uint64_t tag = 0;
+        std::shared_ptr<const WhisperOptions> sampled;
         Prepared prepared;
         std::unique_ptr<DecodeRun> decode;
         StorageView ids{DataType::INT32};
@@ -111,12 +129,23 @@ namespace ctranslate2 {
       };
       std::vector<std::unique_ptr<Active>> active;
       std::optional<WhisperStream::Batch> held;              // taken, waiting for room
+      const auto rows_of = [&](const Active& a) {
+        if (GreedySearchRun* greedy = a.decode->greedy())
+          return greedy->rows();
+        return static_cast<dim_t>(a.decode->beam()->alive_inputs().size()) * beams;
+      };
+      const auto batch_rows_of = [&](const WhisperStream::Batch& batch) {
+        if (!batch.sampled)
+          return static_cast<dim_t>(batch.prompts.size()) * beams;
+        const size_t variants = std::max<size_t>(batch.sampled->sampling_temperatures.size(), 1);
+        return static_cast<dim_t>(batch.prompts.size() * batch.sampled->num_hypotheses * variants);
+      };
 
       try {
         while (true) {
           dim_t rows = 0;
           for (const auto& a : active)
-            rows += static_cast<dim_t>(a->decode->search().alive_inputs().size()) * beams;
+            rows += rows_of(*a);
           while (active.size() < limits.max_batches) {
             if (!held) {
               WhisperStream::Batch batch;
@@ -124,7 +153,7 @@ namespace ctranslate2 {
                 break;
               held = std::move(batch);
             }
-            const dim_t batch_rows = static_cast<dim_t>(held->prompts.size()) * beams;
+            const dim_t batch_rows = batch_rows_of(*held);
             if (!active.empty() && rows + batch_rows > static_cast<dim_t>(limits.max_rows))
               break;
             if (held->prompts.empty()) {
@@ -134,10 +163,12 @@ namespace ctranslate2 {
             }
             auto a = std::make_unique<Active>();
             a->tag = held->tag;
-            a->prepared = prepare_generation(std::move(held->encoder_output), held->prompts, options);
+            a->sampled = held->sampled;
+            const WhisperOptions& batch_options = a->sampled ? *a->sampled : options;
+            a->prepared = prepare_generation(std::move(held->encoder_output), held->prompts, batch_options);
             a->decode = start_decode(*_decoder, a->prepared.state, a->prepared.start_tokens, {_eot_id},
                                      a->prepared.decoding_options);
-            if (layers::joint_slots() && held->prompts.size() == 1)
+            if (!a->sampled && layers::joint_slots() && held->prompts.size() == 1)
               a->slots = std::make_unique<layers::SlotCache>();
             held.reset();
             rows += batch_rows;
@@ -146,50 +177,86 @@ namespace ctranslate2 {
           if (active.empty())
             break;                                           // closed, and every batch decoded
 
-          // One decoder step for every batch, each with its own position, caches and memory.
+          // One decoder step for every batch, each with its own position, caches and memory: the beam searches'
+          // parts first, then the greedy searches' (decode_joint's order), their logits' rows in that order.
+          std::vector<Active*> order;
+          for (const auto& a : active)
+            if (a->decode->beam())
+              order.push_back(a.get());
+          const size_t beam_parts = order.size();
+          for (const auto& a : active)
+            if (a->decode->greedy())
+              order.push_back(a.get());
           std::vector<layers::TransformerDecoder::JointPart> parts;
-          parts.reserve(active.size());
-          for (auto& a : active) {
-            BeamSearchRun& run = a->decode->search();
-            if (run.with_attention() || !run.next_ids(a->ids))
-              throw std::logic_error("A Whisper stream's search has no plain step to decode");
-            std::vector<dim_t> entries = run.alive_inputs();
-            if (!run.keeps_memory_in_place())               // the memory was compacted with the inputs
+          parts.reserve(order.size());
+          for (Active* a : order) {
+            if (BeamSearchRun* run = a->decode->beam()) {
+              if (run->with_attention() || !run->next_ids(a->ids))
+                throw std::logic_error("A Whisper stream's search has no plain step to decode");
+              std::vector<dim_t> entries = run->alive_inputs();
+              if (!run->keeps_memory_in_place())             // the memory was compacted with the inputs
+                std::iota(entries.begin(), entries.end(), dim_t(0));
+              parts.push_back({run->decoder_step(), &a->ids, &a->prepared.state, std::move(entries), a->slots.get()});
+            } else {
+              GreedySearchRun& run = *a->decode->greedy();
+              if (run.with_attention() || !run.next_ids(a->ids))
+                throw std::logic_error("A Whisper stream's sampled search has no plain step to decode");
+              std::vector<dim_t> entries(run.memory_inputs());   // its inputs' entries, compacted in order
               std::iota(entries.begin(), entries.end(), dim_t(0));
-            parts.push_back({run.decoder_step(), &a->ids, &a->prepared.state, std::move(entries), a->slots.get()});
+              parts.push_back({run.decoder_step(), &a->ids, &a->prepared.state, std::move(entries), nullptr,
+                               &run.joint_rows()});
+            }
           }
           StorageView logits(_decoder->output_type(), _decoder->device());
           _decoder->decode_joint(parts, logits);
 
           // Each batch's rows of the logits, then its search's own step in three phases over all the batches, the
           // device waited for once between phases (twice a batch with advance(); each search's work is the same).
-          dim_t row = 0;
+          dim_t row = 0, beam_rows = 0;
           bool pending = false;
-          for (auto& a : active) {
-            BeamSearchRun& run = a->decode->search();
+          for (Active* a : order) {
             const dim_t batch_rows = a->ids.size();
-            run.logits() = layers::rows_view(logits, row, batch_rows);
+            StorageView view = layers::rows_view(logits, row, batch_rows);
             row += batch_rows;
-            pending = run.queue_processors() || pending;
+            if (BeamSearchRun* run = a->decode->beam()) {
+              run->logits() = std::move(view);
+              pending = run->queue_processors() || pending;
+              beam_rows = row;
+            } else {
+              GreedySearchRun& run = *a->decode->greedy();
+              run.logits() = std::move(view);
+              pending = run.queue_processors() || pending;
+            }
           }
           if (pending)
             synchronize();
           std::vector<BeamSearchRun*> runs;
           bool joint = true;
-          for (auto& a : active) {
-            runs.push_back(&a->decode->search());
+          for (size_t i = 0; i < beam_parts; ++i) {
+            runs.push_back(order[i]->decode->beam());
             joint = runs.back()->prepare_candidates() && joint;
           }
-          if (joint)                                         // every search's candidates in one launch each
-            BeamSearchRun::joint_candidates(runs, logits);
-          else
-            for (BeamSearchRun* run : runs)
-              run->own_candidates();
+          if (!runs.empty()) {
+            if (joint) {                                     // every beam search's candidates in one launch each
+              StorageView beam_logits = layers::rows_view(logits, 0, beam_rows);
+              BeamSearchRun::joint_candidates(runs, beam_logits);
+            } else {
+              for (BeamSearchRun* run : runs)
+                run->own_candidates();
+            }
+          }
+          for (size_t i = beam_parts; i < order.size(); ++i)
+            order[i]->decode->greedy()->queue_candidates();
           synchronize();
-          for (auto& a : active) {
-            if (!a->decode->search().take_candidates()) {
-              stream.finished(a->tag, finish_generation(a->decode->finish(), a->prepared, options));
-              a.reset();
+          for (Active* a : order) {
+            const bool going = a->decode->beam() ? a->decode->beam()->take_candidates()
+                                                 : a->decode->greedy()->take_candidates();
+            if (!going) {
+              const WhisperOptions& batch_options = a->sampled ? *a->sampled : options;
+              stream.finished(a->tag, finish_generation(a->decode->finish(), a->prepared, batch_options));
+              for (auto& owned : active)
+                if (owned.get() == a)
+                  owned.reset();
             }
           }
           active.erase(std::remove(active.begin(), active.end(), nullptr), active.end());

@@ -101,9 +101,9 @@ namespace ctranslate2 {
 #endif
 
     void append_parts(const JointStep& joint, StorageView& keys, StorageView& values) {
-      std::vector<size_t> idx;                               // the parts not in slots (slot_cache.h)
+      std::vector<size_t> idx;                               // the beam parts not in slots (slot_cache.h)
       for (size_t p = 0; p < joint.parts.size(); ++p) {
-        if (joint.parts[p].slots)
+        if (joint.parts[p].slots || joint.parts[p].sampled)   // a greedy part's caches: its capacity path's
           continue;
         if (joint.parts[p].self_keys[joint.layer]->empty())
           throw std::logic_error("A joint decoding step needs every part's self-attention cache");
