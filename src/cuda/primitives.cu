@@ -33,6 +33,7 @@
 #include "cuda/encoder_lt.h"
 #include "cuda/decoder_gemm.h"
 #include "cuda/grouped_split_gemm.h"
+#include "cuda/single_rows_gemv.h"
 #include "cuda/graph_host_copy.h"
 #endif
 #include <thrust/device_ptr.h>
@@ -557,11 +558,19 @@ namespace ctranslate2 {
     // After a joint call: each group of one row again on its own (cuBLAS runs a gemv for one row, other bits). A
     // sampled ladder's temperatures each keep their hypotheses still sampling, often a single one at the end.
     const auto single_rows_alone = [&] {
+      std::vector<dim_t> singles;
       cuda::for_each_clip_group(m, [&](dim_t row, dim_t rows) {
         if (rows == 1)
-          gemm<float16_t, float16_t>(false, false, false, transpose_b, 1, n, k, alpha, a + row * lda, lda,
-                                     b, ldb, beta, c + row * ldc, ldc, nullptr);
+          singles.push_back(row);
       });
+      // Two or more: one read of the weights for them all, each row with its gemv's bits (cuda/single_rows_gemv.h).
+      if (singles.size() >= 2 && transpose_b && lda == k && ldb == k && ldc == n && alpha == 1 && beta == 0
+          && cuda::single_rows_gemv(a, b, c, n, k, singles))
+        return;
+      const cuda::ClipGroupsPause alone;
+      for (const dim_t row : singles)
+        gemm<float16_t, float16_t>(false, false, false, transpose_b, 1, n, k, alpha, a + row * lda, lda,
+                                   b, ldb, beta, c + row * ldc, ldc, nullptr);
     };
     if (plain && cuda::clip_groups() && m % cuda::clip_groups()->total == 0) {
       std::vector<dim_t> rows;
