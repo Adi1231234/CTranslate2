@@ -151,10 +151,10 @@ class LongBroker(Broker):
         with self._lock:
             if self._ladder_stream is None:
                 batches = int(os.environ.get("LONG_LADDER_BATCHES", "2"))
-                high = os.environ.get("LONG_LADDER_PRIORITY") == "high"   # its kernels ahead of the windows'
+                # its kernels ahead of the windows' (only asked for: packages before b21d73cc take no such argument)
+                high = {"high_priority": True} if os.environ.get("LONG_LADDER_PRIORITY") == "high" else {}
                 self._ladder_stream = self._m.open_stream(max_batches=batches, max_rows=batches * 25,
-                                                          max_pending=self._pending_max, high_priority=high,
-                                                          **self._options)
+                                                          max_pending=self._pending_max, **high, **self._options)
                 threading.Thread(target=self._collect, args=(self._ladder_stream,), daemon=True).start()
         return self._ladder_stream
 
