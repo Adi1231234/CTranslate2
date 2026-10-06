@@ -155,25 +155,27 @@ class Broker:
                 for c in group:
                     c.done.set()
 
-    def _run(self, group):
+    def _run(self, group, model=None):
+        """The group's calls on the broker's model, or on another instance of the same model (the same bits)."""
+        m = model or self._m
         if group[0].kind == "spec":
             # Each clip's attempts at the window's temperatures (a result per clip and temperature, clip-major).
             temps = list(group[0].key[3])
             for first in range(0, len(group), self._spec_clips):
                 chunk = group[first:first + self._spec_clips]
                 data = ctranslate2.StorageView.from_array(np.ascontiguousarray(np.concatenate([c.data for c in chunk])))
-                results = self._m.generate(data, [c.prompt for c in chunk], group_size=1, sampling_temperatures=temps,
-                                           sampling_seeds=[s for c in chunk for s in c.seeds], **chunk[0].kw)
+                results = m.generate(data, [c.prompt for c in chunk], group_size=1, sampling_temperatures=temps,
+                                     sampling_seeds=[s for c in chunk for s in c.seeds], **chunk[0].kw)
                 for i, c in enumerate(chunk):
                     c.result = results[i * len(temps):(i + 1) * len(temps)]
             return
         data = ctranslate2.StorageView.from_array(np.ascontiguousarray(np.concatenate([c.data for c in group])))
         if group[0].kind == "encode":
-            out = np.asarray(self._m.encode(data, to_cpu=True, group_size=1))
+            out = np.asarray(m.encode(data, to_cpu=True, group_size=1))
             for i, c in enumerate(group):
                 c.result = np.array(out[i:i + 1])
         else:
             seeds = {} if group[0].seed is None else {"sampling_seeds": [c.seed for c in group]}
-            results = self._m.generate(data, [c.prompt for c in group], group_size=1, **group[0].kw, **seeds)
+            results = m.generate(data, [c.prompt for c in group], group_size=1, **group[0].kw, **seeds)
             for c, r in zip(group, results):
                 c.result = [r]
