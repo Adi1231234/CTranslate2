@@ -1,0 +1,3 @@
+# The stream's self-attention products (~28% of the GPU's time on long recordings, long13's pq): which arithmetic cuBLAS
+# runs at every t (kernels/selfattn_recipe_probe.cu).
+scriptc|scripts/probes.sh|probes/probes-a64a83ec.tgz|selfattn_recipe_probe
