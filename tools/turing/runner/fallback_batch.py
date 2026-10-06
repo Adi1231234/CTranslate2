@@ -15,7 +15,11 @@ ladder-probe fork), each with the seed its own call would draw, and the ladder's
 the window's attempts then read the decoder weights and the clip's memory keys and values together, not one
 temperature after the other. Every attempt is what its call alone returns, so the ladder (faster-whisper's own
 logic) picks the same; attempts past the one it keeps are spent for nothing. RUN_FALLBACK_SPEC_CLIPS (default 2):
-clips in one such search (each holds 25 rows of up to 448 steps of self-attention cache, ~73 MB a row)."""
+clips in one such search (each holds 25 rows of up to 448 steps of self-attention cache, ~73 MB a row).
+RUN_FALLBACK_SPEC_FIRST=<k> (default 0): the ladder's first k sampled temperatures each run alone, the rest together
+from the one after them: on long recordings a fifth of the windows that sample keep their first attempt (T=0.2), and
+the four later temperatures' rows, the longest (high temperatures run to the length limit), were spent for nothing.
+Each attempt keeps its seed (its place in the ladder), so what each returns does not change."""
 import contextlib, hashlib, threading, time
 import numpy as np
 import ctranslate2
@@ -67,12 +71,13 @@ class _Call:
 class Broker:
     """Stands in for the ctranslate2 Whisper model of the fallback threads."""
 
-    def __init__(self, model, join_sampled, seeded=False, wait_s=0.2, speculate=None, spec_clips=2):
-        """speculate: the ladder's sampled temperatures in order (RUN_FALLBACK_SPECULATE), or None."""
+    def __init__(self, model, join_sampled, seeded=False, wait_s=0.2, speculate=None, spec_clips=2, spec_first=0):
+        """speculate: the ladder's sampled temperatures in order (RUN_FALLBACK_SPECULATE), or None; spec_first: how
+        many of them run alone first (RUN_FALLBACK_SPEC_FIRST)."""
         if speculate and not (join_sampled and seeded):
             raise ValueError("speculated attempts need seeded, joined sampling: each must be what its call draws")
         self._m, self._join_sampled, self._seeded, self._wait = model, join_sampled, seeded, wait_s
-        self._speculate, self._spec_clips = speculate, spec_clips
+        self._speculate, self._spec_clips, self._spec_first = speculate, spec_clips, spec_first
         self._cv = threading.Condition()
         self._pending, self._busy = [], 0
         threading.Thread(target=self._dispatch, daemon=True).start()
@@ -114,6 +119,8 @@ class Broker:
         if not (spec and spec["encoded"] is encoder_output and spec["prompt"] == prompt and spec["kw"] == kw_rest(kw)
                 and spec["seeds"].get(t) == seed):
             temps = [x for x in self._speculate if x >= t]      # this attempt and the ladder's later ones
+            if self._speculate.index(t) < self._spec_first:     # one of the first: alone
+                temps = temps[:1]
             rest = kw_rest(kw)
             call = _Call("spec", ("spec", tuple(prompt), tuple(sorted((k, str(v)) for k, v in rest.items())),
                                   tuple(temps)), encoder_output.array, prompt)

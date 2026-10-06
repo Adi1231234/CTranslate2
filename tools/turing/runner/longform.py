@@ -2,7 +2,7 @@
 with the crowd-v5 parameters (engine.EXACT, as the fallback runs it: 30 s windows, each conditioned on the text before
 it, the temperature ladder), each recording on a thread of its own, LONG_THREADS (default 48) at once, their
 CTranslate2 calls through LongBroker (long_broker.py). LONG_PENDING (default 2): windows submitted and not yet
-decoding. RUN_FALLBACK_SEEDS/SAMPLING/SPECULATE/SPEC_CLIPS as in fallback_batch.py. The model needs 2 CTranslate2
+decoding. RUN_FALLBACK_SEEDS/SAMPLING/SPECULATE/SPEC_CLIPS/SPEC_FIRST as in fallback_batch.py. The model needs 2 CTranslate2
 workers and one more per ladder lane (LONG_LADDER_WORKERS): the stream's decoding loop holds one while the stream is
 open (with one only, every encoder call waited for it forever: long1, 6.10.2026), the encoder's calls take one at a
 time, and each ladder lane one. The ladders run on the same model: its workers share one copy of the weights
@@ -42,7 +42,8 @@ class LongEngine:
             model.model, threads, int(os.environ.get("LONG_PENDING", "2")), ladder_model, ladders,
             join_sampled=os.environ.get("RUN_FALLBACK_SAMPLING") == "batched",
             seeded=os.environ.get("RUN_FALLBACK_SEEDS") == "1", speculate=speculate,
-            spec_clips=int(os.environ.get("RUN_FALLBACK_SPEC_CLIPS", "2")))
+            spec_clips=int(os.environ.get("RUN_FALLBACK_SPEC_CLIPS", "2")),
+            spec_first=int(os.environ.get("RUN_FALLBACK_SPEC_FIRST", "0")))
         self.stats = self.proxy.model.stats
         self.executor = ThreadPoolExecutor(max_workers=threads)
         self.budget, self.held, self.room = float(os.environ.get("LONG_MAX_HOURS", "0")), 0.0, threading.Condition()
