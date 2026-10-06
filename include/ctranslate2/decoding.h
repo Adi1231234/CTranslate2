@@ -128,6 +128,16 @@ namespace ctranslate2 {
     const std::vector<dim_t>& alive_inputs() const;
     bool keeps_memory_in_place() const;
     bool advance();
+    // advance() in three phases with the device's results read on the host only after the caller has synchronized
+    // the device stream between them, so that several searches sharing a decoder call wait for the device once a
+    // phase instead of twice each (WhisperReplica::decode_stream); each search's device work is the same.
+    // queue_processors() applies the logits processors up to their host reads (true: one is pending, synchronize
+    // before queue_candidates), queue_candidates() completes them and queues the step's top candidates and their
+    // copy to the host (synchronize before take_candidates), take_candidates() takes them as advance() does (false:
+    // the search is over).
+    bool queue_processors();
+    void queue_candidates();
+    bool take_candidates();
     std::vector<DecodingResult> finish();
 
     struct Impl;                                       // the loop state (decoding.cc)

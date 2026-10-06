@@ -14,6 +14,13 @@ namespace ctranslate2 {
                     StorageView& sampled_ids,
                     StorageView& sampled_scores,
                     dim_t num_samples = 1) const;
+    // The same sample with its outputs on the scores' device (operator() copies them to the host).
+    void sample_on_device(const StorageView& scores,
+                          StorageView& sampled_ids,
+                          StorageView& sampled_scores,
+                          dim_t num_samples) const {
+      sample(scores, num_samples, sampled_ids, sampled_scores);
+    }
   protected:
     virtual void sample(const StorageView& scores,
                         dim_t num_samples,

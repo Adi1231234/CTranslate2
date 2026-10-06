@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <numeric>
 
@@ -14,6 +15,12 @@
 #  include "cuda/memory_slots.h"
 #  include "cuda/row_random.h"
 #  include "cuda/shared_memory_rows.h"
+#endif
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/pinned_buffer.h"
+#  define CT2_HOST_COPIES 1                             // device results copied to the host without waiting
+#else
+#  define CT2_HOST_COPIES 0
 #endif
 
 namespace ctranslate2 {
@@ -563,6 +570,16 @@ namespace ctranslate2 {
     StorageView slots{DataType::INT32};
     dim_t step = 0;
     bool done = false;
+    // A step between its phases (queue_processors, queue_candidates, take_candidates).
+    std::unique_ptr<DisableTokens> disable_tokens;
+    LogitsProcessor::Rest processors_rest;
+    std::vector<StorageView> logits_vec;
+    StorageView device_ids{DataType::INT32};
+    StorageView device_scores;
+#if CT2_HOST_COPIES
+    cuda::PinnedBuffer host_ids;
+    cuda::PinnedBuffer host_scores;
+#endif
 
     void upload_slots() {
       std::vector<int32_t> ids(batch_offset.begin(), batch_offset.end());
@@ -719,10 +736,136 @@ namespace ctranslate2 {
     return _impl->memory_slots;
   }
 
+  // Waits for the work queued on the thread's stream of `device` (the host reads its results next).
+  static void synchronize(Device device) {
+#if CT2_HOST_COPIES
+    if (device == Device::CUDA)
+      cuda::synchronize_stream();
+#else
+    (void)device;
+#endif
+  }
+
   bool BeamSearchRun::advance() {
+    if (queue_processors())
+      synchronize(_impl->device);
+    queue_candidates();
+    synchronize(_impl->device);
+    return take_candidates();
+  }
+
+  bool BeamSearchRun::queue_processors() {
     Impl& r = *_impl;
 #ifdef CT2_WITH_CUDA
     const BeamSearchRunScopes scopes(r);
+#endif
+    r.disable_tokens = std::make_unique<DisableTokens>(r.logits);
+    r.processors_rest = nullptr;
+
+    // Prevent the generation of end_ids until the minimum length is reached.
+    apply_min_length(r.step,
+                     r.min_length,
+                     r.end_ids,
+                     *r.disable_tokens,
+                     r.batch_offset,
+                     r.return_prefix,
+                     r.prefix_ids);
+
+    if (!r.logits_processors.empty()) {
+      if (r.alive_seq)
+        merge_batch_beam(r.alive_seq);
+      for (size_t i = 0; i < r.logits_processors.size(); ++i) {
+        LogitsProcessor::Rest rest = r.logits_processors[i]->apply_queued(r.step, r.logits, *r.disable_tokens,
+                                                                          r.alive_seq, r.batch_offset,
+                                                                          r.prefix_ids);
+        if (rest && i + 1 < r.logits_processors.size()) {   // the next processors see what it disables
+          synchronize(r.device);
+          rest(*r.disable_tokens);
+        } else {
+          r.processors_rest = std::move(rest);
+        }
+      }
+      if (r.alive_seq)
+        split_batch_beam(r.alive_seq, r.beam_size);
+    }
+    return bool(r.processors_rest);
+  }
+
+  void BeamSearchRun::queue_candidates() {
+    Impl& r = *_impl;
+#ifdef CT2_WITH_CUDA
+    const BeamSearchRunScopes scopes(r);
+#endif
+    const bool is_expanded = (!r.expand_after_first_step || r.step > 0);
+    StorageView& logits = r.logits;
+    const dim_t cur_batch_size = is_expanded ? logits.dim(0) / r.beam_size : logits.dim(0);
+
+    if (r.processors_rest) {
+      r.processors_rest(*r.disable_tokens);
+      r.processors_rest = nullptr;
+    }
+    r.disable_tokens->apply();
+    r.disable_tokens.reset();
+    r.logits_vec.clear();
+    if (r.return_logits_vocab) {
+      if (is_expanded)
+        r.logits_vec = build_logits(logits, cur_batch_size * r.beam_size);
+      else
+        r.logits_vec = build_logits(logits, cur_batch_size);
+    }
+
+    StorageView log_probs(r.dtype, r.device);
+    if (r.bias_towards_prefix) {
+      r.biased_decoder->decode(cur_batch_size,
+                               r.step,
+                               r.batch_offset,
+                               r.beams_diverged_from_prefix,
+                               logits,
+                               log_probs);
+    } else {
+      ops::LogSoftMax()(logits);
+      log_probs.shallow_copy(logits);
+    }
+
+    // Multiply by the current beam log probs.
+    if (r.topk_scores) {
+      DEVICE_AND_TYPE_DISPATCH(log_probs.device(), log_probs.dtype(),
+                               primitives<D>::add_depth_broadcast(r.topk_scores.to(r.device).data<T>(),
+                                                                  log_probs.data<T>(),
+                                                                  r.topk_scores.size(),
+                                                                  log_probs.size()));
+    }
+
+    // Flatten the probs into a list of candidates.
+    log_probs.reshape({cur_batch_size, -1});
+
+    // TopK candidates: on the GPU, copied to the host without waiting (take_candidates reads them).
+#if CT2_HOST_COPIES
+    if (r.device == Device::CUDA) {
+      r.device_ids = StorageView(DataType::INT32, r.device);
+      r.device_scores = StorageView(log_probs.dtype(), r.device);
+      r.sampler.sample_on_device(log_probs, r.device_ids, r.device_scores, r.num_candidates);
+      r.host_ids.copy_from_device(r.device_ids.buffer(), r.device_ids.size() * r.device_ids.item_size());
+      r.host_scores.copy_from_device(r.device_scores.buffer(),
+                                     r.device_scores.size() * r.device_scores.item_size());
+      return;
+    }
+#endif
+    r.sampler(log_probs, r.topk_ids, r.topk_scores, r.num_candidates);
+  }
+
+  bool BeamSearchRun::take_candidates() {
+    Impl& r = *_impl;
+#ifdef CT2_WITH_CUDA
+    const BeamSearchRunScopes scopes(r);
+#endif
+#if CT2_HOST_COPIES
+    if (r.device == Device::CUDA) {                          // queue_candidates' copies, the stream synchronized
+      r.topk_ids.resize(r.device_ids.shape());
+      std::memcpy(r.topk_ids.buffer(), r.host_ids.data(), r.topk_ids.size() * r.topk_ids.item_size());
+      r.topk_scores.resize(r.device_scores.shape());
+      std::memcpy(r.topk_scores.buffer(), r.host_scores.data(), r.topk_scores.size() * r.topk_scores.item_size());
+    }
 #endif
     const dim_t step = r.step;
     const dim_t beam_size = r.beam_size;
@@ -734,66 +877,10 @@ namespace ctranslate2 {
     StorageView& alive_seq = r.alive_seq;
     StorageView& alive_attention = r.alive_attention;
     std::vector<dim_t>& batch_offset = r.batch_offset;
+    std::vector<StorageView>& logits_vec = r.logits_vec;
     const auto* prefix_ids = r.prefix_ids;
 
     const dim_t cur_batch_size = is_expanded ? logits.dim(0) / beam_size : logits.dim(0);
-
-    DisableTokens disable_tokens(logits);
-
-    // Prevent the generation of end_ids until the minimum length is reached.
-    apply_min_length(step,
-                     r.min_length,
-                     r.end_ids,
-                     disable_tokens,
-                     batch_offset,
-                     r.return_prefix,
-                     prefix_ids);
-
-    if (!r.logits_processors.empty()) {
-      if (alive_seq)
-        merge_batch_beam(alive_seq);
-      for (const auto& logits_processor : r.logits_processors)
-        logits_processor->apply(step, logits, disable_tokens, alive_seq, batch_offset, prefix_ids);
-      if (alive_seq)
-        split_batch_beam(alive_seq, beam_size);
-    }
-
-    disable_tokens.apply();
-    std::vector<StorageView> logits_vec;
-    if (r.return_logits_vocab) {
-      if (is_expanded)
-        logits_vec = build_logits(logits, cur_batch_size * beam_size);
-      else
-        logits_vec = build_logits(logits, cur_batch_size);
-    }
-
-    StorageView log_probs(r.dtype, r.device);
-    if (r.bias_towards_prefix) {
-      r.biased_decoder->decode(cur_batch_size,
-                               step,
-                               batch_offset,
-                               r.beams_diverged_from_prefix,
-                               logits,
-                               log_probs);
-    } else {
-      ops::LogSoftMax()(logits);
-      log_probs.shallow_copy(logits);
-    }
-
-    // Multiply by the current beam log probs.
-    if (topk_scores) {
-      DEVICE_AND_TYPE_DISPATCH(log_probs.device(), log_probs.dtype(),
-                               primitives<D>::add_depth_broadcast(topk_scores.to(r.device).data<T>(),
-                                                                  log_probs.data<T>(),
-                                                                  topk_scores.size(),
-                                                                  log_probs.size()));
-    }
-
-    // Flatten the probs into a list of candidates.
-    log_probs.reshape({cur_batch_size, -1});
-
-    // TopK candidates.
-    r.sampler(log_probs, topk_ids, topk_scores, num_candidates);
 
     // Unflatten the ids.
     StorageView gather_indices = unflatten_ids(topk_ids, beam_size, r.vocabulary_size, is_expanded);

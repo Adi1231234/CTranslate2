@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 
 #include "ops/tile.h"
@@ -104,6 +105,20 @@ namespace ctranslate2 {
                        const StorageView& sequences,
                        const std::vector<dim_t>& batch_offset,
                        const std::vector<std::vector<size_t>>* prefix) = 0;
+
+    // What completes apply() once the device stream has synchronized: a processor whose apply() reads device
+    // results on the host may queue the device work here and return the rest (BeamSearchRun::queue_processors, so
+    // that several searches wait for the device once). By default apply() itself, nothing left to do.
+    using Rest = std::function<void(DisableTokens&)>;
+    virtual Rest apply_queued(dim_t step,
+                              StorageView& logits,
+                              DisableTokens& disable_tokens,
+                              const StorageView& sequences,
+                              const std::vector<dim_t>& batch_offset,
+                              const std::vector<std::vector<size_t>>* prefix) {
+      apply(step, logits, disable_tokens, sequences, batch_offset, prefix);
+      return {};
+    }
 
   protected:
     dim_t get_batch_index(const dim_t batch_size,

@@ -833,6 +833,21 @@ namespace ctranslate2 {
                  const StorageView& sequences,
                  const std::vector<dim_t>& batch_offset,
                  const std::vector<std::vector<size_t>>* prefix) override {
+        if (const Rest rest = apply_queued(step, logits, disable_tokens, sequences, batch_offset, prefix)) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+          cuda::synchronize_stream();
+#endif
+          rest(disable_tokens);
+        }
+      }
+
+      // The rules, the timestamps' probability against the best text token queued on the GPU: the rest reads it.
+      Rest apply_queued(dim_t step,
+                        StorageView& logits,
+                        DisableTokens& disable_tokens,
+                        const StorageView& sequences,
+                        const std::vector<dim_t>& batch_offset,
+                        const std::vector<std::vector<size_t>>* prefix) override {
         std::vector<dim_t> check_timestamps_prob_for_batch;
         const dim_t batch_size = logits.dim(0);
 
@@ -888,36 +903,53 @@ namespace ctranslate2 {
           StorageView log_probs(logits.dtype(), logits.device());
           ops::LogSoftMax()(logits, log_probs);
 
-          const std::vector<bool> sample_timestamp = should_sample_timestamps(
-            log_probs, check_timestamps_prob_for_batch);
-          for (size_t i = 0; i < sample_timestamp.size(); ++i) {
-            if (sample_timestamp[i])
-              disable_tokens.add_range(check_timestamps_prob_for_batch[i], 0, _timestamp_begin_id);
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+          if (log_probs.device() == Device::CUDA && !cuda::use_stock_kernels()) {
+            switch (log_probs.dtype()) {
+            case DataType::FLOAT32:
+              return queue_sample_timestamps<float>(log_probs, std::move(check_timestamps_prob_for_batch));
+            case DataType::FLOAT16:
+              return queue_sample_timestamps<float16_t>(log_probs, std::move(check_timestamps_prob_for_batch));
+            case DataType::BFLOAT16:
+              return queue_sample_timestamps<bfloat16_t>(log_probs, std::move(check_timestamps_prob_for_batch));
+            default:
+              break;
+            }
           }
+#endif
+          disable_text(disable_tokens, check_timestamps_prob_for_batch,
+                       should_sample_timestamps(log_probs, check_timestamps_prob_for_batch));
+        }
+        return {};
+      }
+
+      // Where the timestamps are more probable than any text token, no text token.
+      void disable_text(DisableTokens& disable_tokens,
+                        const std::vector<dim_t>& batch_ids,
+                        const std::vector<bool>& sample_timestamp) const {
+        for (size_t i = 0; i < sample_timestamp.size(); ++i) {
+          if (sample_timestamp[i])
+            disable_tokens.add_range(batch_ids[i], 0, _timestamp_begin_id);
         }
       }
 
-      // should_sample_timestamp for each row; on the GPU with one host synchronization for all rows.
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      // should_sample_timestamp of every row queued on the GPU (one host synchronization for all rows, and for
+      // several searches': cuda/timestamp_rules.h); the rest disables the text tokens it rules out.
+      template <typename T>
+      Rest queue_sample_timestamps(const StorageView& log_probs, std::vector<dim_t> batch_ids) const {
+        auto host = std::make_shared<cuda::PinnedBuffer>();
+        cuda::queue_sample_timestamps(log_probs.data<T>(), log_probs.dim(-1), batch_ids, _timestamp_begin_id,
+                                      _timestamp_end_id, *host);
+        return [this, host, batch_ids = std::move(batch_ids)](DisableTokens& disable_tokens) {
+          disable_text(disable_tokens, batch_ids, cuda::read_sample_timestamps<T>(*host, batch_ids.size()));
+        };
+      }
+#endif
+
+      // should_sample_timestamp for each row, on the host (each row's reductions read on their own).
       std::vector<bool> should_sample_timestamps(const StorageView& log_probs,
                                                  const std::vector<dim_t>& batch_ids) {
-#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-        if (log_probs.device() == Device::CUDA && !cuda::use_stock_kernels()) {
-          const dim_t vocabulary_size = log_probs.dim(-1);
-          switch (log_probs.dtype()) {
-          case DataType::FLOAT32:
-            return cuda::sample_timestamps(log_probs.data<float>(), vocabulary_size, batch_ids,
-                                           _timestamp_begin_id, _timestamp_end_id);
-          case DataType::FLOAT16:
-            return cuda::sample_timestamps(log_probs.data<float16_t>(), vocabulary_size, batch_ids,
-                                           _timestamp_begin_id, _timestamp_end_id);
-          case DataType::BFLOAT16:
-            return cuda::sample_timestamps(log_probs.data<bfloat16_t>(), vocabulary_size, batch_ids,
-                                           _timestamp_begin_id, _timestamp_end_id);
-          default:
-            break;
-          }
-        }
-#endif
         std::vector<bool> sample(batch_ids.size());
         for (size_t i = 0; i < batch_ids.size(); ++i) {
           bool sample_timestamp = false;

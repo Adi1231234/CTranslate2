@@ -10,6 +10,9 @@
 #ifdef CT2_WITH_CUDA
 #  include "cuda/utils.h"
 #endif
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/pinned_buffer.h"
+#endif
 
 namespace ctranslate2 {
   namespace models {
@@ -88,6 +91,15 @@ namespace ctranslate2 {
       const WhisperOptions& options = stream.options();
       const WhisperStreamLimits& limits = stream.limits();
       const dim_t beams = options.beam_size;
+      const Device device = _decoder->device();
+      const auto synchronize = [device] {                    // the searches' device results read next
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+        if (device == Device::CUDA)
+          cuda::synchronize_stream();
+#else
+        (void)device;
+#endif
+      };
 
       // A batch decoding: generate()'s state for it and its beam search between steps.
       struct Active {
@@ -149,14 +161,24 @@ namespace ctranslate2 {
           StorageView logits(_decoder->output_type(), _decoder->device());
           _decoder->decode_joint(parts, logits);
 
-          // Each batch's rows of the logits, then its search's own step.
+          // Each batch's rows of the logits, then its search's own step in three phases over all the batches, the
+          // device waited for once between phases (twice a batch with advance(); each search's work is the same).
           dim_t row = 0;
+          bool pending = false;
           for (auto& a : active) {
             BeamSearchRun& run = a->decode->search();
             const dim_t batch_rows = a->ids.size();
             run.logits() = layers::rows_view(logits, row, batch_rows);
             row += batch_rows;
-            if (!run.advance()) {
+            pending = run.queue_processors() || pending;
+          }
+          if (pending)
+            synchronize();
+          for (auto& a : active)
+            a->decode->search().queue_candidates();
+          synchronize();
+          for (auto& a : active) {
+            if (!a->decode->search().take_candidates()) {
               stream.finished(a->tag, finish_generation(a->decode->finish(), a->prepared, options));
               a.reset();
             }

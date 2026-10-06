@@ -258,6 +258,7 @@ set(CUDA_SOURCES
   src/cuda/green_stream.cc
   src/cuda/encoder_lt.cc
   src/cuda/persistent.cu
+  src/cuda/pinned_buffer.cc
   src/cuda/primitives.cu
   src/cuda/random.cu
   src/cuda/split_heads.cu

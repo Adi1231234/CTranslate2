@@ -13,15 +13,16 @@ namespace ctranslate2 {
   namespace cuda {
 
     template <typename T>
-    std::vector<bool> sample_timestamps(const T* log_probs,
-                                        dim_t vocabulary_size,
-                                        const std::vector<dim_t>& rows,
-                                        dim_t timestamp_begin,
-                                        dim_t timestamp_end) {
+    void queue_sample_timestamps(const T* log_probs,
+                                 dim_t vocabulary_size,
+                                 const std::vector<dim_t>& rows,
+                                 dim_t timestamp_begin,
+                                 dim_t timestamp_end,
+                                 PinnedBuffer& host) {
       using DT = device_type<T>;
       const size_t n = rows.size();
       if (n == 0)
-        return {};
+        return;
       cudaStream_t stream = get_cuda_stream();
       const DT lowest = DT(std::numeric_limits<T>::lowest());   // the init of primitives::max
       const int begin = static_cast<int>(timestamp_begin);
@@ -40,14 +41,14 @@ namespace ctranslate2 {
       timestamp_mass_enqueue<DT>(device_cast(log_probs), static_cast<int>(vocabulary_size), rows32,
                                  begin, end, lowest, device_maxima, device_sums, buffer + temp_offset,
                                  temp_bytes, stream);
+      host.copy_from_device(buffer, results_bytes);
+      allocator.free(buffer);                                // in stream order: reused after the copy
+    }
 
-      std::vector<T> maxima(2 * n);
-      std::vector<float> sums(n);
-      CUDA_CHECK(cudaMemcpyAsync(maxima.data(), device_maxima, 2 * n * sizeof (DT), cudaMemcpyDeviceToHost, stream));
-      CUDA_CHECK(cudaMemcpyAsync(sums.data(), device_sums, n * sizeof (float), cudaMemcpyDeviceToHost, stream));
-      CUDA_CHECK(cudaStreamSynchronize(stream));
-      allocator.free(buffer);
-
+    template <typename T>
+    std::vector<bool> read_sample_timestamps(const PinnedBuffer& host, size_t n) {
+      const T* maxima = static_cast<const T*>(host.data());
+      const float* sums = reinterpret_cast<const float*>(maxima + 2 * n);
       std::vector<bool> sample(n);
       for (size_t r = 0; r < n; ++r) {
         // The host arithmetic of should_sample_timestamp and primitives<CUDA>::logsumexp.
@@ -59,10 +60,28 @@ namespace ctranslate2 {
       return sample;
     }
 
+    template <typename T>
+    std::vector<bool> sample_timestamps(const T* log_probs,
+                                        dim_t vocabulary_size,
+                                        const std::vector<dim_t>& rows,
+                                        dim_t timestamp_begin,
+                                        dim_t timestamp_end) {
+      if (rows.empty())
+        return {};
+      PinnedBuffer host;
+      queue_sample_timestamps(log_probs, vocabulary_size, rows, timestamp_begin, timestamp_end, host);
+      synchronize_stream();
+      return read_sample_timestamps<T>(host, rows.size());
+    }
+
 #define DECLARE_IMPL(T)                                                  \
     template std::vector<bool> sample_timestamps(const T*, dim_t,        \
                                                  const std::vector<dim_t>&, \
-                                                 dim_t, dim_t);
+                                                 dim_t, dim_t);          \
+    template void queue_sample_timestamps(const T*, dim_t,               \
+                                          const std::vector<dim_t>&,     \
+                                          dim_t, dim_t, PinnedBuffer&);  \
+    template std::vector<bool> read_sample_timestamps<T>(const PinnedBuffer&, size_t);
 
     DECLARE_IMPL(float)
     DECLARE_IMPL(float16_t)
