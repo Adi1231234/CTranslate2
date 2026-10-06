@@ -1,0 +1,2 @@
+# The ladder cross-attention kernels (src/cuda/ladder_cross.cuh, 8b22a0f0: the output summing a block of rows at once) against cuBLAS for every split of up to 25 rows into groups of 1..5 (kernels/ladder_cross_check.cu).
+scriptc|scripts/probes.sh|probes/probes-8b22a0f0.tgz|ladder_cross_check
