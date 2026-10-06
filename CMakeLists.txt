@@ -140,6 +140,7 @@ set(SOURCES
   src/layers/cross_attention_fused.cc
   src/layers/split_heads_fused.cc
   src/layers/decoder.cc
+  src/layers/joint_parts.cc
   src/layers/joint_step.cc
   src/layers/kv_cache.cc
   src/layers/transformer.cc

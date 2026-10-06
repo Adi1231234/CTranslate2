@@ -150,6 +150,18 @@ namespace ctranslate2 {
       const bool _previous_value;
     };
 
+    // Work of the calling thread goes to its index-th side stream (index >= 1; 0: its own stream) while an instance
+    // lives, with a cuBLAS handle of that stream's own (cuBLAS's results-reproducibility rule: a handle, so a
+    // workspace, per stream), so independent kernels of one thread run side by side (layers/attention_joint.cc);
+    // what a kernel computes does not change. The caller orders the streams (events) and allocates nothing in them.
+    class SideStreamScope {
+    public:
+      explicit SideStreamScope(int index);
+      ~SideStreamScope();
+    private:
+      const int _previous;
+    };
+
     class UseTrueFp16GemmInScope {
     public:
       UseTrueFp16GemmInScope(const bool use)
