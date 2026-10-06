@@ -39,10 +39,11 @@ namespace ctranslate2 {
         for (JointStep::Part* part : fused) {
           const SlotCache& s = *part->slots;
           const int time = static_cast<int>(s.time + 1);
-          table.push_back({s.keys[l].buffer(), s.values[l].buffer(),
+          table.push_back({s.keys[l].buffer(), s.values[l].buffer(), s.keys[l].buffer(), s.values[l].buffer(),
                            scores + part->scores_offset * joint.slot_scores.item_size(),
                            static_cast<int32_t>(s.rows), time, static_cast<int32_t>(s.shared),
-                           static_cast<int32_t>(part->row_begin), cuda::slot_scores_recipe(time),
+                           static_cast<int32_t>(part->row_begin), static_cast<int32_t>(SlotCache::capacity),
+                           cuda::slot_scores_recipe(time),
                            cuda::slot_output_recipe(time), cuda::slot_scores_mma(time) ? 1 : 0,
                            cuda::slot_output_mma(time) ? 1 : 0});
         }

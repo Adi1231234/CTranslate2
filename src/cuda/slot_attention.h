@@ -14,8 +14,11 @@ namespace ctranslate2 {
     struct SlotAttention {
       const void* keys;            // the part's slots this layer, [rows, heads, capacity, depth] fp16, slot order
       const void* values;
+      const void* shared_keys;     // a row ([heads, capacity, depth]) holding positions [0, shared), alike in every
+      const void* shared_values;   // row: read from there for all the part's rows
       void* scores;                // [rows, heads, time] fp16, slot order: the scores, then the probabilities
-      int32_t rows, time, shared, row_begin;   // time: positions attended; [0, shared) alike in every slot
+      int32_t rows, time, shared, row_begin;   // time: positions attended
+      int32_t capacity;            // positions a row holds (its stride)
       int32_t scores_recipe, output_recipe;    // selfattn_recipes.h's codes for this time
       int32_t scores_mma, output_mma;          // whether they are mma chains (their own kernels)
     };

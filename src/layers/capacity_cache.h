@@ -16,6 +16,7 @@ namespace ctranslate2 {
     struct CapacityCaches {
       dim_t steps = 0;                       // the search's steps: the room after the prompt
       dim_t time = -1;                       // positions cached before the step; -1 before the first
+      dim_t shared = 0;                      // positions [0, shared) alike in every row (the prompt, repeated)
       void advance() {                       // after each decoder step
         if (time >= 0)
           ++time;

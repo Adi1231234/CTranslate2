@@ -45,8 +45,8 @@ int main() {
             CK(cudaMemcpy2D(V + (size_t)b * kHeads * kC * kD, 2ull * kC * kD, V, 2ull * kC * kD, 2ull * shared * kD,
                             kHeads, cudaMemcpyDeviceToDevice));
         const int sr = selfattn_scores_recipe_of_t[t], orc = selfattn_output_recipe_of_t[t];
-        const SlotAttention part{K, V, F, kRows, t, shared, 0, sr, orc, selfattn_scores_recipes[sr].kind == 1,
-                                 selfattn_output_recipes[orc].kind == 1};
+        const SlotAttention part{K, V, K, V, F, kRows, t, shared, 0, kC, sr, orc,
+                                 selfattn_scores_recipes[sr].kind == 1, selfattn_output_recipes[orc].kind == 1};
         CK(cudaMemcpy(table, &part, sizeof part, cudaMemcpyHostToDevice));
         // scores: cuBLAS as slot_scores calls it, then the fused kernels
         CK(cublasGemmStridedBatchedEx(h, CUBLAS_OP_T, CUBLAS_OP_N, t, 1, kD, &scale, K, CUDA_R_16F, kD,

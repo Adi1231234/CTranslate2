@@ -136,8 +136,21 @@ namespace ctranslate2 {
       }
     }
 
-    static __device__ __forceinline__ const __half* slot_base(const void* cache, int slot, int head, int heads) {
-      return static_cast<const __half*>(cache) + (static_cast<size_t>(slot) * heads + head) * sa_capacity * sa_depth;
+    // Row b's head h (its positions), or for a position under `shared` the shared row's.
+    static __device__ __forceinline__ const __half* row_base(const void* cache, int row, int head, int heads,
+                                                             int capacity) {
+      return static_cast<const __half*>(cache) + (static_cast<size_t>(row) * heads + head) * capacity * sa_depth;
+    }
+
+    static __device__ __forceinline__ const __half* keys_at(const SlotAttention& part, int b, int i, int h, int heads) {
+      return i < part.shared ? row_base(part.shared_keys, 0, h, heads, part.capacity)
+                             : row_base(part.keys, b, h, heads, part.capacity);
+    }
+
+    static __device__ __forceinline__ const __half* values_at(const SlotAttention& part, int b, int i, int h,
+                                                              int heads) {
+      return i < part.shared ? row_base(part.shared_values, 0, h, heads, part.capacity)
+                             : row_base(part.values, b, h, heads, part.capacity);
     }
 
     static __device__ __forceinline__ unsigned pair(const __half* p) {
@@ -172,7 +185,7 @@ namespace ctranslate2 {
         return;
       __half* scores = static_cast<__half*>(part.scores);
       for (int b = 0; b < part.rows; ++b) {
-        const __half* k = slot_base(part.keys, i < part.shared ? 0 : b, h, heads) + static_cast<size_t>(i) * sa_depth;
+        const __half* k = keys_at(part, b, i, h, heads) + static_cast<size_t>(i) * sa_depth;
         __half kv[sa_depth];
         #pragma unroll
         for (int v = 0; v < sa_depth / 8; ++v)
@@ -192,8 +205,7 @@ namespace ctranslate2 {
       __half* scores = static_cast<__half*>(part.scores);
       for (int b = 0; b < part.rows; ++b) {
         const auto key_pair = [&](int i, int d) {
-          return i < part.time ? pair(slot_base(part.keys, i < part.shared ? 0 : b, h, heads)
-                                      + static_cast<size_t>(i) * sa_depth + d) : 0u;
+          return i < part.time ? pair(keys_at(part, b, i, h, heads) + static_cast<size_t>(i) * sa_depth + d) : 0u;
         };
         const __half* q = queries + (static_cast<size_t>(part.row_begin + b) * heads + h) * sa_depth;
         float acc[4] = {0.f, 0.f, 0.f, 0.f};
@@ -220,8 +232,8 @@ namespace ctranslate2 {
       if (part.output_mma || b >= part.rows)
         return;
       const __half* p = static_cast<const __half*>(part.scores) + (static_cast<size_t>(b) * heads + h) * part.time;
-      const __half* v0 = slot_base(part.values, 0, h, heads) + d;
-      const __half* vb = slot_base(part.values, b, h, heads) + d;
+      const __half* v0 = row_base(part.shared_values, 0, h, heads, part.capacity) + d;
+      const __half* vb = row_base(part.values, b, h, heads, part.capacity) + d;
       const float sum = output_sum<0>(code, p, v0, vb, part.time, part.shared);
       out[(static_cast<size_t>(part.row_begin + b) * heads + h) * sa_depth + d] = __float2half_rn(sum);
     }
@@ -238,8 +250,7 @@ namespace ctranslate2 {
         const __half* p = static_cast<const __half*>(part.scores) + (static_cast<size_t>(b) * heads + h) * part.time;
         const auto pp = [&](int i) { return i < part.time ? p[i] : zero; };
         const auto vv = [&](int i, int d) {
-          return i < part.time ? slot_base(part.values, i < part.shared ? 0 : b, h, heads)[static_cast<size_t>(i)
-                                                                                            * sa_depth + d] : zero;
+          return i < part.time ? values_at(part, b, i, h, heads)[static_cast<size_t>(i) * sa_depth + d] : zero;
         };
         float acc[4] = {0.f, 0.f, 0.f, 0.f};
         for (int i0 = 0; i0 < part.time; i0 += 16) {
