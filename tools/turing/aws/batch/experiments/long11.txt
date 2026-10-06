@@ -1,0 +1,6 @@
+# The second feed-forward of every window in one pass again (pyct2-l42d, 85b092a0): grouped_split_gemm took at most 16 groups,
+# so a long-recording step's 34-48 windows each ran cuBLAS (long10: 13% of the GPU time). First its bits against cuBLAS per
+# group (grouped_split_check, up to 96 groups), then g0 (long8's s0: every row must be long4's dec48's bytes) and gk (the
+# ladders skipped, the stream alone). LONG_STATS_S=20 with the audio done: the rate while all 48 threads hold a recording.
+scriptc|scripts/probes.sh|probes/probes-85b092a0.tgz|grouped_split_check
+scriptL|scripts/longform.sh|runner-85b092a0|g0:pyct2-l42d:list50.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1|gk:pyct2-l42d:list50.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,LONG_LADDERS=skip
