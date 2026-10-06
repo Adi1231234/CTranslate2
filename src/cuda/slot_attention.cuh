@@ -64,22 +64,21 @@ namespace ctranslate2 {
       }
     }
 
-    // The output column x of a beam's row over the part's t positions, p(i) v(i), with a recipe's partials spread
-    // over the block's lanes (partial_sums.cuh); the block's recipe is one code.
-    template <int CODE, typename A, typename B>
-    static __device__ __forceinline__ float output_split(int code, float (*sm)[32], int x, int y, int t, const A& a,
-                                                         const B& b) {
-      if constexpr (CODE >= sa_output_count) {
-        return 0.f;
-      } else {
+    // The output column x of a part's rows (its beams) over its t positions, p_k(i) v_k(i), each with a recipe's
+    // partials spread over the block's lanes (partial_sums.cuh: split_partials_rows), the prompt's positions (below
+    // `shared`, alike in every row) read once for all the rows; the block's recipe is one code.
+    template <int CODE, typename A, typename B, typename S>
+    static __device__ __forceinline__ void output_split(int code, float* sm, int x, int y, int t, int rows, int shared,
+                                                        const A& a, const B& b, const S& store) {
+      if constexpr (CODE < sa_output_count) {
         if (code == CODE) {
           constexpr SelfAttnRecipe r = selfattn_output_recipes[CODE];
           if constexpr (r.kind == 0)
-            return split_partials<r.partials, r.vector, r.contiguous != 0, r.tree>(sm, x, y, t, a, b);
-          else
-            return 0.f;
+            split_partials_rows<r.partials, r.vector, r.contiguous != 0, r.tree, sa_rows>(sm, x, y, t, rows, shared,
+                                                                                          a, b, store);
+          return;
         }
-        return output_split<CODE + 1>(code, sm, x, y, t, a, b);
+        output_split<CODE + 1>(code, sm, x, y, t, rows, shared, a, b, store);
       }
     }
 
@@ -172,24 +171,26 @@ namespace ctranslate2 {
       }
     }
 
-    // Output of the parts with a partials recipe: a block per (32 dims, head, part and beam), its threads 32 dims x
-    // split_lanes lanes sharing each output's partials.
+    // Output of the parts with a partials recipe: a block per (32 dims, head, part), its threads 32 dims x
+    // split_lanes lanes sharing each output's partials, every beam's sums at once (a beam a block read the prompt's
+    // values once a beam: prof3, the self-attention's output ~11% of either stream's GPU time).
     static __global__ void slot_output_partials(const SlotAttention* parts, __half* out, int heads) {
-      const SlotAttention part = parts[blockIdx.z / sa_rows];
-      const int b = blockIdx.z % sa_rows;
-      if (part.output_mma || b >= part.rows)
+      const SlotAttention part = parts[blockIdx.z];
+      if (part.output_mma)
         return;                                              // the whole block
-      __shared__ float sm[32][32];
+      __shared__ float sm[sa_rows * 32 * 32];               // rows x T x 32, T at most 32 (the output recipes)
       const int x = threadIdx.x, y = threadIdx.y, d = blockIdx.x * 32 + x, h = blockIdx.y;
-      const __half* p = static_cast<const __half*>(part.scores) + (static_cast<size_t>(b) * heads + h) * part.time;
+      const __half* p = static_cast<const __half*>(part.scores);
       const __half* v0 = row_base(part.shared_values, 0, h, heads, part.capacity) + d;
-      const __half* vb = row_base(part.values, b, h, heads, part.capacity) + d;
-      const int shared = part.shared;
-      const auto pa = [&](int i) { return hf(p[i]); };
-      const auto vv = [&](int i) { return hf((i < shared ? v0 : vb)[static_cast<size_t>(i) * sa_depth]); };
-      const float sum = output_split<0>(part.output_recipe, sm, x, y, part.time, pa, vv);
-      if (y == 0)
+      const auto pa = [&](int b, int i) { return hf(p[(static_cast<size_t>(b) * heads + h) * part.time + i]); };
+      const auto vv = [&](int b, int i) {
+        const __half* v = i < part.shared ? v0 : row_base(part.values, b, h, heads, part.capacity) + d;
+        return hf(v[static_cast<size_t>(i) * sa_depth]);
+      };
+      const auto store = [&](int b, float sum) {
         out[(static_cast<size_t>(part.row_begin + b) * heads + h) * sa_depth + d] = __float2half_rn(sum);
+      };
+      output_split<0>(part.output_recipe, sm, x, y, part.time, part.rows, part.shared, pa, vv, store);
     }
 
     // Output of the parts with the mma recipe: a warp per (8 dims, head, part), each beam an mma chain over the
@@ -232,8 +233,7 @@ namespace ctranslate2 {
     inline void sa_output_launch(const SlotAttention* parts, int count, __half* out, int heads, cudaStream_t stream) {
       if (count == 0)
         return;
-      slot_output_partials<<<dim3(sa_depth / 32, heads, count * sa_rows), dim3(32, split_lanes), 0, stream>>>(
-        parts, out, heads);
+      slot_output_partials<<<dim3(sa_depth / 32, heads, count), dim3(32, split_lanes), 0, stream>>>(parts, out, heads);
       slot_output_mma<<<dim3(sa_depth / 8, heads, count), 32, 0, stream>>>(parts, out, heads);
     }
 

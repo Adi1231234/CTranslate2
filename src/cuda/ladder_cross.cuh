@@ -142,15 +142,16 @@ namespace ctranslate2 {
                                                           const int8_t* row, int rows, int heads, int h, int d) {
       extern __shared__ float sm[];
       const auto pa = [&](int k, int i) { return hf(p[(static_cast<size_t>(row[k]) * heads + h) * lc_keys + i]); };
-      const auto vb = [&](int i) { return hf(vd[static_cast<size_t>(i) * lc_depth]); };
+      const auto vb = [&](int, int i) { return hf(vd[static_cast<size_t>(i) * lc_depth]); };   // one clip: shared
       const auto store = [&](int k, float sum) {
         out[(static_cast<size_t>(row[k]) * heads + h) * lc_depth + d] = __float2half_rn(sum);
       };
-      split_partials_rows<T, 1, CONTIGUOUS, 1, R>(sm, threadIdx.x, threadIdx.y, lc_keys, rows, pa, vb, store);
+      split_partials_rows<T, 1, CONTIGUOUS, 1, R>(sm, threadIdx.x, threadIdx.y, lc_keys, rows, lc_keys, pa, vb,
+                                                  store);
     }
 
     // Output: a block per (32 dims, head, block of rows), its threads 32 dims x split_lanes lanes sharing each
-    // output's partials (partial_sums.cuh); every row's sums are those of a block of its own (split_partials).
+    // output's partials (partial_sums.cuh); every row's sums are those of a block of its own (split_partials_rows).
     // Launch: grid (lc_depth / 32, heads, blocks.count), block (32, split_lanes), lc_output_blocks' shared memory.
     __global__ void lc_output(const __half* p, const __half* v, __half* out, LcOutputBlocks blocks, int heads) {
       const int d = blockIdx.x * 32 + threadIdx.x, h = blockIdx.y, b = blockIdx.z;
