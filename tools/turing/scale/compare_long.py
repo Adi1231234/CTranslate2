@@ -9,7 +9,8 @@ import json, sys
 
 ref_path, new_path = sys.argv[1:3]
 strict = "--strict" in sys.argv
-load = lambda p: {(r["source"], r["id"]): (line, r) for line in open(p, encoding="utf-8") for r in [json.loads(line)]}
+same_bytes = lambda r: json.dumps({k: v for k, v in r.items() if k != "path"}, ensure_ascii=False)  # how it ran
+load = lambda p: {(r["source"], r["id"]): (same_bytes(r), r) for line in open(p, encoding="utf-8") for r in [json.loads(line)]}
 ref, new = load(ref_path), load(new_path)
 keys = [k for k in new if k in ref]
 n = dict(recordings=len(keys), equal=0, explained=0, unexplained=0, audio_h=0.0, segments=0)

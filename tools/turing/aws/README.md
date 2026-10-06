@@ -185,6 +185,20 @@ max_length rule (`runner/stock_context.py`, `RUN_STOCK_FULL_CONTEXT=1`): no stoc
   context, same binary and seed: 15 of 2,906 rows, all 26-29 s clips whose text needs more than 224 tokens (14
   went to the fallback cut short, one lost its tail). That is the one intended difference (fork 25cc1a32).
 
+**Long recordings (6.10.2026, the corpus transcribe list: 3,186 h, 93% in recordings of 34 min to 24 h;
+`batch/experiments/long2.txt`, job f130110b, ap-northeast-2, $0.94; long1 hung, see `runner/longform.py`):** the
+original long-form algorithm, faster-whisper's own sequential transcribe with the crowd-v5 parameters (30 s windows,
+each conditioned on the text before it), on 48 YODAS v3 recordings and 2 Knesset plenums cut to 10 minutes (5.55 h).
+- Stock, one recording after the other: 14.8x. The fork the same way: 18.9x, every row identical to stock with the
+  same random numbers (8 recordings, 1,183 segments, sampled windows included).
+- `runner/longform.py` (48 recordings at once: encoder calls joined, each window's beam search a batch of one in a
+  stream, seeded ladders): 43.2x with the model load, 220-300 W (not power-bound), rows identical to stock up to the
+  first sampled window (4 of 8 whole). Ladders are far more frequent than on the crowd clips: 7.7% of segments
+  sampled, 24 of the 50 recordings.
+- Features in blocks (`runner/chunked_features.py`): the FFT and the power do not depend on the block, the mel
+  product does (OpenBLAS sums a column differently in a call of another width), so it stays the original's one call:
+  byte-identical on the box's numpy 2.5.3 (12 of 12), and a 24 h plenum fits in ~17 GB instead of ~26.
+
 **Beside other AWS work in the account** (the asr-training Batch queues): each touches only its own resources:
 nothing named `asr-train*` here (their submit uses the newest `asr-train` job definition), nothing named
 `whisper-bench*` there (their CancelJob is limited by IAM to jobs tagged Project=asr-training); everything tagged.
