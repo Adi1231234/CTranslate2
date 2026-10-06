@@ -1,0 +1,2 @@
+# lcross with the general gemv candidates (kernels/ladder_cross_probe.cu at d88d37fc).
+scriptc|scripts/probes.sh|probes/probes-d88d37fc.tgz|ladder_cross_probe
