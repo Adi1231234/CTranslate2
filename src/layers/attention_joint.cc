@@ -8,7 +8,6 @@
 #include "dot_product_attention.h"
 #include "joint_step.h"
 #include "joint_parts.h"
-#include "side_by_side.h"
 #include "slot_cache.h"
 #include "split_heads_fused.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
@@ -92,22 +91,11 @@ namespace ctranslate2 {
         else
           values_matmul(scores[p], *part.self_values[joint.layer], part_context);
       };
-#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      if (device == Device::CUDA && joint_streams() > 0 && joint.parts.size() > 1) {
-        side_by_side(joint.parts.size(), [&](size_t p) {     // CT2_JOINT_STREAMS: the same ops, side by side
-          keys_product(p);
-          ops::SoftMax()(scores[p], nullptr, scores[p]);
-          values_product(p);
-        });
-      } else
-#endif
-      {
-        for (size_t p = 0; p < joint.parts.size(); ++p)
-          keys_product(p);
-        softmax_parts(scores);
-        for (size_t p = 0; p < joint.parts.size(); ++p)
-          values_product(p);
-      }
+      for (size_t p = 0; p < joint.parts.size(); ++p)
+        keys_product(p);
+      softmax_parts(scores);
+      for (size_t p = 0; p < joint.parts.size(); ++p)
+        values_product(p);
       if (joint.slot_parts > 0)
         slot_context(joint, slot_out, context);
       combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/false);   // one step: a reshape
