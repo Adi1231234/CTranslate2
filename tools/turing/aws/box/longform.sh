@@ -4,7 +4,7 @@
 # to the job's S3 results as soon as it ends, and a run is stopped after LONG_RUN_S seconds (default 1500), so a stuck
 # run costs no more than that and loses nothing that finished (long1 hung to the job's limit).
 # A run's settings may hold LONG_PROCS=<n> (n processes under MPS, every n-th recording each: LONG_SHARD) and
-# NSYS=<delay s>:<seconds> (Nsight Systems on process 0 for that span; its kernel and NVTX summaries to S3).
+# NSYS=<delay s>:<seconds> (Nsight Systems on process 0 for that span; its kernel, NVTX and CUDA API summaries to S3).
 # usage: longform.sh <runner dir> <label>:<package or stock>:<list file>:<VAR=value,...> ...
 set -uo pipefail
 RUNNER=$1; shift; B=${B:-/opt/wb}; RES=$S3/results/${AWS_BATCH_JOB_ID:-local}; HERE=$(pwd)
@@ -44,7 +44,7 @@ for run in "$@"; do
     END {if (n) printf "GPU: %.0f%% busy, peak %.0f MiB, %.0f W average, %d samples\n", u / n, m, w / n, n}' \
     "gpu_$label.csv"
   if [ -f "prof_$label.nsys-rep" ]; then
-    nsys stats --report cuda_gpu_kern_sum,nvtx_sum --format csv --output "prof_$label" "prof_$label.nsys-rep" \
+    nsys stats --report cuda_gpu_kern_sum,nvtx_sum,cuda_api_sum --format csv --output "prof_$label" "prof_$label.nsys-rep" \
       > /dev/null 2>&1
     for f in prof_${label}*.csv prof_$label.nsys-rep; do aws s3 cp --only-show-errors "$f" "$RES/longform/$f"; done
   fi
