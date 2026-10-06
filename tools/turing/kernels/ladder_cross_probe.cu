@@ -151,6 +151,56 @@ __global__ void output_mma(const __half* V, const __half* P, __half* O, int entr
     for (int c = 0; c < 2; ++c) O[(size_t)e * kD + d0 + 2 * t + c] = __float2half_rn(acc[c]);
 }
 
+// Generalized: T partial sums over the reduced dimension (n elements, `a_step` apart in memory), thread r taking either
+// elements in vectors of w, (r + T i) w + u, or one contiguous chunk; then a pairwise tree (s_r += s_{r + off}, off =
+// T/2 .. 1) or the partials in order.
+__device__ float reduce_partials(const __half* a, size_t a_step, const __half* b, int n, int T, int w, bool contiguous,
+                                 int tree) {
+  float part[64];
+  for (int r = 0; r < T; ++r) {
+    float s = 0.f;
+    if (contiguous) {
+      const int chunk = (n + T - 1) / T;
+      for (int i = r * chunk; i < min(n, (r + 1) * chunk); ++i) s = fmaf(f(a[i * a_step]), f(b[i]), s);
+    } else {
+      for (int base = r * w; base < n; base += T * w)
+        for (int u = 0; u < w && base + u < n; ++u) s = fmaf(f(a[(base + u) * a_step]), f(b[base + u]), s);
+    }
+    part[r] = s;
+  }
+  float sum = 0.f;
+  if (tree == 1) {
+    for (int off = T / 2; off > 0; off /= 2)
+      for (int r = 0; r < off; ++r) part[r] += part[r + off];
+    sum = part[0];
+  } else if (tree == 2) {                                    // neighbours first: off = 1, 2, .. T/2
+    for (int off = 1; off < T; off *= 2)
+      for (int r = 0; r + off < T; r += 2 * off) part[r] += part[r + off];
+    sum = part[0];
+  } else {
+    for (int r = 0; r < T; ++r) sum += part[r];
+  }
+  return sum;
+}
+
+__global__ void scores_general(const __half* K, const __half* Q, __half* C, int entries, int T, int w, bool contiguous,
+                               int tree) {
+  const int e = blockIdx.y, i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= kKeys || e >= entries) return;
+  const float sum = reduce_partials(K + ((size_t)(e % kHeads) * kKeys + i) * kD, 1, Q + (size_t)e * kD, kD, T, w,
+                                    contiguous, tree);
+  C[(size_t)e * kKeys + i] = __float2half_rn(kScale * sum);
+}
+
+__global__ void output_general(const __half* V, const __half* P, __half* O, int entries, int T, bool contiguous,
+                               int tree) {
+  const int e = blockIdx.x, d = threadIdx.x;
+  if (e >= entries) return;
+  const float sum = reduce_partials(V + (size_t)(e % kHeads) * kKeys * kD + d, kD, P + (size_t)e * kKeys, kKeys, T, 1,
+                                    contiguous, tree);
+  O[(size_t)e * kD + d] = __float2half_rn(sum);
+}
+
 // Entry e's pointers as shared_memory_rows.cu makes them: the keys or values of its head, its own query / row.
 __global__ void pointers(const __half* KV, const __half* B, size_t b_stride, __half* C, size_t c_stride, int entries,
                          const void** pa, const void** pb, void** pc) {
@@ -188,6 +238,8 @@ int main() {
   const char* sname[] = {"S0 sequential", "S1 sm_75", "S2 mma query row", "S3 mma keys rows", "S4 groups added"};
   const int Ts[] = {16, 32, 64, 128, 256};
   unsigned long long sbad[5][5] = {}, vbad[5][1 + 3 * 5 + 1] = {}, layout[5][2] = {};
+  const int gT[] = {2, 4, 8, 16, 32, 64}, gW[] = {1, 2, 4, 8};
+  unsigned long long sgen[5][6][5][3] = {}, vgen[5][6][2][3] = {};   // [batch][T][w, or contiguous][tree]
   for (int fill_no = 0; fill_no < 3; ++fill_no) {
     fill<<<1024, 256>>>(K, (size_t)kHeads * kKeys * kD, 7u + fill_no, -7, 1);
     fill<<<1024, 256>>>(V, (size_t)kHeads * kKeys * kD, 11u + fill_no, -6, 2);
@@ -225,6 +277,15 @@ int main() {
                                     (long long)kKeys * kD, P, CUDA_R_16F, kKeys, kKeys, &zero, O2, CUDA_R_16F, kD, kD,
                                     E, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
       layout[b][1] += differ(O, O2, (size_t)E * kD);
+      for (int ti = 0; ti < 6; ++ti)
+        for (int wi = 0; wi < 5; ++wi)
+          for (int tr = 0; tr < 3; ++tr) {
+            if (wi < 4 && gT[ti] * gW[wi] > kD) continue;
+            scores_general<<<dim3((kKeys + 127) / 128, E), 128>>>(K, Q, S2, E, gT[ti], wi < 4 ? gW[wi] : 1, wi == 4,
+                                                                    tr);
+            CK(cudaGetLastError());
+            sgen[b][ti][wi][tr] += differ(S, S2, (size_t)E * kKeys);
+          }
       int c = 0;
       output_scalar<<<E, kD>>>(V, P, O2, E, 0, 1); vbad[b][c++] += differ(O, O2, (size_t)E * kD);
       for (int mode = 2; mode <= 4; ++mode)
@@ -234,6 +295,12 @@ int main() {
         }
       output_mma<<<dim3(kD / 8, E), 32>>>(V, P, O2, E); CK(cudaGetLastError());
       vbad[b][c++] += differ(O, O2, (size_t)E * kD);
+      for (int ti = 0; ti < 6; ++ti)
+        for (int ct = 0; ct < 2; ++ct)
+          for (int tr = 0; tr < 3; ++tr) {
+            output_general<<<E, kD>>>(V, P, O2, E, gT[ti], ct == 1, tr); CK(cudaGetLastError());
+            vgen[b][ti][ct][tr] += differ(O, O2, (size_t)E * kD);
+          }
     }
   }
   for (int b = 0; b < 5; ++b) {
@@ -247,6 +314,18 @@ int main() {
       for (int T : Ts)
         printf("  output V%d T=%-3d           %8llu\n", mode, T, vbad[b][c++]);
     printf("  output V1 mma chain       %8llu\n", vbad[b][c++]);
+    for (int ti = 0; ti < 6; ++ti)
+      for (int wi = 0; wi < 5; ++wi)
+        for (int tr = 0; tr < 3; ++tr)
+          if ((wi == 4 || gT[ti] * gW[wi] <= kD) && sgen[b][ti][wi][tr] == 0)
+            printf("  MATCH scores T=%d %s%d %s\n", gT[ti], wi == 4 ? "contiguous" : "strided w=", wi == 4 ? 0 : gW[wi],
+                   tr == 2 ? "tree from neighbours" : tr ? "tree" : "in order");
+    for (int ti = 0; ti < 6; ++ti)
+      for (int ct = 0; ct < 2; ++ct)
+        for (int tr = 0; tr < 3; ++tr)
+          if (vgen[b][ti][ct][tr] == 0)
+            printf("  MATCH output T=%d %s %s\n", gT[ti], ct ? "contiguous" : "strided",
+                   tr == 2 ? "tree from neighbours" : tr ? "tree" : "in order");
   }
   return 0;
 }
