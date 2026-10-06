@@ -1,0 +1,3 @@
+# prof2 again (its capture lost the ladders' stream: CUPTI dropped 146,311 events at the stop), with the CUDA trace
+# flushed every 200 ms (longform.sh) and 8 s from second 140: where a ladder's GPU time goes in its own stream (l42s).
+scriptL|scripts/longform.sh|runner-c4777ed7|p4:pyct2-l42s:list120s.txt:MODE=long,LONG_THREADS=48,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,CT2_CAPACITY_CACHES=1,CT2_LADDER_CROSS=1,CT2_SLOT_ATTENTION=1,LONG_LADDER_WORKERS=0,LONG_LADDERS=stream,LONG_LADDER_STREAM=1,LONG_LADDER_BATCHES=3,LONG_RUN_S=200,NSYS=140:8

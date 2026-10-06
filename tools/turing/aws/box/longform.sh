@@ -25,7 +25,7 @@ for run in "$@"; do
   t0=$(date +%s.%N); pids=()
   for i in $(seq 0 $((procs - 1))); do
     wrap=""
-    [ -n "$nsys" ] && [ "$i" = 0 ] && wrap="nsys profile -t cuda,nvtx --delay ${nsys%%:*} --duration ${nsys#*:} \
+    [ -n "$nsys" ] && [ "$i" = 0 ] && wrap="nsys profile -t cuda,nvtx --cuda-flush-interval=200 --delay ${nsys%%:*} --duration ${nsys#*:} \
       -o $HERE/prof_$label --force-overwrite true"
     (export HF_HOME=$B/hf LONG_SHARD=$i/$procs; [ "$pkg" = stock ] || export PYTHONPATH=$B/$pkg
      for kv in ${setting//,/ }; do export "$kv"; done
