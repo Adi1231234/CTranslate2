@@ -33,7 +33,8 @@ namespace ctranslate2 {
     void Decoder::update_state(DecoderState& state, const StorageView& alive_batches) const {
       flush_state_reorder(state);
       for (auto& pair : state) {
-        ops::Gather()(pair.second, alive_batches);
+        if (!pair.second.empty())
+          ops::Gather()(pair.second, alive_batches);
       }
     }
 
@@ -54,6 +55,8 @@ namespace ctranslate2 {
 
       const bool defer = defers_state_reorder();
       for (auto& [name, value] : state) {
+        if (value.empty())                                   // e.g. caches moved to slots (layers/slot_cache.h)
+          continue;
         if (replicate_state(name)) {
           if (!defer)
             ops::Gather()(value, beam_indices);
@@ -72,7 +75,7 @@ namespace ctranslate2 {
       const StorageView order = std::move(it->second);
       state.erase(it);
       for (auto& [name, value] : state) {
-        if (replicate_state(name))
+        if (!value.empty() && replicate_state(name))
           ops::Gather()(value, order);
       }
     }

@@ -52,6 +52,16 @@ namespace ctranslate2 {
                                          time * depth * cache.item_size(), old_rows * heads,
                                          cudaMemcpyDeviceToDevice, cuda::get_cuda_stream()));
         }
+      // The slots hold the caches now: the state's copies go (in stream order, after the copies above), else every
+      // window kept its prompt's caches of all its rows for its whole decoding (~186 MB at 227 positions: 8 GB of
+      // the L40S's 44 at 45 windows, long12). The state keeps empty caches, which a reorder leaves alone
+      // (Decoder::update_state).
+      const DataType dtype = first.dtype();
+      const Device device = first.device();
+      for (size_t l = 0; l < part.self_keys.size(); ++l) {
+        *part.self_keys[l] = StorageView(dtype, device);
+        *part.self_values[l] = StorageView(dtype, device);
+      }
       std::vector<int32_t> maps(4 * s.rows + 1, 0);
       for (dim_t r = 0; r < s.rows; ++r)
         maps[r] = maps[s.rows + r] = static_cast<int32_t>(r);        // old row i in slot i
