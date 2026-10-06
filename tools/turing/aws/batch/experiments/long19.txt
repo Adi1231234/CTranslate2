@@ -1,0 +1,4 @@
+# long17's f0 (113.8x with all 48 threads busy) with the ladders' self-attention fused too (pyct2-l42m, c223b99a: a group of 5
+# rows from 32 positions through slot_attention.cuh, the prompt read once for a search's rows). Every list50 row must be long4's
+# dec48's bytes, the sampled ones too.
+scriptL|scripts/longform.sh|runner-d83d636b|m0:pyct2-l42m:list120s.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,CT2_CAPACITY_CACHES=1,CT2_LADDER_CROSS=1,CT2_SLOT_ATTENTION=1,LONG_RUN_S=420
