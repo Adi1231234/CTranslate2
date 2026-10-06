@@ -12,6 +12,7 @@
 #include "cpu/parallel.h"
 #include "kv_cache.h"
 #include "attention_fused.h"
+#include "capacity_cache.h"
 #include "cross_attention_fused.h"
 #include "dot_product_attention.h"
 #include "joint_step.h"
@@ -602,6 +603,24 @@ namespace ctranslate2 {
       if (const JointStep* joint = joint_step()) {
         StorageView context(dtype, device);
         joint_attention(*joint, fused_proj, fused_q, context);
+        output_projection(queries, context, output, next);
+        return;
+      }
+
+      // A greedy search's decoding step on self-attention caches of a fixed capacity (capacity_cache.h): the split
+      // below, then the attention over the caches without copying them.
+      if (_self_attention && fused_q && cached_keys && !cached_keys->empty() && cached_values && !cache_reorder
+          && !attention && !values_lengths && !queries_padder && capacity_caches() && q->dim(1) == 1
+          && fused_proj.device() == Device::CUDA && fused_proj.dtype() == DataType::FLOAT16
+          && _num_heads_kv == _num_heads && !_merge_time_and_head_dims && !_q_norm && !_k_norm && !_v_norm
+          && !_rotary_embeddings && !_relative_attention_bias && !_relative_position_keys
+          && !_relative_asymmetric_position_keys && !_relative_position_values && !_alibi && _sliding_window == 0
+          && !_tensor_parallel) {
+        split_heads_with_bias(fused_proj, _linear[0].bias(), {&queries_proj, &keys_proj, &values_proj}, _num_heads);
+        StorageView context(dtype, device);
+        capacity_attention(queries_proj, keys_proj, values_proj, _queries_scale, *cached_keys, *cached_values,
+                           context);
+        combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/false);
         output_projection(queries, context, output, next);
         return;
       }

@@ -144,6 +144,7 @@ set(SOURCES
   src/layers/joint_step.cc
   src/layers/kv_cache.cc
   src/layers/slot_cache.cc
+  src/layers/capacity_cache.cc
   src/layers/transformer.cc
   src/layers/transformer_joint.cc
   src/layers/wav2vec2.cc

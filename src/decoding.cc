@@ -9,6 +9,7 @@
 
 #include "ctranslate2/ops/ops.h"
 #include "dispatch.h"
+#include "layers/capacity_cache.h"
 #ifdef CT2_WITH_CUDA
 #  include "cuda/clip_groups.h"
 #  include "cuda/graph.h"
@@ -1287,6 +1288,11 @@ namespace ctranslate2 {
     if (!row_seeds.empty() && device == Device::CUDA)
       row_states = std::make_unique<cuda::RowStates>(row_seeds);
 #endif
+    // The self-attention caches in place, with room for the search's steps (layers/capacity_cache.h).
+    layers::CapacityCaches capacity{max_step};
+    std::unique_ptr<layers::CapacityCacheScope> capacity_scope;
+    if (layers::capacity_caches_enabled() && device == Device::CUDA && dtype == DataType::FLOAT16)
+      capacity_scope = std::make_unique<layers::CapacityCacheScope>(&capacity);
 
     for (dim_t step = 0; step < max_step; ++step) {
       convert_to_original_word_ids(decoder, sample_from);
@@ -1308,6 +1314,7 @@ namespace ctranslate2 {
                 &logits,
                 gather_attention ? &attention_step_device : nullptr);
       });
+      capacity.advance();
 
       DisableTokens disable_tokens(logits);
 
