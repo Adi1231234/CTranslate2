@@ -70,7 +70,7 @@ namespace ctranslate2 {
       context = StorageView(all_queries.shape(), dtype, device);   // [rows, heads, 1, depth]
       std::vector<StorageView> scores;                       // allocated on the thread's own stream
       scores.reserve(joint.parts.size());
-      const auto fused = [&](size_t p) { return joint.slot_fused && joint.parts[p].slots; };   // slot_attention.h
+      const auto fused = [&](size_t p) { return joint.parts[p].scores_offset >= 0; };   // slot_attention.h
       for (size_t p = 0; p < joint.parts.size(); ++p) {
         const auto& part = joint.parts[p];
         const dim_t time = part.slots ? slot_time(joint, p) : part.self_keys[joint.layer]->dim(2);
@@ -99,13 +99,13 @@ namespace ctranslate2 {
       for (size_t p = 0; p < joint.parts.size(); ++p)
         if (!fused(p))
           keys_product(p);
-      if (joint.slot_fused)
+      if (joint.slot_fused > 0)
         fused_slot_scores(joint, slot_q, _queries_scale);
       softmax_parts(scores);
       for (size_t p = 0; p < joint.parts.size(); ++p)
         if (!fused(p))
           values_product(p);
-      if (joint.slot_fused)
+      if (joint.slot_fused > 0)
         fused_slot_output(joint, slot_out);
       if (joint.slot_parts > 0)
         slot_context(joint, slot_out, context);

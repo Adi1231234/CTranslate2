@@ -14,9 +14,11 @@ namespace ctranslate2 {
       return on;
     }
 
-    // The recipes were recovered for one window's 5 beams x 20 heads of 64 dims, t up to the slots' 448.
+    // The recipes were recovered for one window's 5 beams x 20 heads of 64 dims, t up to the slots' 448. Below 32
+    // positions several candidates matched the probe's 2 fills and the one taken is not always cuBLAS's
+    // (slot_attention_check: 25 of 2688 cases at t 2..21 differ, none from 22 on): those parts keep their calls.
     bool slot_attention_applies(int rows, int heads, int depth, int time) {
-      return rows == sa_rows && heads == sa_heads && depth == sa_depth && time >= 1 && time <= sa_capacity;
+      return rows == sa_rows && heads == sa_heads && depth == sa_depth && time >= 32 && time <= sa_capacity;
     }
 
     int slot_scores_recipe(int time) {

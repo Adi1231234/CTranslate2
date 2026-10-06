@@ -33,10 +33,11 @@ namespace ctranslate2 {
       StorageView slot_outputs{DataType::INT32};
       int slot_parts = 0, slot_max_rows = 0, slot_max_time = 0;
       // The slot parts' self-attention in one launch per product (layers/slot_attention.h): a cuda::SlotAttention
-      // per layer and part, and every part's scores, reused by each layer.
+      // per layer and fused part (slot_fused of them: the parts with a scores_offset), and their scores, reused by
+      // each layer.
       StorageView slot_attention{DataType::INT32};
       StorageView slot_scores;
-      bool slot_fused = false;
+      int slot_fused = 0;
       // On the device, per layer: each clip's memory keys and values, [heads][1500][64] from these two pointers.
       StorageView memory_table{DataType::INT32};
 

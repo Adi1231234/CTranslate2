@@ -1,6 +1,7 @@
 // src/cuda/slot_attention.cuh's kernels (the stream's slot parts' self-attention in one launch) against what they
 // replace, cuBLAS's strided batched products a part at a time (layers/slot_cache.cc: 5 beams x 20 heads, one query of
-// 64 dims, the slots' stride of 448 x 64), bit for bit: for every t 1..448, the shared prompt [0, shared) alike in all
+// 64 dims, the slots' stride of 448 x 64), bit for bit: for every t 32..448 (the kernels' range: slot_attention_applies;
+// at d541ec0c t 2..21 differed in 25 of their cases, none from 22 on), the shared prompt [0, shared) alike in all
 // the slots at shared 0, t / 2 and min(t, 227), 2 fills; the scores, then the output from the same probabilities.
 // usage: slot_attention_check -> must end with TOTAL 0
 #include <cstdio>
@@ -32,7 +33,7 @@ int main() {
     fill<<<1024, 256>>>(V, cache, 11u + fill_no, -6, 2);
     fill<<<1024, 256>>>(Q, (size_t)kE * kD, 3u + fill_no, -6, 1);
     fill<<<1024, 256>>>(P, (size_t)kE * kC, 13u + fill_no, -14, -2);
-    for (int t = 1; t <= kC; ++t)
+    for (int t = 32; t <= kC; ++t)
       for (const int shared : {0, t / 2, t < 227 ? t : 227}) {
         // the prompt's positions alike in every slot: slot 0's copied into the others, every head
         for (int b = 1; b < kRows; ++b)

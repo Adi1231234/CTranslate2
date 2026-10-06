@@ -11,28 +11,32 @@ namespace ctranslate2 {
   namespace layers {
 
     void prepare_slot_attention(JointStep& joint, const std::vector<JointStep::Part*>& slot_parts) {
-      joint.slot_fused = false;
+      joint.slot_fused = 0;
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       if (slot_parts.empty() || !cuda::slot_attention_enabled())
         return;
       const SlotCache& first = *slot_parts[0]->slots;
       const dim_t heads = first.keys[0].dim(1), depth = first.keys[0].dim(3);
       dim_t total = 0;
+      std::vector<JointStep::Part*> fused;                   // the others keep their own calls
       for (JointStep::Part* part : slot_parts) {
         const SlotCache& s = *part->slots;
         const dim_t time = s.time + 1;                       // this step's position too
         if (!cuda::slot_attention_applies(s.rows, heads, depth, time))
-          return;                                            // the parts' own calls
+          continue;
         part->scores_offset = total;
         total += s.rows * heads * time;
+        fused.push_back(part);
       }
+      if (fused.empty())
+        return;
       joint.slot_scores = StorageView({total}, DataType::FLOAT16, Device::CUDA);
       auto* scores = static_cast<char*>(joint.slot_scores.buffer());
       std::vector<cuda::SlotAttention> table;
       const size_t layers = first.keys.size();
-      table.reserve(layers * slot_parts.size());
+      table.reserve(layers * fused.size());
       for (size_t l = 0; l < layers; ++l)
-        for (JointStep::Part* part : slot_parts) {
+        for (JointStep::Part* part : fused) {
           const SlotCache& s = *part->slots;
           const int time = static_cast<int>(s.time + 1);
           table.push_back({s.keys[l].buffer(), s.values[l].buffer(),
@@ -45,7 +49,7 @@ namespace ctranslate2 {
       std::vector<int32_t> words(table.size() * sizeof (cuda::SlotAttention) / sizeof (int32_t));
       std::memcpy(words.data(), table.data(), table.size() * sizeof (cuda::SlotAttention));
       joint.slot_attention = StorageView({static_cast<dim_t>(words.size())}, words).to(Device::CUDA);
-      joint.slot_fused = true;
+      joint.slot_fused = static_cast<int>(fused.size());
 #endif
     }
 
@@ -61,13 +65,13 @@ namespace ctranslate2 {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
     static const cuda::SlotAttention* layer_table(const JointStep& joint) {
       return reinterpret_cast<const cuda::SlotAttention*>(joint.slot_attention.data<int32_t>())
-        + joint.layer * joint.slot_parts;
+        + joint.layer * joint.slot_fused;
     }
 #endif
 
     void fused_slot_scores(const JointStep& joint, const StorageView& slot_queries, float scale) {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      cuda::slot_attention_scores(layer_table(joint), joint.slot_parts, slot_queries.buffer(), slot_queries.dim(1),
+      cuda::slot_attention_scores(layer_table(joint), joint.slot_fused, slot_queries.buffer(), slot_queries.dim(1),
                                   joint.slot_max_time + 1, scale);
 #else
       (void)joint; (void)slot_queries; (void)scale;
@@ -76,7 +80,7 @@ namespace ctranslate2 {
 
     void fused_slot_output(const JointStep& joint, StorageView& slot_output) {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      cuda::slot_attention_output(layer_table(joint), joint.slot_parts, slot_output.buffer(), slot_output.dim(1));
+      cuda::slot_attention_output(layer_table(joint), joint.slot_fused, slot_output.buffer(), slot_output.dim(1));
 #else
       (void)joint; (void)slot_output;
 #endif
