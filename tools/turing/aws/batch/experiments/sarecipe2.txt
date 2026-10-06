@@ -1,0 +1,4 @@
+# sarecipe left the output product without a match at 147 t (odd t 201-359, multiples of 8 at 240-360): the split candidates,
+# and the kernels cuBLAS runs at every t with the slots' stride (Nsight Systems).
+scriptc|scripts/probes.sh|probes/probes-725af55a.tgz|selfattn_recipe_probe
+scripts|scripts/nsys_probe.sh|probes/probes-725af55a.tgz|selfattn_kernels|slots
