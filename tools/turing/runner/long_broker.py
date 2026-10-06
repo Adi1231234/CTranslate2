@@ -4,8 +4,10 @@ as generate() alone decodes it; encoder calls are joined as the Broker joins the
 LONG_LADDER_WORKERS=<n>: the ladder's sampled attempts run on a second instance of the model with n workers, each call
 on its own as the Broker would run it (same model, same bits), on the recording's thread, so a ladder call of seconds
 never holds up the windows waiting for the encoder (0: through the Broker's one dispatcher, which runs the encoder
-calls and the ladder calls in turn). LONG_STATS=1: where the time goes (long_stats.py)."""
-import threading, time
+calls and the ladder calls in turn). LONG_STATS=1: where the time goes (long_stats.py). LONG_LADDERS=skip
+(measurement only, the rows change): a ladder's sampled attempts return the window's beam result, no decoding.
+"""
+import os, threading, time
 import ctranslate2
 from fallback_batch import Broker
 from long_stats import LongStats
@@ -22,6 +24,7 @@ class LongBroker(Broker):
         self._stream = self._options = None
         self._calls, self._tag, self._lock = {}, 0, threading.Lock()
         self._ladder, self._lanes = ladder_model, threading.Semaphore(max(ladder_workers, 1))
+        self._skip_ladders, self._last = os.environ.get("LONG_LADDERS") == "skip", threading.local()
         self.stats = LongStats()
 
     def _idle(self, delta):
@@ -63,6 +66,8 @@ class LongBroker(Broker):
 
     def generate(self, encoder_output, prompts, **kw):
         if kw.get("beam_size", 1) == 1:                       # a sampled attempt of the ladder
+            if self._skip_ladders:                            # measurement only: the window's beam result again
+                return [self._last.result]
             return super().generate(encoder_output, prompts, **kw)
         if len(prompts) != 1 or set(kw) - set(STREAM_OPTIONS):
             raise ValueError(f"the stream takes one window's beam search, with {STREAM_OPTIONS}")
@@ -82,6 +87,7 @@ class LongBroker(Broker):
         self.stats.add("stream_s", time.monotonic() - t)
         if call.error:
             raise call.error
+        self._last.result = call.result
         return [call.result]
 
     def _open(self, kw):
