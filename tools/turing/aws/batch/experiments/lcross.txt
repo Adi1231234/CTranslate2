@@ -1,0 +1,4 @@
+# The sampled ladder rows' cross-attention (~13% of the GPU's time on long recordings, long13's pq): cuBLAS's kernels for
+# its pointer-batched products by batch (Nsight Systems) and candidate arithmetics against them (kernels/ladder_cross_probe.cu).
+scriptc|scripts/probes.sh|probes/probes-aefdea2b.tgz|ladder_cross_probe
+scripts|scripts/nsys_probe.sh|probes/probes-aefdea2b.tgz|ladder_cross_probe
