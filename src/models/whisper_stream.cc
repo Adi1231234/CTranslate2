@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "layers/joint_step.h"
+#include "layers/slot_cache.h"
 #ifdef CT2_WITH_CUDA
 #  include "cuda/utils.h"
 #endif
@@ -94,6 +95,7 @@ namespace ctranslate2 {
         Prepared prepared;
         std::unique_ptr<DecodeRun> decode;
         StorageView ids{DataType::INT32};
+        std::unique_ptr<layers::SlotCache> slots;            // a batch of one input's caches in slots (CT2_JOINT_SLOTS)
       };
       std::vector<std::unique_ptr<Active>> active;
       std::optional<WhisperStream::Batch> held;              // taken, waiting for room
@@ -123,6 +125,8 @@ namespace ctranslate2 {
             a->prepared = prepare_generation(std::move(held->encoder_output), held->prompts, options);
             a->decode = start_decode(*_decoder, a->prepared.state, a->prepared.start_tokens, {_eot_id},
                                      a->prepared.decoding_options);
+            if (layers::joint_slots() && held->prompts.size() == 1)
+              a->slots = std::make_unique<layers::SlotCache>();
             held.reset();
             rows += batch_rows;
             active.push_back(std::move(a));
@@ -140,7 +144,7 @@ namespace ctranslate2 {
             std::vector<dim_t> entries = run.alive_inputs();
             if (!run.keeps_memory_in_place())               // the memory was compacted with the inputs
               std::iota(entries.begin(), entries.end(), dim_t(0));
-            parts.push_back({run.decoder_step(), &a->ids, &a->prepared.state, std::move(entries)});
+            parts.push_back({run.decoder_step(), &a->ids, &a->prepared.state, std::move(entries), a->slots.get()});
           }
           StorageView logits(_decoder->output_type(), _decoder->device());
           _decoder->decode_joint(parts, logits);

@@ -230,6 +230,7 @@ namespace ctranslate2 {
         const StorageView* ids;              // its rows' ids, on the device
         DecoderState* state;
         std::vector<dim_t> memory_entries;   // for each input still decoding, its entry in the memory keys and values
+        struct SlotCache* slots = nullptr;   // its self-attention caches in slots (CT2_JOINT_SLOTS), or null
       };
       void decode_joint(const std::vector<JointPart>& parts, StorageView& logits);
 

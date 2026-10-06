@@ -6,6 +6,7 @@
 
 #include "ctranslate2/ops/ops.h"
 #include "joint_step.h"
+#include "slot_cache.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/clip_groups.h"
 #endif
@@ -68,12 +69,14 @@ namespace ctranslate2 {
           p.self_keys.push_back(&part.state->at("self_keys_" + l_str));
           p.self_values.push_back(&part.state->at("self_values_" + l_str));
         }
+        p.slots = joint_slots() ? part.slots : nullptr;
         rows += p.rows;
         joint.clips += p.clips;
         ids.push_back(part.ids);
         joint.parts.push_back(std::move(p));
       }
       joint.memory_table = memory_pointers(parts, _layers.size(), device);
+      prepare_slots(joint);                                  // the slot parts' caches and plans (slot_cache.h)
 
       StorageView all_ids(DataType::INT32, device);
       ops::Concat(0)(ids, all_ids);
@@ -119,6 +122,7 @@ namespace ctranslate2 {
           normed = std::move(next_normed);
       }
 
+      finish_slots(joint);
       if (have_normed)                                       // the output norm, made by the last layer
         layer_in = std::move(normed);
       else if (_output_norm)

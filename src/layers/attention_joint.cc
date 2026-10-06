@@ -8,51 +8,15 @@
 #include "dot_product_attention.h"
 #include "joint_step.h"
 #include "joint_parts.h"
+#include "side_by_side.h"
+#include "slot_cache.h"
 #include "split_heads_fused.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/clip_groups.h"
-#  include "cuda/utils.h"
-#  include "env.h"
 #endif
 
 namespace ctranslate2 {
   namespace layers {
-
-#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-    // CT2_JOINT_STREAMS=<n> (default 0: off): the parts' self-attention products on n side streams of the thread
-    // (cuda::SideStreamScope, a cuBLAS handle each), the parts dealt to them in turn. Each part runs the very calls,
-    // kernels and data it runs on the thread's own stream; only side by side: with a part a window (long
-    // recordings), a step's ~30 parts' calls of 100 entries each fill a small part of the GPU one after the other
-    // (long5's profile: ~2/3 of the GPU's time in the per-part self-attention).
-    static int joint_streams() {
-      static const int streams = read_int_from_env("CT2_JOINT_STREAMS", 0);
-      return streams;
-    }
-
-    // run(p) for p in [0, count) on the side streams, after the thread's stream's work so far and before its work
-    // from now on (events).
-    template <typename Run>
-    static void side_by_side(size_t count, Run&& run) {
-      const int streams = static_cast<int>(std::min<size_t>(joint_streams(), count));
-      static thread_local std::vector<cudaEvent_t> events;   // [0]: the fork; [s]: side stream s done
-      while (events.size() <= static_cast<size_t>(streams)) {
-        cudaEvent_t event;
-        CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
-        events.push_back(event);
-      }
-      const cudaStream_t own = cuda::get_cuda_stream();
-      CUDA_CHECK(cudaEventRecord(events[0], own));
-      for (int s = 1; s <= streams; ++s) {
-        const cuda::SideStreamScope side(s);
-        CUDA_CHECK(cudaStreamWaitEvent(cuda::get_cuda_stream(), events[0], 0));
-        for (size_t p = s - 1; p < count; p += streams)
-          run(p);
-        CUDA_CHECK(cudaEventRecord(events[s], cuda::get_cuda_stream()));
-      }
-      for (int s = 1; s <= streams; ++s)
-        CUDA_CHECK(cudaStreamWaitEvent(own, events[s], 0));
-    }
-#endif
 
     void MultiHeadAttention::joint_attention(const JointStep& joint, StorageView& fused_proj, bool fused_q,
                                              StorageView& context) const {
@@ -86,7 +50,8 @@ namespace ctranslate2 {
       // step (one batch per call, no clip groups): dot_product_attention's three ops on a decoder step, the scores
       // MatMul and the values MatMul part by part (cuBLAS's arithmetic depends on a call's batch), the softmax of
       // every part's scores in one launch where it applies (a row's arithmetic depends on its length only); each
-      // part's values product written in its own rows of the context (no join).
+      // part's values product written in its own rows of the context (no join). A part in slots (slot_cache.h) has
+      // its step appended to its slots, and its products run over its slots, the queries and outputs permuted.
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       const cuda::ClipGroupsPause no_groups;
 #endif
@@ -94,40 +59,57 @@ namespace ctranslate2 {
       StorageView all_keys(dtype, device);
       StorageView all_values(dtype, device);
       split_heads_with_bias(fused_proj, _linear[0].bias(), {&all_queries, &all_keys, &all_values}, _num_heads);
-      append_parts(joint, all_keys, all_values);
-
-      std::vector<StorageView> scores;
-      scores.reserve(joint.parts.size());
-      const ops::MatMul keys_matmul(/*trans_a=*/false, /*trans_b=*/true, _queries_scale);
-#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      // CT2_JOINT_STREAMS=<n>: the same three ops of each part on n side streams (side_by_side).
-      if (device == Device::CUDA && joint_streams() > 0 && joint.parts.size() > 1) {
-        context = StorageView(all_queries.shape(), dtype, device);
-        for (const auto& part : joint.parts)                 // allocated on the thread's own stream, before the fork
-          scores.emplace_back(Shape{part.rows, _num_heads, 1, part.self_keys[joint.layer]->dim(2)}, dtype, device);
-        const ops::MatMul values_matmul;
-        side_by_side(joint.parts.size(), [&](size_t p) {
-          const auto& part = joint.parts[p];
-          keys_matmul(rows_view(all_queries, part.row_begin, part.rows), *part.self_keys[joint.layer], scores[p]);
-          ops::SoftMax()(scores[p], nullptr, scores[p]);
-          StorageView part_context = rows_view(context, part.row_begin, part.rows);
-          values_matmul(scores[p], *part.self_values[joint.layer], part_context);
-        });
-        combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/false);
-        return;
+      append_parts(joint, all_keys, all_values);             // the parts not in slots
+      slot_append(joint, all_keys, all_values);
+      StorageView slot_q(dtype, device), slot_out(dtype, device);
+      if (joint.slot_parts > 0) {
+        slot_q = StorageView(all_queries.shape(), dtype, device);
+        slot_out = StorageView(all_queries.shape(), dtype, device);
+        slot_queries(joint, all_queries, slot_q);
       }
-#endif
-      for (const auto& part : joint.parts) {
-        scores.emplace_back(dtype, device);
-        keys_matmul(rows_view(all_queries, part.row_begin, part.rows), *part.self_keys[joint.layer], scores.back());
-      }
-      softmax_parts(scores);
       context = StorageView(all_queries.shape(), dtype, device);   // [rows, heads, 1, depth]
-      const ops::MatMul values_matmul;
+      std::vector<StorageView> scores;                       // allocated on the thread's own stream
+      scores.reserve(joint.parts.size());
       for (size_t p = 0; p < joint.parts.size(); ++p) {
-        StorageView part_context = rows_view(context, joint.parts[p].row_begin, joint.parts[p].rows);
-        values_matmul(scores[p], *joint.parts[p].self_values[joint.layer], part_context);
+        const auto& part = joint.parts[p];
+        const dim_t time = part.slots ? slot_time(joint, p) : part.self_keys[joint.layer]->dim(2);
+        scores.emplace_back(Shape{part.rows, _num_heads, 1, time}, dtype, device);
       }
+      const ops::MatMul keys_matmul(/*trans_a=*/false, /*trans_b=*/true, _queries_scale);
+      const ops::MatMul values_matmul;
+      const auto keys_product = [&](size_t p) {
+        const auto& part = joint.parts[p];
+        if (part.slots)
+          slot_scores(joint, p, slot_q, _queries_scale, scores[p]);
+        else
+          keys_matmul(rows_view(all_queries, part.row_begin, part.rows), *part.self_keys[joint.layer], scores[p]);
+      };
+      const auto values_product = [&](size_t p) {
+        const auto& part = joint.parts[p];
+        StorageView part_context = rows_view(context, part.row_begin, part.rows);
+        if (part.slots)
+          slot_values(joint, p, scores[p], slot_out);
+        else
+          values_matmul(scores[p], *part.self_values[joint.layer], part_context);
+      };
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      if (device == Device::CUDA && joint_streams() > 0 && joint.parts.size() > 1) {
+        side_by_side(joint.parts.size(), [&](size_t p) {     // CT2_JOINT_STREAMS: the same ops, side by side
+          keys_product(p);
+          ops::SoftMax()(scores[p], nullptr, scores[p]);
+          values_product(p);
+        });
+      } else
+#endif
+      {
+        for (size_t p = 0; p < joint.parts.size(); ++p)
+          keys_product(p);
+        softmax_parts(scores);
+        for (size_t p = 0; p < joint.parts.size(); ++p)
+          values_product(p);
+      }
+      if (joint.slot_parts > 0)
+        slot_context(joint, slot_out, context);
       combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/false);   // one step: a reshape
     }
 

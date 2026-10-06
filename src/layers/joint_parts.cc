@@ -13,11 +13,11 @@
 namespace ctranslate2 {
   namespace layers {
 
-    // Parts [first, last) by reorder_and_append or Concat, one by one.
-    static void append_each(const JointStep& joint, StorageView& keys, StorageView& values, size_t first,
-                            size_t last) {
-      for (size_t p = first; p < last; ++p) {
-        const auto& part = joint.parts[p];
+    // Parts idx[first, last) by reorder_and_append or Concat, one by one.
+    static void append_each(const JointStep& joint, StorageView& keys, StorageView& values,
+                            const std::vector<size_t>& idx, size_t first, size_t last) {
+      for (size_t i = first; i < last; ++i) {
+        const auto& part = joint.parts[idx[i]];
         StorageView& cached_keys = *part.self_keys[joint.layer];
         StorageView& cached_values = *part.self_values[joint.layer];
         StorageView part_keys = rows_view(keys, part.row_begin, part.rows);
@@ -35,15 +35,15 @@ namespace ctranslate2 {
     }
 
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-    // Parts [first, last) in one reorder_append_parts launch, or false where it does not apply.
-    static bool append_fused(const JointStep& joint, StorageView& keys, StorageView& values, size_t first,
-                             size_t last) {
+    // Parts idx[first, last) in one reorder_append_parts launch, or false where it does not apply.
+    static bool append_fused(const JointStep& joint, StorageView& keys, StorageView& values,
+                             const std::vector<size_t>& idx, size_t first, size_t last) {
       const dim_t heads = keys.dim(1), depth = keys.dim(3);
       bool fused = keys.device() == Device::CUDA && keys.dtype() == DataType::FLOAT16 && keys.dim(2) == 1
         && cuda::cache_reorder_supported(keys.buffer(), depth, keys.item_size())
         && cuda::cache_reorder_supported(values.buffer(), depth, values.item_size());
       for (size_t p = first; p < last && fused; ++p) {
-        const auto& part = joint.parts[p];
+        const auto& part = joint.parts[idx[p]];
         const StorageView& cache = *part.self_keys[joint.layer];
         fused = cache.rank() == 4 && cache.dim(1) == heads && cache.dim(3) == depth
           && cache.dim(0) == (part.cache_reorder ? cache.dim(0) : part.rows)
@@ -57,7 +57,7 @@ namespace ctranslate2 {
       std::vector<StorageView> out;                          // each part's new keys and values
       out.reserve(2 * (last - first));
       for (size_t i = first; i < last; ++i) {
-        const auto& part = joint.parts[i];
+        const auto& part = joint.parts[idx[i]];
         StorageView& cache_keys = *part.self_keys[joint.layer];
         StorageView& cache_values = *part.self_values[joint.layer];
         const dim_t time = cache_keys.dim(2);
@@ -76,8 +76,8 @@ namespace ctranslate2 {
       }
       cuda::reorder_append_parts(parts, heads, depth);
       for (size_t p = first; p < last; ++p) {
-        *joint.parts[p].self_keys[joint.layer] = std::move(out[2 * (p - first)]);
-        *joint.parts[p].self_values[joint.layer] = std::move(out[2 * (p - first) + 1]);
+        *joint.parts[idx[p]].self_keys[joint.layer] = std::move(out[2 * (p - first)]);
+        *joint.parts[idx[p]].self_values[joint.layer] = std::move(out[2 * (p - first) + 1]);
       }
       return true;
     }
@@ -101,17 +101,22 @@ namespace ctranslate2 {
 #endif
 
     void append_parts(const JointStep& joint, StorageView& keys, StorageView& values) {
-      for (const auto& part : joint.parts)
-        if (part.self_keys[joint.layer]->empty())
+      std::vector<size_t> idx;                               // the parts not in slots (slot_cache.h)
+      for (size_t p = 0; p < joint.parts.size(); ++p) {
+        if (joint.parts[p].slots)
+          continue;
+        if (joint.parts[p].self_keys[joint.layer]->empty())
           throw std::logic_error("A joint decoding step needs every part's self-attention cache");
-      for (size_t first = 0; first < joint.parts.size();) {
+        idx.push_back(p);
+      }
+      for (size_t first = 0; first < idx.size();) {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-        const size_t last = std::min(joint.parts.size(), first + cuda::CacheParts::max_parts);
-        if (!append_fused(joint, keys, values, first, last))
+        const size_t last = std::min(idx.size(), first + cuda::CacheParts::max_parts);
+        if (!append_fused(joint, keys, values, idx, first, last))
 #else
-        const size_t last = joint.parts.size();
+        const size_t last = idx.size();
 #endif
-          append_each(joint, keys, values, first, last);
+          append_each(joint, keys, values, idx, first, last);
         first = last;
       }
     }
