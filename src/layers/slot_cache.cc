@@ -78,7 +78,7 @@ namespace ctranslate2 {
         const dim_t old_rows = s.time < 0 ? part.self_keys[0]->dim(0) : s.rows;
         if (s.time < 0)
           make_slots(part, s);
-        else if (part.rows != s.rows || s.time + 1 >= SlotCache::capacity)
+        else if (part.rows != s.rows || s.time >= SlotCache::capacity)   // the step writes position `time`
           throw std::logic_error("A slot part's rows changed, or it has no room for its next position");
         const int32_t* order = part.cache_reorder ? part.cache_reorder->data<int32_t>() : nullptr;
         plans.push_back({order, map(s, 0), map(s, 1), map(s, 2), map(s, 3), map(s, 4),
