@@ -1,7 +1,11 @@
 """Where a long-recording run's time goes (LONG_STATS=1, longform.py): every encoder call's wait and the batch it ran
 in, every window's time in the stream and how many windows decode at once (time-weighted), every ladder call's
 time, and where the threads are (thread_sampler.py). A report every LONG_STATS_S seconds (default 60) and one at the
-end (report()), to stdout."""
+end (report()), to stdout. Each report also gives the audio transcribed so far (a recording's segments as they come,
+its end when it is done) and since the last report, and the recordings in progress (loaded, not done) now and at
+their fewest since the last report: the rate of a span with every thread in a recording throughout is the rate a
+long work list runs at, without the run's start (every thread loading at once) and end (fewer recordings left than
+threads), which a list of thousands of recordings has once."""
 import os, threading, time
 from thread_sampler import ThreadSampler
 
@@ -12,6 +16,8 @@ class LongStats:
         self.lock, self.t0 = threading.Lock(), time.monotonic()
         self.sums, self.counts = {}, {}
         self.in_stream, self.area, self.last = 0, 0.0, self.t0
+        self.recordings = self.fewest = 0
+        self.mark = (self.t0, 0.0)                           # the last report's time and audio
         self.sampler = ThreadSampler() if self.on else None
         if self.on:
             threading.Thread(target=self._report, daemon=True).start()
@@ -33,6 +39,23 @@ class LongStats:
                 self.area += self.in_stream * (now - self.last)
                 self.in_stream, self.last = self.in_stream + delta, now
 
+    def recording(self, delta):
+        """A recording starting (+1, its samples loaded) or done (-1)."""
+        if self.on:
+            with self.lock:
+                self.recordings += delta
+                self.fewest = min(self.fewest, self.recordings)
+
+    def progress(self):
+        """The audio done: its seconds and its rate since the last progress() (x realtime), the recordings in progress
+        and their fewest since then."""
+        with self.lock:
+            now, audio = time.monotonic(), self.sums.get("audio_s", 0.0)
+            rate = (audio - self.mark[1]) / max(now - self.mark[0], 1e-9)
+            fewest, self.fewest, self.mark = self.fewest, self.recordings, (now, audio)
+            return (f"PROGRESS {now - self.t0:.0f} s: audio {audio:.0f} s, {rate:.2f}x since the last report;"
+                    f" recordings in progress {self.recordings}, fewest {fewest}")
+
     def line(self):
         with self.lock:
             now = time.monotonic()
@@ -50,4 +73,5 @@ class LongStats:
         every = float(os.environ.get("LONG_STATS_S", "60"))
         while True:
             time.sleep(every)
+            print(self.progress(), flush=True)
             print(self.report(), flush=True)

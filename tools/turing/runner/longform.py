@@ -49,15 +49,27 @@ class LongEngine:
                 self.held += hours
             try:
                 wav = load()
+                self.stats.recording(+1)
                 self.proxy.model.ladder_started()
                 try:
                     with ladder_of(key):
                         segments, _ = self.proxy.transcribe(wav, **engine.EXACT)
-                        return engine._row(key, wav, list(segments), "long")
+                        return engine._row(key, wav, list(self._progress(segments, len(wav) / 16000)), "long")
                 finally:
                     self.proxy.model.ladder_finished()
+                    self.stats.recording(-1)
             finally:
                 with self.room:
                     self.held -= hours
                     self.room.notify_all()
         return self.executor.submit(run)
+
+    def _progress(self, segments, duration):
+        """The segments, each one's advance past the last counted as audio done (LONG_STATS), the rest at the end."""
+        done = 0.0
+        for segment in segments:
+            if segment.end > done:
+                self.stats.add("audio_s", min(segment.end, duration) - done)
+                done = min(segment.end, duration)
+            yield segment
+        self.stats.add("audio_s", duration - done)

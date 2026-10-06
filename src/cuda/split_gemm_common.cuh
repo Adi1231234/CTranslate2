@@ -15,7 +15,9 @@
 namespace ctranslate2 {
   namespace cuda {
 
-    constexpr int gsg_max_groups = 16, gsg_max_rows = 320;
+    // A launch's groups and rows (grouped_split_gemm.cuh runs more in several): 64 groups, the windows of a
+    // long-recording stream (one group each), in a kernel parameter of 772 bytes.
+    constexpr int gsg_max_groups = 64, gsg_max_rows = 320;
 
     struct SplitGroups {
       int count;
