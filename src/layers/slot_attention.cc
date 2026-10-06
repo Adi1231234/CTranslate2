@@ -53,7 +53,8 @@ namespace ctranslate2 {
       const JointStep::Part& p = joint.parts[part];
       StorageView view(DataType::FLOAT16, Device::CUDA);
       auto* base = static_cast<char*>(const_cast<StorageView&>(joint.slot_scores).buffer());
-      view.view(base + p.scores_offset * joint.slot_scores.item_size(), Shape{p.rows, heads, 1, time});
+      view.view(static_cast<void*>(base + p.scores_offset * joint.slot_scores.item_size()),
+                Shape{p.rows, heads, 1, time});
       return view;
     }
 
