@@ -1,0 +1,9 @@
+# long3 found the cause: in long2/long3 the 48 recordings' audio was decoded in the transcribing process (faster-whisper's
+# decode_audio, a Python loop that holds the GIL, ~170x realtime on one core for YODAS webm, each file whole before
+# the 10-minute cut), so only ~5 of 48 recordings had a window decoding at a time; ladders off the encoder's dispatcher
+# (lad48) took the encoder's wait from ~1 s to 0.04 s but barely moved the rate (42.5x -> 46.4x). Now the audio is
+# decoded in 3 worker processes (runner/long_decode.py, the same samples), only up to a minute past the cut; the ladders
+# on their own model instance; where the threads are (thread_sampler.py). dec48: long3's lad48 with the decoders;
+# dec96: 96 recordings at once, 4 ladder workers, the 120-recording sample; mps2: 2 processes under MPS, 48 recordings,
+# 2 ladder workers and 1 decoder each.
+scriptL|scripts/longform.sh|runner-d9512454|dec48:pyct2-l41p:list50.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600|dec96:pyct2-l41p:list.txt:MODE=long,LONG_THREADS=96,LONG_LADDER_WORKERS=4,LONG_DECODERS=3,LONG_STATS=1,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600|mps2:pyct2-l41p:list.txt:MODE=long,LONG_PROCS=2,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=1,LONG_STATS=1,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600
