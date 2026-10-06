@@ -16,20 +16,10 @@
 #include <nvtx3/nvToolsExt.h>
 #include "probe_common.h"
 #include "probe_data.cuh"
+#include "gemv_candidates.cuh"
 
 constexpr int kKeys = 1500, kD = 64, kHeads = 20, kMaxE = 100;
 constexpr float kScale = 0.125f;
-
-__device__ __forceinline__ void mma16816(float* d, unsigned a0, unsigned a1, unsigned a2, unsigned a3, unsigned b0,
-                                         unsigned b1) {
-  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
-               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-               : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
-}
-__device__ __forceinline__ unsigned pack(__half lo, __half hi) {
-  return (unsigned)__half_as_ushort(lo) | ((unsigned)__half_as_ushort(hi) << 16);
-}
-__device__ __forceinline__ float f(__half h) { return __half2float(h); }
 
 // Scores, one thread per (entry, key): S0, S1, S4 (S4 emulates per-group chains with sequential sums: a guide only).
 __global__ void scores_scalar(const __half* K, const __half* Q, __half* C, int entries, int mode) {
@@ -149,38 +139,6 @@ __global__ void output_mma(const __half* V, const __half* P, __half* O, int entr
   }
   if (g == 0)
     for (int c = 0; c < 2; ++c) O[(size_t)e * kD + d0 + 2 * t + c] = __float2half_rn(acc[c]);
-}
-
-// Generalized: T partial sums over the reduced dimension (n elements, `a_step` apart in memory), thread r taking either
-// elements in vectors of w, (r + T i) w + u, or one contiguous chunk; then a pairwise tree (s_r += s_{r + off}, off =
-// T/2 .. 1) or the partials in order.
-__device__ float reduce_partials(const __half* a, size_t a_step, const __half* b, int n, int T, int w, bool contiguous,
-                                 int tree) {
-  float part[64];
-  for (int r = 0; r < T; ++r) {
-    float s = 0.f;
-    if (contiguous) {
-      const int chunk = (n + T - 1) / T;
-      for (int i = r * chunk; i < min(n, (r + 1) * chunk); ++i) s = fmaf(f(a[i * a_step]), f(b[i]), s);
-    } else {
-      for (int base = r * w; base < n; base += T * w)
-        for (int u = 0; u < w && base + u < n; ++u) s = fmaf(f(a[(base + u) * a_step]), f(b[base + u]), s);
-    }
-    part[r] = s;
-  }
-  float sum = 0.f;
-  if (tree == 1) {
-    for (int off = T / 2; off > 0; off /= 2)
-      for (int r = 0; r < off; ++r) part[r] += part[r + off];
-    sum = part[0];
-  } else if (tree == 2) {                                    // neighbours first: off = 1, 2, .. T/2
-    for (int off = 1; off < T; off *= 2)
-      for (int r = 0; r + off < T; r += 2 * off) part[r] += part[r + off];
-    sum = part[0];
-  } else {
-    for (int r = 0; r < T; ++r) sum += part[r];
-  }
-  return sum;
 }
 
 __global__ void scores_general(const __half* K, const __half* Q, __half* C, int entries, int T, int w, bool contiguous,
