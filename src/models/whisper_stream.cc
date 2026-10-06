@@ -198,13 +198,13 @@ namespace ctranslate2 {
                 std::iota(entries.begin(), entries.end(), dim_t(0));
               parts.push_back({run->decoder_step(), &a->ids, &a->prepared.state, std::move(entries), a->slots.get()});
             } else {
-              GreedySearchRun& run = *a->decode->greedy();
-              if (run.with_attention() || !run.next_ids(a->ids))
+              GreedySearchRun& greedy = *a->decode->greedy();
+              if (greedy.with_attention() || !greedy.next_ids(a->ids))
                 throw std::logic_error("A Whisper stream's sampled search has no plain step to decode");
-              std::vector<dim_t> entries(run.memory_inputs());   // its inputs' entries, compacted in order
+              std::vector<dim_t> entries(greedy.memory_inputs());   // its inputs' entries, compacted in order
               std::iota(entries.begin(), entries.end(), dim_t(0));
-              parts.push_back({run.decoder_step(), &a->ids, &a->prepared.state, std::move(entries), nullptr,
-                               &run.joint_rows()});
+              parts.push_back({greedy.decoder_step(), &a->ids, &a->prepared.state, std::move(entries), nullptr,
+                               &greedy.joint_rows()});
             }
           }
           StorageView logits(_decoder->output_type(), _decoder->device());
@@ -223,9 +223,9 @@ namespace ctranslate2 {
               pending = run->queue_processors() || pending;
               beam_rows = row;
             } else {
-              GreedySearchRun& run = *a->decode->greedy();
-              run.logits() = std::move(view);
-              pending = run.queue_processors() || pending;
+              GreedySearchRun& greedy = *a->decode->greedy();
+              greedy.logits() = std::move(view);
+              pending = greedy.queue_processors() || pending;
             }
           }
           if (pending)
