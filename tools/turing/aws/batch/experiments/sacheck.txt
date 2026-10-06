@@ -1,0 +1,2 @@
+# The fused slot self-attention (src/cuda/slot_attention.cuh, d541ec0c) against cuBLAS at every t (kernels/slot_attention_check.cu).
+scriptc|scripts/probes.sh|probes/probes-d541ec0c.tgz|slot_attention_check
