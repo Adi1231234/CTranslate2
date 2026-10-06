@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "cuda/clip_groups.h"
+#include "cuda/partial_sums.cuh"
 #include "cuda/shared_memory_rows.h"
 #include "cuda/utils.h"
 #include "env.h"
@@ -114,57 +115,21 @@ namespace ctranslate2 {
       }
     }
 
-    template <int T>
-    static __device__ __forceinline__ float tree(float* s) {
-      #pragma unroll
-      for (int off = T / 2; off > 0; off /= 2)
-        #pragma unroll
-        for (int r = 0; r < off; ++r)
-          s[r] += s[r + off];
-      return s[0];
-    }
-
-    // T partials, key i in partial i % T, each in key order.
-    template <int T>
-    static __device__ __forceinline__ float strided(const __half* p, const __half* v) {
-      float s[T];
-      #pragma unroll
-      for (int u = 0; u < T; ++u)
-        s[u] = 0.f;
-      for (int i = 0; i < lc_keys; i += T)
-        #pragma unroll
-        for (int u = 0; u < T; ++u)
-          if (i + u < lc_keys)
-            s[u] = fmaf(hf(p[i + u]), hf(v[static_cast<size_t>(i + u) * lc_depth]), s[u]);
-      return tree<T>(s);
-    }
-
-    // 32 partials of 47 consecutive keys (the last 43).
-    static __device__ __forceinline__ float contiguous32(const __half* p, const __half* v) {
-      constexpr int chunk = (lc_keys + 31) / 32;
-      float s[32];
-      #pragma unroll
-      for (int c = 0; c < 32; ++c) {
-        float a = 0.f;
-        const int end = min(lc_keys, (c + 1) * chunk);
-        for (int i = c * chunk; i < end; ++i)
-          a = fmaf(hf(p[i]), hf(v[static_cast<size_t>(i) * lc_depth]), a);
-        s[c] = a;
-      }
-      return tree<32>(s);
-    }
-
-    // Output: a thread per (dim, row), threadIdx.x the dim within 32, threadIdx.y the row; blockIdx.x the 32 dims,
-    // blockIdx.y the head. A warp is one row's 32 dims, so one arithmetic; the rows of a block read the same values.
+    // Output: a block per (32 dims, head, row), its threads 32 dims x split_lanes lanes sharing each output's
+    // partials (partial_sums.cuh). A row's group size sets its arithmetic, the same for the whole block.
     __global__ void lc_output(const __half* p, const __half* v, __half* out, LadderRows rows, int heads) {
-      const int d = blockIdx.x * 32 + threadIdx.x, h = blockIdx.y, y = threadIdx.y;
-      if (y >= rows.count)
-        return;
-      const int r = rows.row[y], group = rows.group[y];
+      const int x = threadIdx.x, y = threadIdx.y, d = blockIdx.x * 32 + x, h = blockIdx.y;
+      const int r = rows.row[blockIdx.z], group = rows.group[blockIdx.z];
+      __shared__ float sm[32][32];
       const __half* pr = p + (static_cast<size_t>(r) * heads + h) * lc_keys;
       const __half* vd = v + static_cast<size_t>(h) * lc_keys * lc_depth + d;
-      const float sum = group == 1 ? contiguous32(pr, vd) : group == 5 ? strided<4>(pr, vd) : strided<16>(pr, vd);
-      out[(static_cast<size_t>(r) * heads + h) * lc_depth + d] = __float2half_rn(sum);
+      const auto pa = [&](int i) { return hf(pr[i]); };
+      const auto vb = [&](int i) { return hf(vd[static_cast<size_t>(i) * lc_depth]); };
+      const float sum = group == 1 ? split_partials<32, 1, true, 1>(sm, x, y, lc_keys, pa, vb)    // 32 chunks of 47
+                      : group == 5 ? split_partials<4, 1, false, 1>(sm, x, y, lc_keys, pa, vb)    // key i in i % 4
+                                   : split_partials<16, 1, false, 1>(sm, x, y, lc_keys, pa, vb);  // key i in i % 16
+      if (y == 0)
+        out[(static_cast<size_t>(r) * heads + h) * lc_depth + d] = __float2half_rn(sum);
     }
 
     bool ladder_cross_scores(const SharedMemoryRows& rows, const __half* q, const __half* k, __half* scores,
@@ -193,8 +158,8 @@ namespace ctranslate2 {
       LadderRows all{};
       if (!enabled() || rows.clips != 1 || keys != lc_keys || depth != lc_depth || !row_groups(rows.rows, all))
         return false;
-      lc_output<<<dim3(lc_depth / 32, static_cast<unsigned>(heads)), dim3(32, all.count), 0, get_cuda_stream()>>>(
-        p, v, out, all, static_cast<int>(heads));
+      lc_output<<<dim3(lc_depth / 32, static_cast<unsigned>(heads), all.count), dim3(32, split_lanes), 0,
+                  get_cuda_stream()>>>(p, v, out, all, static_cast<int>(heads));
       return true;
     }
 
