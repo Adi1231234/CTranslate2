@@ -20,8 +20,12 @@ namespace ctranslate2 {
     //   output, 20 entries: 32 partials of 47 consecutive keys; 40, 60 or 80: 16 partials, key i in partial i % 16;
     //   100: 4 partials, key i in partial i % 4; each partial in key order, combined by a tree from the halves
     //   (s_r += s_{r + T/2}, ... s_r += s_{r + 1}); then half(sum)
-    // Products of halves are exact in fp32, so a fused multiply-add is the product's sum. Only one clip a call
-    // (a long recording's ladder) and groups of 1..5 rows; false (nothing launched) otherwise, or on another device.
+    // Products of halves are exact in fp32, so a fused multiply-add is the product's sum. The output kernel sums the
+    // rows of the same arithmetic together, a head's values read once for up to 32 of them (prof1: summing them row by
+    // row read the values once a row, 13% of the ladders' GPU time); every row keeps its own chain and tree. The
+    // kernels are ladder_cross.cuh's (tools/turing/kernels/ladder_cross_check.cu runs them against cuBLAS). Only one
+    // clip a call (a long recording's ladder) and groups of 1..5 rows; false (nothing launched) otherwise, or on
+    // another device.
     bool ladder_cross_scores(const SharedMemoryRows& rows, const __half* q, const __half* k, __half* scores,
                              dim_t heads, dim_t keys, dim_t depth, float alpha);
     bool ladder_cross_output(const SharedMemoryRows& rows, const __half* p, const __half* v, __half* out, dim_t heads,

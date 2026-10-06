@@ -72,5 +72,50 @@ namespace ctranslate2 {
       return sum;
     }
 
+    // split_partials for `rows` (at most R) sums over the same b(i), a(k, i) for sum k: every sum's arithmetic is
+    // split_partials' (the same elements in the same order, the same tree), each b(i) read once for all of them.
+    // sm: rows x T x 32 floats. Lane 0 hands each sum k to store(k, sum).
+    template <int T, int W, bool CONTIGUOUS, int TREE, int R, typename A, typename B, typename S>
+    static __device__ __forceinline__ void split_partials_rows(float* sm, int x, int y, int n, int rows, const A& a,
+                                                               const B& b, const S& store) {
+      for (int r = y; r < T; r += split_lanes) {
+        float s[R];
+        #pragma unroll
+        for (int k = 0; k < R; ++k)
+          s[k] = 0.f;
+        const auto add = [&](int i) {
+          const float v = b(i);
+          #pragma unroll
+          for (int k = 0; k < R; ++k)
+            if (k < rows)
+              s[k] = fmaf(a(k, i), v, s[k]);
+        };
+        if (CONTIGUOUS) {
+          const int chunk = (n + T - 1) / T, end = min(n, (r + 1) * chunk);
+          for (int i = r * chunk; i < end; ++i)
+            add(i);
+        } else {
+          for (int base = r * W; base < n; base += T * W)
+            #pragma unroll
+            for (int u = 0; u < W; ++u)
+              if (base + u < n)
+                add(base + u);
+        }
+        #pragma unroll
+        for (int k = 0; k < R; ++k)
+          if (k < rows)
+            sm[(k * T + r) * 32 + x] = s[k];
+      }
+      __syncthreads();
+      if (y == 0)
+        for (int k = 0; k < rows; ++k) {
+          float s[T];
+          #pragma unroll
+          for (int r = 0; r < T; ++r)
+            s[r] = sm[(k * T + r) * 32 + x];
+          store(k, combine<T>(s, TREE));
+        }
+    }
+
   }
 }
