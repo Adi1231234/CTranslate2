@@ -3,7 +3,8 @@
 // call of group x 20 entries per group of rows), bit for bit: every split of up to 25 rows into up to 5 groups of
 // 1..5 rows, in every order (3,905 splits), 2 fills; the scores, then the output from the same probabilities. The
 // output kernel reads a head's values once for a block of rows (lc_output_blocks), so the splits cover every block
-// a ladder makes.
+// a ladder makes, at every block size the launch may use (1..8 rows); then the output launch's time by
+// block size.
 // usage: ladder_cross_check -> must end with TOTAL 0
 #include <cstdio>
 #include <functional>
@@ -101,11 +102,14 @@ int main() {
                 lc_depth, lc_depth, first, g);
         first += g;
       }
-      size_t smem = 0;
-      const LcOutputBlocks blocks = lc_output_blocks(all, smem);
-      lc_output<<<dim3(lc_depth / 32, kHeads, blocks.count), dim3(32, split_lanes), smem>>>(P, V, O2, blocks, kHeads);
-      CK(cudaGetLastError());
-      d += differ(O, O2, (size_t)rows * kHeads * lc_depth);
+      for (const int cap : {1, 2, 3, 4, 5, 8}) {            // every block size the launch may use
+        size_t smem = 0;
+        const LcOutputBlocks blocks = lc_output_blocks(all, smem, cap);
+        lc_output<<<dim3(lc_depth / 32, kHeads, blocks.count), dim3(32, split_lanes), smem>>>(P, V, O2, blocks,
+                                                                                               kHeads);
+        CK(cudaGetLastError());
+        d += differ(O, O2, (size_t)rows * kHeads * lc_depth);
+      }
       if (d && bad < 30) {
         printf("fill %d groups", fill_no);
         for (const int g : groups) printf(" %d", g);
@@ -114,6 +118,31 @@ int main() {
       bad += d != 0;
       total += d;
       ++cases;
+    }
+  }
+  // Time of the output launch by block size: a ladder's 25 rows (5 groups of 5), a ladder late (groups 3, 2, 1, 1),
+  // five single rows; 200 launches each.
+  cudaEvent_t e0, e1; CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1));
+  const std::vector<std::vector<int>> timed = {{5, 5, 5, 5, 5}, {3, 2, 1, 1}, {1, 1, 1, 1, 1}};
+  for (const auto& groups : timed) {
+    LadderRows all{};
+    int first = 0;
+    for (const int g : groups) {
+      for (int r = first; r < first + g; ++r) { all.row[all.count] = (int8_t)r; all.group[all.count++] = (int8_t)g; }
+      first += g;
+    }
+    for (const int cap : {1, 2, 3, 4, 5, 8}) {
+      size_t smem = 0;
+      const LcOutputBlocks blocks = lc_output_blocks(all, smem, cap);
+      CK(cudaEventRecord(e0));
+      for (int rep = 0; rep < 200; ++rep)
+        lc_output<<<dim3(lc_depth / 32, kHeads, blocks.count), dim3(32, split_lanes), smem>>>(P, V, O2, blocks,
+                                                                                               kHeads);
+      CK(cudaEventRecord(e1)); CK(cudaEventSynchronize(e1));
+      float ms = 0; CK(cudaEventElapsedTime(&ms, e0, e1));
+      printf("time groups");
+      for (const int g : groups) printf(" %d", g);
+      printf(" cap %d: %6.1f us a launch (%d blocks)\n", cap, 1000 * ms / 200, blocks.count * 2 * kHeads);
     }
   }
   printf("%llu of %llu (fill, split) differ\nTOTAL %llu\n", bad, cases, total);

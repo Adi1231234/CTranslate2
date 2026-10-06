@@ -96,10 +96,11 @@ namespace ctranslate2 {
     // 47 keys, a group of 5 key i in partial i % 4, groups of 2..4 key i in partial i % 16 (ladder_cross_probe).
     enum LcOutputKind { lc_one = 0, lc_five = 1, lc_other = 2 };
     constexpr int lc_kind_partials[3] = {32, 4, 16};
-    // A block's rows at most (rows x T x 32 floats of shared memory). One: blocks of up to 32 rows (8b22a0f0) read a
-    // head's values once for them all, but a ladder's 25 rows then ran in 40 blocks on 142 SMs and a ladder call took
-    // 12 s instead of 5.6 (long23 b0/b1 against a0: the threads queued for their ladders, 3,168 s against 671).
-    constexpr int lc_kind_rows[3] = {1, 1, 1};
+    // A block's rows at most (lc_output_blocks' cap; rows x T x 32 floats of shared memory). Blocks of up to 32 rows
+    // (8b22a0f0) read a head's values once for them all, but a ladder's 25 rows then ran in 40 blocks on 142 SMs and
+    // a ladder call took 12 s instead of 5.6 (long23 b0/b1 against a0); one row a block (6d5d2607) re-reads them a
+    // row, 24% of the ladders' stream's GPU time (prof3). ladder_cross_check times caps 1..8.
+    constexpr int lc_block_rows_max = 8;
 
     // Blocks of rows whose groups have the same arithmetic: each block reads its head's values once for its rows.
     struct LcOutputBlocks {
@@ -110,9 +111,9 @@ namespace ctranslate2 {
       int8_t row[lc_max_rows];
     };
 
-    // The rows by arithmetic, in row order within each kind, in blocks of at most lc_kind_rows of them; smem_bytes:
-    // the launch's dynamic shared memory.
-    inline LcOutputBlocks lc_output_blocks(const LadderRows& all, size_t& smem_bytes) {
+    // The rows by arithmetic, in row order within each kind, in blocks of at most cap (<= lc_block_rows_max) of
+    // them; smem_bytes: the launch's dynamic shared memory.
+    inline LcOutputBlocks lc_output_blocks(const LadderRows& all, size_t& smem_bytes, int cap) {
       LcOutputBlocks blocks{};
       int placed = 0, most = 0;
       for (int kind = 0; kind < 3; ++kind) {
@@ -120,8 +121,7 @@ namespace ctranslate2 {
           const int group = all.group[y];
           if ((group == 1 ? lc_one : group == 5 ? lc_five : lc_other) != kind)
             continue;
-          if (blocks.count == 0 || blocks.kind[blocks.count - 1] != kind
-              || blocks.rows[blocks.count - 1] == lc_kind_rows[kind]) {
+          if (blocks.count == 0 || blocks.kind[blocks.count - 1] != kind || blocks.rows[blocks.count - 1] == cap) {
             blocks.kind[blocks.count] = static_cast<int8_t>(kind);
             blocks.first[blocks.count] = static_cast<int8_t>(placed);
             blocks.rows[blocks.count] = 0;
@@ -157,16 +157,16 @@ namespace ctranslate2 {
       const __half* vd = v + static_cast<size_t>(h) * lc_keys * lc_depth + d;
       const int8_t* row = blocks.row + blocks.first[b];
       const int rows = blocks.rows[b];
+      constexpr int R = lc_block_rows_max;
       switch (blocks.kind[b]) {
       case lc_one:
-        lc_output_rows<lc_kind_partials[lc_one], true, lc_kind_rows[lc_one]>(p, vd, out, row, rows, heads, h, d);
+        lc_output_rows<lc_kind_partials[lc_one], true, R>(p, vd, out, row, rows, heads, h, d);
         break;
       case lc_five:
-        lc_output_rows<lc_kind_partials[lc_five], false, lc_kind_rows[lc_five]>(p, vd, out, row, rows, heads, h, d);
+        lc_output_rows<lc_kind_partials[lc_five], false, R>(p, vd, out, row, rows, heads, h, d);
         break;
       default:
-        lc_output_rows<lc_kind_partials[lc_other], false, lc_kind_rows[lc_other]>(p, vd, out, row, rows, heads, h,
-                                                                                  d);
+        lc_output_rows<lc_kind_partials[lc_other], false, R>(p, vd, out, row, rows, heads, h, d);
       }
     }
 

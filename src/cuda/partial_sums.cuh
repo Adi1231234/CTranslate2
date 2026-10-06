@@ -74,11 +74,16 @@ namespace ctranslate2 {
 
     // split_partials for `rows` (at most R) sums over the same b(i), a(k, i) for sum k: every sum's arithmetic is
     // split_partials' (the same elements in the same order, the same tree), each b(i) read once for all of them.
-    // sm: rows x T x 32 floats. Lane 0 hands each sum k to store(k, sum).
+    // With fewer partials than lanes, split_lanes / T lanes share a partial, each its own share of the rows (sum k
+    // where k % (split_lanes / T) is its turn). sm: rows x T x 32 floats. Lane 0 hands each sum k to store(k, sum).
     template <int T, int W, bool CONTIGUOUS, int TREE, int R, typename A, typename B, typename S>
     static __device__ __forceinline__ void split_partials_rows(float* sm, int x, int y, int n, int rows, const A& a,
                                                                const B& b, const S& store) {
-      for (int r = y; r < T; r += split_lanes) {
+      constexpr bool shared = T < split_lanes;
+      constexpr int sharers = shared ? split_lanes / T : 1, step = shared ? T : split_lanes;
+      const int turn = shared ? y / T : 0;
+      const auto mine = [&](int k) { return k < rows && k % sharers == turn; };
+      for (int r = shared ? y % T : y; r < T; r += step) {
         float s[R];
         #pragma unroll
         for (int k = 0; k < R; ++k)
@@ -87,7 +92,7 @@ namespace ctranslate2 {
           const float v = b(i);
           #pragma unroll
           for (int k = 0; k < R; ++k)
-            if (k < rows)
+            if (mine(k))
               s[k] = fmaf(a(k, i), v, s[k]);
         };
         if (CONTIGUOUS) {
@@ -103,7 +108,7 @@ namespace ctranslate2 {
         }
         #pragma unroll
         for (int k = 0; k < R; ++k)
-          if (k < rows)
+          if (mine(k))
             sm[(k * T + r) * 32 + x] = s[k];
       }
       __syncthreads();

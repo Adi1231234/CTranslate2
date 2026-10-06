@@ -59,8 +59,11 @@ namespace ctranslate2 {
       LadderRows all{};
       if (!enabled() || rows.clips != 1 || keys != lc_keys || depth != lc_depth || !row_groups(rows.rows, all))
         return false;
+      // Rows a block (CT2_LC_ROWS, default 1, at most lc_block_rows_max): see ladder_cross.cuh.
+      static const int cap = std::max(1, std::min(lc_block_rows_max, static_cast<int>(read_int_from_env("CT2_LC_ROWS",
+                                                                                                         1))));
       size_t smem = 0;
-      const LcOutputBlocks blocks = lc_output_blocks(all, smem);
+      const LcOutputBlocks blocks = lc_output_blocks(all, smem, cap);
       lc_output<<<dim3(lc_depth / 32, static_cast<unsigned>(heads), blocks.count), dim3(32, split_lanes), smem,
                   get_cuda_stream()>>>(p, v, out, blocks, static_cast<int>(heads));
       return true;
