@@ -1,0 +1,4 @@
+# The self-attention caches in slots (pyct2-l42b, a3db9f7b, CT2_JOINT_SLOTS=1): a batch of one window keeps its caches
+# in place, copying only a beam's fork, and attends over its slots (cuBLAS's bits: kernels/cache_stride_check.cu).
+# s0: the slots alone; s4: with 4 side streams. Every row must be long4's dec48's bytes (compare_long --strict).
+scriptL|scripts/longform.sh|runner-d9512454|s0:pyct2-l42b:list50.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1|s4:pyct2-l42b:list50.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_JOINT_STREAMS=4
