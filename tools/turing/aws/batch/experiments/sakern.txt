@@ -1,0 +1,2 @@
+# Which cuBLAS kernels run one window's self-attention products for every t (kernels/selfattn_kernels.cu, Nsight Systems).
+scripts|scripts/nsys_probe.sh|probes/probes-50269080.tgz|selfattn_kernels
