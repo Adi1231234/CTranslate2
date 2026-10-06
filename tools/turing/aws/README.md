@@ -246,7 +246,13 @@ in a recording ("fewest" >= 45 in the PROGRESS lines): f0 121.5x, m0 122.2x, n0 
   (`long23`: 124-125x against 126x on one host, 285 W instead of 324) but made a ladder call 12 s instead of 5.6 (40
   blocks for 142 SMs): the threads queued for their ladders (3,168 s of waits by 280 s against 671), a backlog that
   only a longer run would have shown in the rate. Reverted to one row a block (6d5d2607). A rate over a short span is
-  not enough: read the STATS line's ladder waits too. The ladders go into the joint stream (`LONG_LADDERS=stream`):
+  not enough: read the STATS line's ladder waits too.
+- Ladders in a stream (`LONG_LADDERS=stream`), every row strictly identical (long25, long26). In the windows' own
+  stream (s1, s2) every ladder op waits its turn in the windows' steps (a ladder ~20 s instead of 5.6, 113x) and up to
+  8 ladders' capacity caches (~1.8 GB each) ran the GPU out of memory. In a stream of their own beside the windows'
+  (`LONG_LADDER_STREAM=1`, runner c4777ed7), up to 3 ladders together reading the weights once a step: **134.6x**
+  against the lanes' 125.9x on the same host (`long26` t3, seconds 40-280; 2 together: 134.2x), a ladder ~27 s
+  (~10 threads in ladders), 41.6 GB at the peak. The pieces:
   `GreedySearchRun` (`GreedySearch::search` runs it), `WhisperStream.submit_sampled`, the joint step's groups counted
   in rows with the greedy parts last, their attention run as their own search runs it (`layers/attention_sampled.cc`).
 
