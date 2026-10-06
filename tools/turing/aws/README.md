@@ -199,6 +199,42 @@ each conditioned on the text before it), on 48 YODAS v3 recordings and 2 Knesset
   product does (OpenBLAS sums a column differently in a call of another width), so it stays the original's one call:
   byte-identical on the box's numpy 2.5.3 (12 of 12), and a 24 h plenum fits in ~17 GB instead of ~26.
 
+**From 43x to 105x full run, 123x busy, on long recordings (6.10.2026, `batch/experiments/long3`..`long22`,
+`final1`):** one measured cause at a time; every list50 row strictly identical to long6's dec48 rows
+(`compare_long.py --strict`) after each step. Rates below are over seconds 40 to 400 of `long_stats.py`'s PROGRESS
+lines (list120s, 48 threads). Careful: from f0 on, that span runs into the list's end (the recordings in progress
+fall below 45 at ~300 s, 15 at 400 s), so it is not a steady rate. The steady rate is the span with every thread
+in a recording ("fewest" >= 45 in the PROGRESS lines): f0 121.5x, m0 122.2x, n0 123.7x, o0 124.8x, final1 123.3x.
+- Audio decoded in the process (a Python loop holding the GIL) starved the threads: `long_decode.py` worker
+  processes, 43x to 51x. Ladders queued behind encodes on one dispatcher: they get lanes of their own
+  (`LONG_LADDER_WORKERS`), now on the main model's workers (a second model instance only held memory).
+- OOM at 48 threads (`CT2_CUDA_POOL_REPORT_S`): the cudaMallocAsync pool fragmented on self-attention caches that
+  grew by Concat every step (a ladder's 25 rows copied ~2.5 GB a step) and on stale state caches. Fixed-capacity
+  caches written in place (`CT2_CAPACITY_CACHES`, cuBLAS's bits with the capacity as batch stride:
+  `capacity_stride_check` 0/22400), the state caches released when a window moves to the slots: 91.2x. The joint
+  step's second feed-forward also fell back to a call per group above 16 groups (`gsg_run` now launches up to 64),
+  and every window synced the host on its own (now three phases for all windows, one sync).
+- Exact fused kernels, each a replica of cuBLAS's arithmetic recovered by probes: ladder cross-attention
+  (`CT2_LADDER_CROSS`) 95.5x; TopK and LogSoftMax once for all windows (`joint_candidates`) 99.7x; the windows'
+  self-attention, 2/3 of the GPU's time because the prompts make t 200-448 (`CT2_SLOT_ATTENTION`: a recipe per t,
+  `selfattn_recipes.h` from `gen_selfattn_recipes.py`, the shared prompt read once; t < 32 stays on cuBLAS, whose
+  recipe is ambiguous there; `slot_attention_check` 0/2502) 113.8x; the same for ladders on the capacity caches
+  114.75x; their output sums spread over 8 lanes (`partial_sums.cuh`, they were 24% of the GPU's time) 116.1x; a
+  ladder's single-row groups one joint call, then each row again alone (cuBLAS's gemv bits) 116.8x.
+- The whole list to the end (`final1`, job 32c49777, us-east-2, $0.44; pyct2-l42o + runner-d83d636b): 120
+  recordings cut to 10 minutes, 13.52 h of audio in 464.3 s = **104.8x** start to end (104.0x with the process
+  start), the GPU 97% busy at 326 W on average. The first 40 s fill the 48 threads; from ~300 s fewer recordings
+  are left than threads (each recording advances only ~3.5x while 48 share the GPU: a window ~8.5 s in the stream,
+  each waiting for the one before), which costs ~160 s here. Rows: 120 of 120 strictly identical wherever an earlier run has them (50 to dec48, made before any of this
+  work; 82 to q0, before any new kernel; 112 in all; 8 have no earlier row).
+- What the corpus would run at: a work list of thousands of recordings has its start and end once, so close to
+  the busy rate, 123x (3,186 h in ~26 h, ~$48 on one g6e.xlarge in us-east-1), not measured on recordings at their
+  real length (10-minute cuts begin with short prompts more often, which is cheaper), and only if the longest
+  recordings start first (a 24 h plenum at ~3.5x takes ~7 h; `longform.py` keeps the list's order today).
+- Where it stops: the GPU ~97% busy at ~312 W; ladders wait for a lane ~1,300-1,900 s per 400 s of run, and more
+  lanes give nothing; 56 threads run out of memory. A ladder step reads the decoder's weights on its own (~1.47 GB),
+  so the next lever is ladders inside the joint stream, a large change.
+
 **Beside other AWS work in the account** (the asr-training Batch queues): each touches only its own resources:
 nothing named `asr-train*` here (their submit uses the newest `asr-train` job definition), nothing named
 `whisper-bench*` there (their CancelJob is limited by IAM to jobs tagged Project=asr-training); everything tagged.
