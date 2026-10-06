@@ -255,6 +255,7 @@ set(CUDA_SOURCES
   src/cuda/softmax_parts.cu
   src/cuda/decoder_gemm.cu
   src/cuda/grouped_split_gemm.cu
+  src/cuda/ladder_cross.cu
   src/cuda/memory_slots.cc
   src/cuda/green_stream.cc
   src/cuda/encoder_lt.cc

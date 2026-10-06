@@ -2,6 +2,7 @@
 
 #include "ctranslate2/allocator.h"
 #include "cuda/clip_groups.h"
+#include "cuda/ladder_cross.h"
 #include "cuda/utils.h"
 #include "env.h"
 
@@ -73,6 +74,9 @@ namespace ctranslate2 {
     void shared_rows_scores(const float16_t* q, const float16_t* k, float16_t* scores, dim_t heads, dim_t keys,
                             dim_t depth, float alpha) {
       const auto h = [](const float16_t* p) { return reinterpret_cast<const __half*>(p); };
+      if (ladder_cross_scores(*shared_memory_rows(), h(q), h(k), reinterpret_cast<__half*>(scores), heads, keys, depth,
+                              alpha))
+        return;                                              // one read of the clip's keys (ladder_cross.h)
       batched(true, static_cast<int>(keys), 1, static_cast<int>(depth), alpha, h(k), keys * depth,
               static_cast<int>(depth), h(q), depth, static_cast<int>(depth), reinterpret_cast<__half*>(scores),
               keys, static_cast<int>(keys), heads);
@@ -82,6 +86,8 @@ namespace ctranslate2 {
     void shared_rows_output(const float16_t* p, const float16_t* v, float16_t* out, dim_t heads, dim_t keys,
                             dim_t depth) {
       const auto h = [](const float16_t* x) { return reinterpret_cast<const __half*>(x); };
+      if (ladder_cross_output(*shared_memory_rows(), h(p), h(v), reinterpret_cast<__half*>(out), heads, keys, depth))
+        return;                                              // one read of the clip's values (ladder_cross.h)
       batched(false, static_cast<int>(depth), 1, static_cast<int>(keys), 1.f, h(v), keys * depth,
               static_cast<int>(depth), h(p), keys, static_cast<int>(keys), reinterpret_cast<__half*>(out), depth,
               static_cast<int>(depth), heads);
