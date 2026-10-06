@@ -2,8 +2,8 @@
 MODE=long through LongEngine (longform.py, the fork: many recordings at once, the audio decoded in worker processes,
 long_decode.py), MODE=seq one after the other through faster-whisper's own transcribe (the stock wheel's reference
 with RUN_STOCK_FULL_CONTEXT=1 and RUN_SEED, or the fork). Rows to <out>/rows.jsonl in the list's order, each with its
-source and id (MODE=long: each as its recording ends, then all in the list's order at the end, so a run stopped on
-time keeps the rows it finished). LONG_SECONDS=<n> (measurement only): each recording's first n seconds. LONG_SHARD=<i>/<n>: every n-th
+source and id (each as its recording ends, then all in the list's order at the end, so a run stopped on time keeps
+the rows it finished). LONG_SECONDS=<n> (measurement only): each recording's first n seconds. LONG_SHARD=<i>/<n>: every n-th
 recording from the i-th (several processes on one GPU). Prints each recording's audio and time, then the rate from
 the model load to the end.
 usage: python longform_run.py <list> <audio dir> <out dir>"""
@@ -61,11 +61,15 @@ def main():
                 f.flush()
         print(long.stats.report(), flush=True)
     else:
-        for k, (s, i, name) in enumerate(items):
-            started, wav = time.time(), decode_audio(os.path.join(audio_dir, name))
-            wav = wav[:cut * 16000] if cut else wav
-            segments, _ = model.transcribe(wav, **engine.EXACT)
-            done(k, engine._row(f"{s}|{i}", wav, list(segments), "seq"), started)
+        # Each row as its recording ends too (full1's stock reference, stopped on time, kept none of its 4 rows).
+        with open(os.path.join(out, "rows.jsonl"), "w", encoding="utf-8") as f:
+            for k, (s, i, name) in enumerate(items):
+                started, wav = time.time(), decode_audio(os.path.join(audio_dir, name))
+                wav = wav[:cut * 16000] if cut else wav
+                segments, _ = model.transcribe(wav, **engine.EXACT)
+                done(k, engine._row(f"{s}|{i}", wav, list(segments), "seq"), started)
+                f.write(json.dumps(rows[k], ensure_ascii=False) + "\n")
+                f.flush()
     with open(os.path.join(out, "rows.jsonl"), "w", encoding="utf-8") as f:
         for k in range(len(items)):
             f.write(json.dumps(rows[k], ensure_ascii=False) + "\n")
