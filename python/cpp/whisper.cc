@@ -176,6 +176,7 @@ namespace ctranslate2 {
       WhisperStreamWrapper open_stream(size_t max_batches,
                                        size_t max_rows,
                                        size_t max_pending,
+                                       bool high_priority,
                                        size_t beam_size,
                                        float patience,
                                        size_t num_hypotheses,
@@ -193,7 +194,7 @@ namespace ctranslate2 {
           max_length, return_scores, /*return_logits_vocab=*/false, return_no_speech_prob,
           max_initial_timestamp_index, suppress_blank, suppress_tokens, /*sampling_topk=*/1,
           /*sampling_temperature=*/1, /*group_size=*/0);
-        const models::WhisperStreamLimits limits{max_batches, max_rows, max_pending};
+        const models::WhisperStreamLimits limits{max_batches, max_rows, max_pending, high_priority};
         std::shared_lock lock(_mutex);
         assert_model_is_ready();
         return WhisperStreamWrapper(_pool->open_stream(std::move(options), limits));
@@ -496,6 +497,7 @@ namespace ctranslate2 {
              py::arg("max_batches")=8,
              py::arg("max_rows")=320,
              py::arg("max_pending")=2,
+             py::arg("high_priority")=false,
              py::arg("beam_size")=5,
              py::arg("patience")=1,
              py::arg("num_hypotheses")=1,
@@ -518,6 +520,7 @@ namespace ctranslate2 {
                    max_batches: Batches decoding at once.
                    max_rows: Rows (inputs x beams) decoding when a batch may join.
                    max_pending: Batches submitted and not yet decoding.
+                   high_priority: Its GPU work ahead of other threads' (a stream whose batches others wait for).
                    The other arguments: as in :meth:`generate`.
 
                  Returns:

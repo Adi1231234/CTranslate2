@@ -80,14 +80,24 @@ namespace ctranslate2 {
     // default of a plain stream); CT2_CUDA_STOCK_KERNELS=1 keeps plain streams. CT2_CUDA_STREAM_PRIORITIES:
     // "equal" gives every stream the default priority, "encoder_high" swaps the two (for scheduling A/B
     // runs; only the order in which the GPU takes up kernels changes, never a result).
-    static int stream_priority(bool low) {
+    // A thread's streams: its own, a low-priority one (UseLowPriorityStreamInScope: Whisper's encoder) and a
+    // high-priority one (UseHighPriorityStreamInScope: a stream of sampled ladders that recording threads wait for).
+    enum class StreamTier { normal, low, high };
+
+    static int stream_priority(StreamTier tier) {
       int least = 0, greatest = 0;
       if (use_stock_kernels() || cudaDeviceGetStreamPriorityRange(&least, &greatest) != cudaSuccess)
         return 0;
       const std::string mode = read_string_from_env("CT2_CUDA_STREAM_PRIORITIES", "decoder_high");
       if (mode == "equal")
         return 0;
-      return (low != (mode == "encoder_high")) ? least : greatest;
+      if (tier == StreamTier::high)
+        return greatest;
+      const bool low = tier == StreamTier::low;
+      // decoder_high: a thread's own stream one level under the high one where the range has room (CUDA: lower is
+      // more urgent), so that the high one comes first and the low one still last.
+      const int normal = greatest < least - 1 ? greatest + 1 : greatest;
+      return (low != (mode == "encoder_high")) ? least : normal;
     }
 
     // CT2_CUDA_SCHEDULE=spin|yield|blocking: how a host thread waits for the GPU (cudaSetDeviceFlags), default the
@@ -118,16 +128,17 @@ namespace ctranslate2 {
 
     class CudaStream {
     public:
-      CudaStream(bool low = false) {
+      CudaStream(StreamTier tier = StreamTier::normal) {
         apply_schedule_flags();
-        if (is_main_thread && !low && !graphs_enabled()) {   // graphs capture created streams only (graph.h)
-          is_main_thread = false;
+        if (is_main_thread && tier == StreamTier::normal && !graphs_enabled()) {   // graphs capture created streams
+          is_main_thread = false;                                                    // only (graph.h)
           _stream = cudaStreamDefault;
         } else {
           CUDA_CHECK(cudaGetDevice(&_device));
-          _stream = create_partition_stream(low, stream_priority(low));   // on part of the GPU (green_stream.h)
+          const bool low = tier == StreamTier::low;
+          _stream = create_partition_stream(low, stream_priority(tier));   // on part of the GPU (green_stream.h)
           if (!_stream)
-            CUDA_CHECK(cudaStreamCreateWithPriority(&_stream, cudaStreamDefault, stream_priority(low)));
+            CUDA_CHECK(cudaStreamCreateWithPriority(&_stream, cudaStreamDefault, stream_priority(tier)));
         }
       }
       ~CudaStream() {
@@ -189,33 +200,50 @@ namespace ctranslate2 {
     // We create one cuBLAS/cuDNN handle per host thread. The handle is destroyed
     // when the thread exits.
 
-    static thread_local bool low_priority_stream = false;
+    static thread_local StreamTier stream_tier = StreamTier::normal;
 
     cudaStream_t get_cuda_stream() {
       static thread_local CudaStream cuda_stream;
-      if (low_priority_stream) {
-        static thread_local CudaStream low_stream(/*low=*/true);
+      if (stream_tier == StreamTier::low) {
+        static thread_local CudaStream low_stream(StreamTier::low);
         return low_stream.get();
+      }
+      if (stream_tier == StreamTier::high) {
+        static thread_local CudaStream high_stream(StreamTier::high);
+        return high_stream.get();
       }
       return cuda_stream.get();
     }
 
     UseLowPriorityStreamInScope::UseLowPriorityStreamInScope()
-      : _previous_value(low_priority_stream) {
-      low_priority_stream = true;
+      : _previous_value(stream_tier == StreamTier::low) {
+      stream_tier = StreamTier::low;
     }
 
     UseLowPriorityStreamInScope::~UseLowPriorityStreamInScope() {
-      low_priority_stream = _previous_value;
+      stream_tier = _previous_value ? StreamTier::low : StreamTier::normal;
+    }
+
+    UseHighPriorityStreamInScope::UseHighPriorityStreamInScope()
+      : _previous(static_cast<int>(stream_tier)) {
+      stream_tier = StreamTier::high;
+    }
+
+    UseHighPriorityStreamInScope::~UseHighPriorityStreamInScope() {
+      stream_tier = static_cast<StreamTier>(_previous);
     }
 
     // One handle per stream of the thread, each bound to its stream once: cublasSetStream resets the handle's
     // workspace, and a worker that alternated between its streams (Whisper's encoder on the low-priority one)
     // then waited for the device, i.e. for the other threads' queued kernels, before its next job could start.
     cublasHandle_t get_cublas_handle() {
-      if (low_priority_stream) {
+      if (stream_tier == StreamTier::low) {
         static thread_local CublasHandle low_handle;                // made while the low stream is active
         return low_handle.get();
+      }
+      if (stream_tier == StreamTier::high) {
+        static thread_local CublasHandle high_handle;               // made while the high stream is active
+        return high_handle.get();
       }
       static thread_local CublasHandle cublas_handle;
       return cublas_handle.get();

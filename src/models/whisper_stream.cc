@@ -1,6 +1,7 @@
 #include "ctranslate2/models/whisper_stream.h"
 
 #include <algorithm>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -102,6 +103,9 @@ namespace ctranslate2 {
       PROFILE("WhisperReplica::decode_stream");
 #ifdef CT2_WITH_CUDA
       const cuda::UseTrueFp16GemmInScope use_true_fp16_gemm(false);
+      std::unique_ptr<cuda::UseHighPriorityStreamInScope> high_priority;
+      if (stream.limits().high_priority)
+        high_priority = std::make_unique<cuda::UseHighPriorityStreamInScope>();
 #endif
       const auto scoped_device_setter = _model->get_scoped_device_setter();
       const WhisperOptions& options = stream.options();

@@ -150,6 +150,17 @@ namespace ctranslate2 {
       const bool _previous_value;
     };
 
+    // Likewise its high-priority stream, ahead of every thread's own (e.g. a stream of sampled ladders whose
+    // recording threads wait, next to the windows' stream): the GPU takes up its kernels first whenever several
+    // wait. Only the order changes, never what a kernel computes.
+    class UseHighPriorityStreamInScope {
+    public:
+      UseHighPriorityStreamInScope();
+      ~UseHighPriorityStreamInScope();
+    private:
+      const int _previous;
+    };
+
     class UseTrueFp16GemmInScope {
     public:
       UseTrueFp16GemmInScope(const bool use)

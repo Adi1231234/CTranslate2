@@ -16,6 +16,7 @@ namespace ctranslate2 {
       size_t max_batches = 8;      // batches decoding at once
       size_t max_rows = 320;       // their rows (inputs x beams) a batch may join with
       size_t max_pending = 2;      // batches submitted and not yet decoding
+      bool high_priority = false;  // its work on the GPU ahead of other threads' (cuda::UseHighPriorityStreamInScope)
     };
 
     // Batches decoded together, each exactly as WhisperReplica::generate decodes it alone (the same results, bit

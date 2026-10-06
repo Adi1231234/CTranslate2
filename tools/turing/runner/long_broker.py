@@ -13,7 +13,8 @@ stream (long25 s1: rows identical, but every ladder op then waits its turn in th
 LONG_STREAM_ROWS rows (default 320, the most rows whose products cuda/clip_groups.h proves row-independent).
 LONG_LADDER_STREAM=1: in a stream of their own instead, on a worker of its own (longform.workers_needed), beside the
 windows' as the lanes were: up to LONG_LADDER_BATCHES ladders (default 2, the lanes' memory) decode together, the
-decoder's weights read once a step for them all.
+decoder's weights read once a step for them all. LONG_LADDER_PRIORITY=high: that stream's GPU work ahead of the
+windows' (a recording waits for its ladder; the windows' stream has many recordings in flight).
 """
 import os, threading, time
 import ctranslate2
@@ -150,8 +151,10 @@ class LongBroker(Broker):
         with self._lock:
             if self._ladder_stream is None:
                 batches = int(os.environ.get("LONG_LADDER_BATCHES", "2"))
+                high = os.environ.get("LONG_LADDER_PRIORITY") == "high"   # its kernels ahead of the windows'
                 self._ladder_stream = self._m.open_stream(max_batches=batches, max_rows=batches * 25,
-                                                          max_pending=self._pending_max, **self._options)
+                                                          max_pending=self._pending_max, high_priority=high,
+                                                          **self._options)
                 threading.Thread(target=self._collect, args=(self._ladder_stream,), daemon=True).start()
         return self._ladder_stream
 
