@@ -14,11 +14,6 @@ namespace ctranslate2 {
       return on;
     }
 
-    template <int T>
-    static void launch(const __half* w, const SingleRows& rows, int n, int k, cudaStream_t stream) {
-      single_rows_gemv_kernel<T><<<single_rows_blocks(n, T), sr_threads, 0, stream>>>(w, rows, n, k);
-    }
-
     bool single_rows_gemv(const void* a, const void* w, void* c, dim_t n, dim_t k, const std::vector<dim_t>& rows) {
       const int T = single_rows_partials(n, k);
       if (T == 0 || rows.empty() || !enabled())
@@ -34,14 +29,8 @@ namespace ctranslate2 {
           chunk.x[r] = x + row * k;
           chunk.y[r] = r < chunk.count ? y + row * n : nullptr;
         }
-        const auto* wh = static_cast<const __half*>(w);
         const int ni = static_cast<int>(n), ki = static_cast<int>(k);
-        if (T == 32)
-          launch<32>(wh, chunk, ni, ki, stream);
-        else if (T == 16)
-          launch<16>(wh, chunk, ni, ki, stream);
-        else
-          launch<8>(wh, chunk, ni, ki, stream);
+        single_rows_launch(static_cast<const __half*>(w), chunk, ni, ki, T, single_rows_outputs_of(ki), stream);
       }
       return true;
     }

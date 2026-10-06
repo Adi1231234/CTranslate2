@@ -44,10 +44,7 @@ int main() {
                           CUDA_R_16F, k, &zero, Y + (size_t)r * n, CUDA_R_16F, n, CUBLAS_COMPUTE_32F,
                           CUBLAS_GEMM_DEFAULT));
         }
-        const int blocks = single_rows_blocks(n, T);
-        if (T == 32) single_rows_gemv_kernel<32><<<blocks, sr_threads>>>(W, rows, n, k);
-        else if (T == 16) single_rows_gemv_kernel<16><<<blocks, sr_threads>>>(W, rows, n, k);
-        else single_rows_gemv_kernel<8><<<blocks, sr_threads>>>(W, rows, n, k);
+        single_rows_launch(W, rows, n, k, T, single_rows_outputs_of(k));
         CK(cudaGetLastError());
         const unsigned long long d = differ(Y, Z, (size_t)count * n);
         if (d && bad < 30) printf("%d x %d fill %d rows %d: %llu values differ\n", n, k, fill_no, count, d);
@@ -70,12 +67,8 @@ int main() {
       }
       float ms_kernel = 0, ms_cublas = 0;
       CK(cudaEventRecord(e0));
-      for (int rep = 0; rep < 50; ++rep) {
-        const int blocks = single_rows_blocks(n, T);
-        if (T == 32) single_rows_gemv_kernel<32><<<blocks, sr_threads>>>(W, rows, n, k);
-        else if (T == 16) single_rows_gemv_kernel<16><<<blocks, sr_threads>>>(W, rows, n, k);
-        else single_rows_gemv_kernel<8><<<blocks, sr_threads>>>(W, rows, n, k);
-      }
+      for (int rep = 0; rep < 50; ++rep)
+        single_rows_launch(W, rows, n, k, T, single_rows_outputs_of(k));
       CK(cudaEventRecord(e1)); CK(cudaEventSynchronize(e1)); CK(cudaEventElapsedTime(&ms_kernel, e0, e1));
       CK(cudaEventRecord(e0));
       for (int rep = 0; rep < 50; ++rep)
