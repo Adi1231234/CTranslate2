@@ -1,0 +1,3 @@
+# The self-attention caches in slots of 448 (no copy at every step): cuBLAS's bits with the slot stride and the entries
+# in another order, every t 1..448, against the contiguous layout (kernels/cache_stride_check.cu).
+scriptc|scripts/probes.sh|probes/probes-d961cf58.tgz|cache_stride_check
