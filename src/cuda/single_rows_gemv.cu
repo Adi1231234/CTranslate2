@@ -10,7 +10,9 @@ namespace ctranslate2 {
   namespace cuda {
 
     static bool enabled() {
-      static const bool on = read_bool_from_env("CT2_SINGLE_ROWS", true) && cublas_verified_on(8, 9);
+      // Off unless CT2_SINGLE_ROWS=1: faster alone (kcheck3: 2-16 rows in 0.2-0.6 of cuBLAS's time) but slower in a
+      // run, where its few long blocks wait behind the windows' kernels (long28/long29: a ladder 32-44 s against 26).
+      static const bool on = read_bool_from_env("CT2_SINGLE_ROWS", false) && cublas_verified_on(8, 9);
       return on;
     }
 
