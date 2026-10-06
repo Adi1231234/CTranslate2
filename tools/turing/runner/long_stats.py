@@ -1,7 +1,9 @@
 """Where a long-recording run's time goes (LONG_STATS=1, longform.py): every encoder call's wait and the batch it ran
 in, every window's time in the stream and how many windows decode at once (time-weighted), every ladder call's
-time. A line every LONG_STATS_S seconds (default 60) and one at the end, to stdout."""
+time, and where the threads are (thread_sampler.py). A report every LONG_STATS_S seconds (default 60) and one at the
+end (report()), to stdout."""
 import os, threading, time
+from thread_sampler import ThreadSampler
 
 
 class LongStats:
@@ -10,8 +12,12 @@ class LongStats:
         self.lock, self.t0 = threading.Lock(), time.monotonic()
         self.sums, self.counts = {}, {}
         self.in_stream, self.area, self.last = 0, 0.0, self.t0
+        self.sampler = ThreadSampler() if self.on else None
         if self.on:
             threading.Thread(target=self._report, daemon=True).start()
+
+    def report(self):
+        return self.line() + ("\n" + self.sampler.top() if self.sampler else "")
 
     def add(self, name, value=1.0):
         if self.on:
@@ -44,4 +50,4 @@ class LongStats:
         every = float(os.environ.get("LONG_STATS_S", "60"))
         while True:
             time.sleep(every)
-            print(self.line(), flush=True)
+            print(self.report(), flush=True)

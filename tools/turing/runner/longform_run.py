@@ -54,7 +54,7 @@ if mode == "long":
     futures = [long.submit(f"{s}|{i}", loader(name)) for s, i, name in items]
     for k, future in enumerate(futures):
         done(k, future.result(), started)
-    print(long.stats.line(), flush=True)
+    print(long.stats.report(), flush=True)
 else:
     for k, (s, i, name) in enumerate(items):
         started, wav = time.time(), loader(name)()
