@@ -61,7 +61,11 @@ class LongEngine:
                 try:
                     with ladder_of(key):
                         segments, _ = self.proxy.transcribe(wav, **engine.EXACT)
-                        return engine._row(key, wav, list(self._progress(segments, len(wav) / 16000)), "long")
+                        # transcribe computed the features, which are all its windows read: the samples (~0.23 GB
+                        # an hour, more than the features' ~0.18) go now, not when the recording ends.
+                        seconds = len(wav) / engine.SR
+                        del wav
+                        return engine._row_of(key, seconds, list(self._progress(segments, seconds)), "long")
                 finally:
                     self.proxy.model.ladder_finished()
                     self.stats.recording(-1)

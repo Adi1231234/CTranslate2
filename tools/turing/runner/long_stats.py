@@ -10,6 +10,18 @@ import os, threading, time
 from thread_sampler import ThreadSampler
 
 
+def host_memory():
+    """The host's available memory and this process's resident size (Linux), for the PROGRESS lines."""
+    try:
+        with open("/proc/meminfo") as f:
+            free = next(int(l.split()[1]) for l in f if l.startswith("MemAvailable:"))
+        with open("/proc/self/status") as f:
+            rss = next(int(l.split()[1]) for l in f if l.startswith("VmRSS:"))
+    except (OSError, StopIteration):
+        return ""
+    return f"; host available {free / 2**20:.1f} GB, this process {rss / 2**20:.1f} GB"
+
+
 class LongStats:
     def __init__(self):
         self.on = os.environ.get("LONG_STATS") == "1"
@@ -54,7 +66,7 @@ class LongStats:
             rate = (audio - self.mark[1]) / max(now - self.mark[0], 1e-9)
             fewest, self.fewest, self.mark = self.fewest, self.recordings, (now, audio)
             return (f"PROGRESS {now - self.t0:.0f} s: audio {audio:.0f} s, {rate:.2f}x since the last report;"
-                    f" recordings in progress {self.recordings}, fewest {fewest}")
+                    f" recordings in progress {self.recordings}, fewest {fewest}{host_memory()}")
 
     def line(self):
         with self.lock:

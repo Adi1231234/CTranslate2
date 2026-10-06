@@ -23,7 +23,11 @@ def _seg(s, offset=0.0):
             "compression_ratio": s.compression_ratio, "temperature": s.temperature}
 
 def _row(uuid, wav, segs, path, offset=0.0):
-    return {"uuid": uuid, "dur_s": len(wav) / SR, "text": " ".join(s.text for s in segs).strip(),
+    return _row_of(uuid, len(wav) / SR, segs, path, offset)
+
+def _row_of(uuid, dur_s, segs, path, offset=0.0):
+    """_row from the clip's duration, for a caller that no longer holds its samples."""
+    return {"uuid": uuid, "dur_s": dur_s, "text": " ".join(s.text for s in segs).strip(),
             "segments": [_seg(s, offset) for s in segs], "path": path}
 
 def _sequential(model, uuid, wav):
