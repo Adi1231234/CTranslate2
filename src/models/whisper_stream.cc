@@ -174,8 +174,17 @@ namespace ctranslate2 {
           }
           if (pending)
             synchronize();
-          for (auto& a : active)
-            a->decode->search().queue_candidates();
+          std::vector<BeamSearchRun*> runs;
+          bool joint = true;
+          for (auto& a : active) {
+            runs.push_back(&a->decode->search());
+            joint = runs.back()->prepare_candidates() && joint;
+          }
+          if (joint)                                         // every search's candidates in one launch each
+            BeamSearchRun::joint_candidates(runs, logits);
+          else
+            for (BeamSearchRun* run : runs)
+              run->own_candidates();
           synchronize();
           for (auto& a : active) {
             if (!a->decode->search().take_candidates()) {

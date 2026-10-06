@@ -138,6 +138,15 @@ namespace ctranslate2 {
     bool queue_processors();
     void queue_candidates();
     bool take_candidates();
+    // queue_candidates() in two halves, so that searches whose logits are consecutive rows of one tensor (the
+    // stream's) take theirs together: prepare_candidates() completes the processors and disables the tokens (true:
+    // the rest may be joint), then either own_candidates() (the rest, alone) or, for all of them at once,
+    // joint_candidates(): one LogSoftMax, one add of the beams' scores and one TopK over all their rows, copied to the
+    // host once (a row's arithmetic is its own in each: ops/softmax_kernels.cuh's choice and ops/topk_gpu.cu's blocks
+    // depend on a row's length only).
+    bool prepare_candidates();
+    void own_candidates();
+    static void joint_candidates(const std::vector<BeamSearchRun*>& runs, StorageView& logits);
     std::vector<DecodingResult> finish();
 
     struct Impl;                                       // the loop state (decoding.cc)

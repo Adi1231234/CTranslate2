@@ -521,6 +521,17 @@ namespace ctranslate2 {
   }
 
   // The loop state of one beam search between its steps (BeamSearchRun).
+#if CT2_HOST_COPIES
+  // The top candidates of several searches (BeamSearchRun::joint_candidates) and their copy on the host.
+  struct JointCandidates {
+    dim_t k = 0;
+    StorageView ids{DataType::INT32};
+    StorageView scores;
+    cuda::PinnedBuffer host_ids;
+    cuda::PinnedBuffer host_scores;
+  };
+#endif
+
   struct BeamSearchRun::Impl {
     // The search's parameters.
     dim_t beam_size;
@@ -580,6 +591,8 @@ namespace ctranslate2 {
 #if CT2_HOST_COPIES
     cuda::PinnedBuffer host_ids;
     cuda::PinnedBuffer host_scores;
+    std::shared_ptr<const JointCandidates> joint;            // this step's, from joint_candidates
+    dim_t joint_batch = 0;                                   // this search's first batch in them
 #endif
 
     void upload_slots() {
@@ -793,6 +806,11 @@ namespace ctranslate2 {
   }
 
   void BeamSearchRun::queue_candidates() {
+    prepare_candidates();
+    own_candidates();
+  }
+
+  bool BeamSearchRun::prepare_candidates() {
     Impl& r = *_impl;
 #ifdef CT2_WITH_CUDA
     const BeamSearchRunScopes scopes(r);
@@ -814,6 +832,22 @@ namespace ctranslate2 {
       else
         r.logits_vec = build_logits(logits, cur_batch_size);
     }
+#if CT2_HOST_COPIES
+    return r.device == Device::CUDA && is_expanded && !r.bias_towards_prefix && r.topk_scores
+      && r.topk_scores.size() == logits.dim(0) && dynamic_cast<const BestSampler*>(&r.sampler) != nullptr;
+#else
+    return false;
+#endif
+  }
+
+  void BeamSearchRun::own_candidates() {
+    Impl& r = *_impl;
+#ifdef CT2_WITH_CUDA
+    const BeamSearchRunScopes scopes(r);
+#endif
+    const bool is_expanded = (!r.expand_after_first_step || r.step > 0);
+    StorageView& logits = r.logits;
+    const dim_t cur_batch_size = is_expanded ? logits.dim(0) / r.beam_size : logits.dim(0);
 
     StorageView log_probs(r.dtype, r.device);
     if (r.bias_towards_prefix) {
@@ -855,13 +889,70 @@ namespace ctranslate2 {
     r.sampler(log_probs, r.topk_ids, r.topk_scores, r.num_candidates);
   }
 
+  void BeamSearchRun::joint_candidates(const std::vector<BeamSearchRun*>& runs, StorageView& logits) {
+#if CT2_HOST_COPIES
+    if (runs.empty())
+      return;
+    const Impl& first = *runs[0]->_impl;
+    const dim_t beam_size = first.beam_size, k = first.num_candidates, rows = logits.dim(0);
+    // The searches' log probs: one LogSoftMax over all their rows (a row's arithmetic is its own).
+    ops::LogSoftMax()(logits);
+    // Their beams' scores added to their rows, uploaded together.
+    StorageView scores({rows}, first.dtype);
+    dim_t row = 0;
+    for (BeamSearchRun* run : runs) {
+      const Impl& r = *run->_impl;
+      std::memcpy(static_cast<char*>(scores.buffer()) + row * scores.item_size(), r.topk_scores.buffer(),
+                  r.topk_scores.size() * scores.item_size());
+      row += r.topk_scores.size();
+    }
+    if (row != rows)
+      throw std::logic_error("The joint searches' rows are not the logits' rows");
+    DEVICE_AND_TYPE_DISPATCH(logits.device(), logits.dtype(),
+                             primitives<D>::add_depth_broadcast(scores.to(logits.device()).data<T>(),
+                                                                logits.data<T>(), rows, logits.size()));
+    // Each batch's candidates over its beams' rows: one TopK over all the batches (a row's search is its own).
+    auto joint = std::make_shared<JointCandidates>();
+    joint->k = k;
+    StorageView flat(logits.dtype(), logits.device());
+    flat.shallow_copy(logits);
+    flat.reshape({rows / beam_size, beam_size * logits.dim(1)});
+    joint->ids = StorageView(DataType::INT32, logits.device());
+    joint->scores = StorageView(logits.dtype(), logits.device());
+    first.sampler.sample_on_device(flat, joint->ids, joint->scores, k);
+    joint->host_ids.copy_from_device(joint->ids.buffer(), joint->ids.size() * joint->ids.item_size());
+    joint->host_scores.copy_from_device(joint->scores.buffer(), joint->scores.size() * joint->scores.item_size());
+    dim_t batch = 0;
+    for (BeamSearchRun* run : runs) {
+      Impl& r = *run->_impl;
+      r.joint = joint;
+      r.joint_batch = batch;
+      batch += r.logits.dim(0) / beam_size;
+    }
+#else
+    (void)runs; (void)logits;
+    throw std::logic_error("Joint candidates need CUDA");
+#endif
+  }
+
   bool BeamSearchRun::take_candidates() {
     Impl& r = *_impl;
 #ifdef CT2_WITH_CUDA
     const BeamSearchRunScopes scopes(r);
 #endif
 #if CT2_HOST_COPIES
-    if (r.device == Device::CUDA) {                          // queue_candidates' copies, the stream synchronized
+    if (r.joint) {                                           // joint_candidates' copies, the stream synchronized
+      const JointCandidates& joint = *r.joint;
+      const dim_t batches = r.logits.dim(0) / r.beam_size, k = joint.k;
+      r.topk_ids.resize({batches, k});
+      std::memcpy(r.topk_ids.buffer(), static_cast<const int32_t*>(joint.host_ids.data()) + r.joint_batch * k,
+                  batches * k * sizeof (int32_t));
+      r.topk_scores.resize({batches, k});
+      std::memcpy(r.topk_scores.buffer(),
+                  static_cast<const char*>(joint.host_scores.data()) + r.joint_batch * k * r.topk_scores.item_size(),
+                  batches * k * r.topk_scores.item_size());
+      r.joint.reset();
+    } else if (r.device == Device::CUDA) {                   // queue_candidates' copies, the stream synchronized
       r.topk_ids.resize(r.device_ids.shape());
       std::memcpy(r.topk_ids.buffer(), r.host_ids.data(), r.topk_ids.size() * r.topk_ids.item_size());
       r.topk_scores.resize(r.device_scores.shape());
