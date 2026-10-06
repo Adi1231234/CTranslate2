@@ -1,0 +1,4 @@
+# long13's q0 (91x with all 48 threads busy) with the ladder rows' cross-attention fused (pyct2-l42i, c9c6a117, CT2_LADDER_CROSS=1:
+# one read of the clip's keys and values for all its rows, each row with its group's cuBLAS arithmetic). Every list50 row must be
+# long4's dec48's bytes, sampled ones too.
+scriptL|scripts/longform.sh|runner-d83d636b|x0:pyct2-l42i:list120s.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,CT2_CAPACITY_CACHES=1,CT2_LADDER_CROSS=1,LONG_RUN_S=420
