@@ -1,0 +1,6 @@
+# pyct2-l42f (21459abd): every window's beam step in three phases over all the windows (the device waited for twice a step, not
+# twice a window: long10's GPU idle 22%), the ladders on the model's own workers (no second instance: long11's g0 ran out
+# of memory), the pool's memory every 20 s (CT2_CUDA_POOL_REPORT_S). list120s: list50 first (their rows must be long4's
+# dec48's bytes), then 70 more recordings so that all 48 threads hold one for the whole run (the rate a long work list
+# runs at); stopped on time (LONG_RUN_S), the rows of the recordings done kept. p0: with the ladders; pk: without.
+scriptL|scripts/longform.sh|runner-21459abd|p0:pyct2-l42f:list120s.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,LONG_RUN_S=420|pk:pyct2-l42f:list120s.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,LONG_LADDERS=skip,LONG_RUN_S=300
