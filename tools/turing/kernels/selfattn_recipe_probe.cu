@@ -8,7 +8,10 @@
 //   over the dims, s = w1/w2/w4/w8 (strided in vectors of w) or c (contiguous), tree d (from the halves), n (from the
 //   neighbours) or o (in order)
 //   output: M an mma chain over the keys in 16-groups from key 0; R the same with the t % 64 keys first (in 16-groups,
-//   zeros past them) then 16-groups from there; T<n><s><tree> as above over the keys (s = w1 or c)
+//   zeros past them) then 16-groups from there; T<n><s><tree> as above over the keys (s = w1..w8 or c); B<b>T<n><s>
+//   <tree><r> b blocks of ceil(t / b) consecutive keys (a: rounded up to a multiple of n x w), each as T<n><s><tree>,
+//   added in order in fp32 (r: each block's sum rounded to half first); L<len><r> an mma chain per slice of len keys,
+//   the slices added in order in fp32 (r: each rounded to half first)
 // usage: selfattn_recipe_probe
 #include <cstdio>
 #include <string>
@@ -90,6 +93,52 @@ __global__ void output_mma(const __half* V, const __half* P, __half* O, int t, i
     for (int c = 0; c < 2; ++c) O[(size_t)e * kD + d0 + 2 * tq + c] = __float2half_rn(acc[c]);
 }
 
+// b blocks of consecutive keys, each T partials; the blocks added in order (round: each block's sum to half first).
+struct Split { int B, T, w, tree, round, aligned; };
+
+__global__ void output_split(const __half* V, const __half* P, __half* O, int t, Split c) {
+  const int e = blockIdx.x, d = threadIdx.x;
+  const __half* v = V + (size_t)e * kT * kD + d;
+  const __half* p = P + (size_t)e * t;
+  int chunk = (t + c.B - 1) / c.B;
+  if (c.aligned) chunk = (chunk + c.T * c.w - 1) / (c.T * c.w) * (c.T * c.w);
+  float sum = 0.f;
+  for (int b = 0; b < c.B; ++b) {
+    const int start = b * chunk, end = min(t, start + chunk);
+    if (start >= end) break;
+    float part = reduce_partials(v + (size_t)start * kD, kD, p + start, end - start, c.T, c.w, false, c.tree);
+    if (c.round) part = __half2float(__float2half_rn(part));
+    sum += part;
+  }
+  O[(size_t)e * kD + d] = __float2half_rn(sum);
+}
+
+// An mma chain per slice of `len` keys from zero; the slices added in order in fp32 (round: each to half first).
+__global__ void output_mma_split(const __half* V, const __half* P, __half* O, int t, int len, int round) {
+  const int e = blockIdx.y, lane = threadIdx.x, g = lane >> 2, tq = lane & 3, d0 = blockIdx.x * 8;
+  const __half* v = V + (size_t)e * kT * kD;
+  const __half* p = P + (size_t)e * t;
+  const __half zero = __float2half(0.f);
+  float total[2] = {0.f, 0.f};
+  for (int s0 = 0; s0 < t; s0 += len) {
+    const int end = min(t, s0 + len);
+    float acc[4] = {0.f, 0.f, 0.f, 0.f};
+    for (int i0 = s0; i0 < end; i0 += 16) {
+      auto pp = [&](int i) { return i < end ? p[i] : zero; };
+      auto vv = [&](int i, int dd) { return i < end ? v[(size_t)i * kD + dd] : zero; };
+      const unsigned a0 = g == 0 ? pack(pp(i0 + 2 * tq), pp(i0 + 2 * tq + 1)) : 0u;
+      const unsigned a2 = g == 0 ? pack(pp(i0 + 8 + 2 * tq), pp(i0 + 8 + 2 * tq + 1)) : 0u;
+      const unsigned b0 = pack(vv(i0 + 2 * tq, d0 + g), vv(i0 + 2 * tq + 1, d0 + g));
+      const unsigned b1 = pack(vv(i0 + 8 + 2 * tq, d0 + g), vv(i0 + 8 + 2 * tq + 1, d0 + g));
+      mma16816(acc, a0, 0u, a2, 0u, b0, b1);
+    }
+    for (int c = 0; c < 2; ++c)
+      total[c] += round ? __half2float(__float2half_rn(acc[c])) : acc[c];
+  }
+  if (g == 0)
+    for (int c = 0; c < 2; ++c) O[(size_t)e * kD + d0 + 2 * tq + c] = __float2half_rn(total[c]);
+}
+
 int main() {
   cublasHandle_t h; CK(cublasCreate(&h));
   __half *Q, *K, *V, *P, *S, *S2, *O, *O2; unsigned long long* dc;
@@ -110,12 +159,28 @@ int main() {
     }
   for (int T : {2, 4, 8, 16, 32, 64})
     for (int tree : {1, 2, 0}) {
-      oc.push_back({T, 1, false, tree});
+      for (int w : {1, 2, 4, 8})
+        oc.push_back({T, w, false, tree});
       oc.push_back({T, 1, true, tree});
     }
+  std::vector<Split> splits;
+  for (int B : {2, 3, 4, 6, 8, 16})
+    for (int T : {4, 8, 16, 32})
+      for (int w : {1, 2, 4, 8})
+        for (int tree : {1, 0})
+          for (int round : {0, 1})
+            for (int aligned : {0, 1})
+              splits.push_back({B, T, w, tree, round, aligned});
+  const int lens[] = {16, 32, 64, 128, 256};
+  auto split_name = [](const Split& c) {
+    return "B" + std::to_string(c.B) + (c.aligned ? "a" : "") + "T" + std::to_string(c.T) + "w" + std::to_string(c.w) +
+           (c.tree ? "d" : "o") + (c.round ? "r" : "");
+  };
   // matches[t]: the candidate names with no mismatch over both fills
   std::vector<std::vector<bool>> sok(kT + 1, std::vector<bool>(sc.size() + 1, true));
   std::vector<std::vector<bool>> ook(kT + 1, std::vector<bool>(oc.size() + 2, true));
+  std::vector<std::vector<bool>> spok(kT + 1, std::vector<bool>(splits.size(), true));
+  std::vector<std::vector<bool>> lok(kT + 1, std::vector<bool>(10, true));          // lens x round
   for (int fill_no = 0; fill_no < 2; ++fill_no) {
     fill<<<1024, 256>>>(Q, (size_t)kE * kD, 3u + fill_no, -6, 1);
     fill<<<1024, 256>>>(K, (size_t)kE * kT * kD, 7u + fill_no, -7, 1);
@@ -149,6 +214,17 @@ int main() {
         output_mma<<<dim3(kD / 8, kE), 32>>>(V, P, O2, t, residue);
         if (differ(O, O2, no)) ook[t][oc.size() + residue] = false;
       }
+      for (size_t c = 0; c < splits.size(); ++c) {
+        if (!spok[t][c]) continue;
+        output_split<<<kE, kD>>>(V, P, O2, t, splits[c]);
+        if (differ(O, O2, no)) spok[t][c] = false;
+      }
+      for (int li = 0; li < 5; ++li)
+        for (int round = 0; round < 2; ++round) {
+          if (!lok[t][li * 2 + round]) continue;
+          output_mma_split<<<dim3(kD / 8, kE), 32>>>(V, P, O2, t, lens[li], round);
+          if (differ(O, O2, no)) lok[t][li * 2 + round] = false;
+        }
       CK(cudaGetLastError());
     }
   }
@@ -163,7 +239,15 @@ int main() {
     printf("%s by t:\n", which ? "output" : "scores");
     std::string prev; int from = 1;
     for (int t = 1; t <= kT + 1; ++t) {
-      const std::string cur = t > kT ? "" : which ? names(ook[t], oc, "M", "R") : names(sok[t], sc, "M", nullptr);
+      std::string cur = t > kT ? "" : which ? names(ook[t], oc, "M", "R") : names(sok[t], sc, "M", nullptr);
+      if (which && t <= kT) {
+        std::string more;
+        for (size_t c = 0; c < splits.size(); ++c) if (spok[t][c]) more += split_name(splits[c]) + " ";
+        for (int li = 0; li < 5; ++li)
+          for (int round = 0; round < 2; ++round)
+            if (lok[t][li * 2 + round]) more += "L" + std::to_string(lens[li]) + (round ? "r " : " ");
+        if (!more.empty()) cur = (cur == "NONE" ? std::string() : cur) + more;
+      }
       if (t > 1 && cur != prev) { printf("  t %3d-%3d: %s\n", from, t - 1, prev.c_str()); from = t; }
       prev = cur;
     }
