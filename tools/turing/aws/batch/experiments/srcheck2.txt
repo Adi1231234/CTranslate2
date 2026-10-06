@@ -1,0 +1,2 @@
+# single_rows_gemv with 4 outputs a thread group (b6baba9f) against cuBLAS (bits), and its time against one cuBLAS call a row.
+scriptc|scripts/probes.sh|probes/probes-b6baba9f.tgz|single_rows_check
