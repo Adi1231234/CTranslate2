@@ -242,9 +242,11 @@ in a recording ("fewest" >= 45 in the PROGRESS lines): f0 121.5x, m0 122.2x, n0 
   stream (`prof1` p1, `box/nsys_streams.py`), in 15 s the ladder lanes ran 19.1 s of kernels against the joint
   stream's 11.3 s: cuBLAS's small-tile products 27% (a ladder step reads the decoder's weights on its own, ~1.47 GB),
   single-row gemv 17%, `lc_output` 13%, the second feed-forward 12%. `lc_output` reading a head's values once for a
-  block of rows (8b22a0f0, `ladder_cross_check` 0 of 7,810 against cuBLAS) left the rate where it was (`long23`:
-  124-125x against 126x on one host) at 285 W instead of 324: the run is not bound by the GPU's work but by the
-  threads waiting for their ladders. So the ladders go into the joint stream (`LONG_LADDERS=stream`, a7c86fa1):
+  block of up to 32 rows (8b22a0f0, `ladder_cross_check` 0 of 7,810 against cuBLAS) looked free over seconds 40-280
+  (`long23`: 124-125x against 126x on one host, 285 W instead of 324) but made a ladder call 12 s instead of 5.6 (40
+  blocks for 142 SMs): the threads queued for their ladders (3,168 s of waits by 280 s against 671), a backlog that
+  only a longer run would have shown in the rate. Reverted to one row a block (6d5d2607). A rate over a short span is
+  not enough: read the STATS line's ladder waits too. The ladders go into the joint stream (`LONG_LADDERS=stream`):
   `GreedySearchRun` (`GreedySearch::search` runs it), `WhisperStream.submit_sampled`, the joint step's groups counted
   in rows with the greedy parts last, their attention run as their own search runs it (`layers/attention_sampled.cc`).
 
