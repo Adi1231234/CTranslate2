@@ -46,7 +46,11 @@ for run in "$@"; do
   if [ -f "prof_$label.nsys-rep" ]; then
     nsys stats --report cuda_gpu_kern_sum,nvtx_sum,cuda_api_sum --format csv --output "prof_$label" "prof_$label.nsys-rep" \
       > /dev/null 2>&1
-    for f in prof_${label}*.csv prof_$label.nsys-rep; do aws s3 cp --only-show-errors "$f" "$RES/longform/$f"; done
+    # the GPU's time CUDA stream by stream (each worker has its own: the joint stream, the encoder, ladder lanes)
+    aws s3 cp --only-show-errors "$S3/scripts/nsys_streams.py" . \
+      && nsys export --type sqlite --output "prof_$label.sqlite" "prof_$label.nsys-rep" > /dev/null 2>&1 \
+      && $B/venv/bin/python nsys_streams.py "prof_$label.sqlite" > "prof_${label}_streams.txt" 2>&1
+    for f in prof_${label}*.csv prof_${label}_streams.txt prof_$label.nsys-rep; do aws s3 cp --only-show-errors "$f" "$RES/longform/$f"; done
   fi
   aws s3 sync --only-show-errors "$B/out/$label" "$RES/out/$label"
   for f in log_${label}_*.txt "gpu_$label.csv"; do aws s3 cp --only-show-errors "$f" "$RES/longform/$f"; done
