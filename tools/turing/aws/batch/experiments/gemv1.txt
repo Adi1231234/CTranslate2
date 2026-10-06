@@ -1,0 +1,2 @@
+# cuBLAS's arithmetic for one row of the decoder's products (kernels/gemv_probe.cu): a ladder's single rows re-read the weights each (prof1: 17% of the ladders' GPU time).
+scriptc|scripts/probes.sh|probes/probes-71d843e0.tgz|gemv_probe
