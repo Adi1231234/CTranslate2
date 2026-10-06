@@ -1,6 +1,7 @@
 // src/cuda/single_rows_gemv.cuh's kernel (several rows each with the bits of a product of one row, the weights read
 // once) against what it replaces, cuBLAS's call for each row alone (primitives<CUDA>::gemm with m = 1), bit for bit:
-// every recovered shape, 1..16 rows taken at scattered rows of a 40-row input, 3 fills.
+// every recovered shape, 1..16 rows taken at scattered rows of a 40-row input, 3 fills; and the time of 1..16 rows
+// against as many cuBLAS calls (the launch's whole point).
 // usage: single_rows_check -> must end with TOTAL 0
 #include <cstdio>
 #include <vector>
@@ -34,6 +35,8 @@ int main() {
         rows.count = count;
         std::vector<int> picked;
         for (int r = 0; r < count; ++r) picked.push_back((r * 7 + fill_no * 3 + count) % M);   // scattered, may repeat
+        for (int r = count; r < sr_max_rows; ++r)          // as single_rows_gemv.cu fills them
+          rows.x[r] = X + (size_t)picked[0] * k;
         for (int r = 0; r < count; ++r) {
           rows.x[r] = X + (size_t)picked[r] * k;
           rows.y[r] = Z + (size_t)r * n;
@@ -41,7 +44,7 @@ int main() {
                           CUDA_R_16F, k, &zero, Y + (size_t)r * n, CUDA_R_16F, n, CUBLAS_COMPUTE_32F,
                           CUBLAS_GEMM_DEFAULT));
         }
-        const int outputs = sr_threads / T, blocks = (n + outputs - 1) / outputs;
+        const int blocks = single_rows_blocks(n, T);
         if (T == 32) single_rows_gemv_kernel<32><<<blocks, sr_threads>>>(W, rows, n, k);
         else if (T == 16) single_rows_gemv_kernel<16><<<blocks, sr_threads>>>(W, rows, n, k);
         else single_rows_gemv_kernel<8><<<blocks, sr_threads>>>(W, rows, n, k);
@@ -52,6 +55,36 @@ int main() {
         total += d;
         ++cases;
       }
+    }
+  }
+  // Time: the launch against one cuBLAS call a row, 50 repeats each, the weights evicted from L2 by the size of W.
+  cudaEvent_t e0, e1; CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1));
+  for (const auto& s : shapes) {
+    const int n = s[0], k = s[1], T = single_rows_partials(n, k);
+    for (const int count : {1, 2, 3, 5, 8, 16}) {
+      SingleRows rows{};
+      rows.count = count;
+      for (int r = 0; r < sr_max_rows; ++r) {
+        rows.x[r] = X + (size_t)(r < count ? r : 0) * k;
+        rows.y[r] = r < count ? Z + (size_t)r * n : nullptr;
+      }
+      float ms_kernel = 0, ms_cublas = 0;
+      CK(cudaEventRecord(e0));
+      for (int rep = 0; rep < 50; ++rep) {
+        const int blocks = single_rows_blocks(n, T);
+        if (T == 32) single_rows_gemv_kernel<32><<<blocks, sr_threads>>>(W, rows, n, k);
+        else if (T == 16) single_rows_gemv_kernel<16><<<blocks, sr_threads>>>(W, rows, n, k);
+        else single_rows_gemv_kernel<8><<<blocks, sr_threads>>>(W, rows, n, k);
+      }
+      CK(cudaEventRecord(e1)); CK(cudaEventSynchronize(e1)); CK(cudaEventElapsedTime(&ms_kernel, e0, e1));
+      CK(cudaEventRecord(e0));
+      for (int rep = 0; rep < 50; ++rep)
+        for (int r = 0; r < count; ++r)
+          CK(cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, n, 1, k, &one, W, CUDA_R_16F, k, X + (size_t)r * k, CUDA_R_16F,
+                          k, &zero, Y + (size_t)r * n, CUDA_R_16F, n, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+      CK(cudaEventRecord(e1)); CK(cudaEventSynchronize(e1)); CK(cudaEventElapsedTime(&ms_cublas, e0, e1));
+      printf("time %5d x %4d rows %2d: kernel %7.1f us, cuBLAS %7.1f us\n", n, k, count, 1000 * ms_kernel / 50,
+             1000 * ms_cublas / 50);
     }
   }
   printf("%llu of %llu (shape, fill, rows) differ\nTOTAL %llu\n", bad, cases, total);

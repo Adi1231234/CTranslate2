@@ -16,8 +16,7 @@ namespace ctranslate2 {
 
     template <int T>
     static void launch(const __half* w, const SingleRows& rows, int n, int k, cudaStream_t stream) {
-      constexpr int outputs = sr_threads / T;
-      single_rows_gemv_kernel<T><<<(n + outputs - 1) / outputs, sr_threads, 0, stream>>>(w, rows, n, k);
+      single_rows_gemv_kernel<T><<<single_rows_blocks(n, T), sr_threads, 0, stream>>>(w, rows, n, k);
     }
 
     bool single_rows_gemv(const void* a, const void* w, void* c, dim_t n, dim_t k, const std::vector<dim_t>& rows) {
@@ -30,9 +29,10 @@ namespace ctranslate2 {
       for (size_t first = 0; first < rows.size(); first += sr_max_rows) {
         SingleRows chunk{};
         chunk.count = static_cast<int>(std::min<size_t>(sr_max_rows, rows.size() - first));
-        for (int r = 0; r < chunk.count; ++r) {
-          chunk.x[r] = x + rows[first + r] * k;
-          chunk.y[r] = y + rows[first + r] * n;
+        for (int r = 0; r < sr_max_rows; ++r) {               // past the count: the first row's input, read unused
+          const dim_t row = rows[first + (r < chunk.count ? r : 0)];
+          chunk.x[r] = x + row * k;
+          chunk.y[r] = r < chunk.count ? y + row * n : nullptr;
         }
         const auto* wh = static_cast<const __half*>(w);
         const int ni = static_cast<int>(n), ki = static_cast<int>(k);
