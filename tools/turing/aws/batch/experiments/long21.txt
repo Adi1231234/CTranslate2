@@ -1,0 +1,4 @@
+# The two output kernels with each output's partials over 8 lanes (pyct2-l42n, 79838a49; long20: 24% of the GPU's time). First the
+# slot kernels against cuBLAS (slot_attention_check), then n0 (long19's m0 config; every list50 row must be long4's dec48's bytes).
+scriptc|scripts/probes.sh|probes/probes-79838a49.tgz|slot_attention_check
+scriptL|scripts/longform.sh|runner-d83d636b|n0:pyct2-l42n:list120s.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,CT2_CAPACITY_CACHES=1,CT2_LADDER_CROSS=1,CT2_SLOT_ATTENTION=1,LONG_RUN_S=420
