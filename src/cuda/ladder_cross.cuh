@@ -96,7 +96,10 @@ namespace ctranslate2 {
     // 47 keys, a group of 5 key i in partial i % 4, groups of 2..4 key i in partial i % 16 (ladder_cross_probe).
     enum LcOutputKind { lc_one = 0, lc_five = 1, lc_other = 2 };
     constexpr int lc_kind_partials[3] = {32, 4, 16};
-    constexpr int lc_kind_rows[3] = {12, 32, 24};          // a block's rows at most: rows x T x 32 floats in 48 KB
+    // A block's rows at most (rows x T x 32 floats of shared memory). One: blocks of up to 32 rows (8b22a0f0) read a
+    // head's values once for them all, but a ladder's 25 rows then ran in 40 blocks on 142 SMs and a ladder call took
+    // 12 s instead of 5.6 (long23 b0/b1 against a0: the threads queued for their ladders, 3,168 s against 671).
+    constexpr int lc_kind_rows[3] = {1, 1, 1};
 
     // Blocks of rows whose groups have the same arithmetic: each block reads its head's values once for its rows.
     struct LcOutputBlocks {
