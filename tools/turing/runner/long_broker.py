@@ -7,10 +7,13 @@ recording's thread, so a ladder call of seconds never holds up the windows waiti
 Broker's one dispatcher, which runs the encoder calls and the ladder calls in turn). LONG_STATS=1: where the time goes (long_stats.py). LONG_LADDERS=skip
 (measurement only, the rows change): a ladder's sampled attempts return the window's beam result, no decoding.
 LONG_LADDERS=stream: a ladder's speculated attempts (RUN_FALLBACK_SPECULATE, seeded: each what its call alone draws)
-are one sampled batch of the stream (WhisperStream.submit_sampled), decoded with the windows: the decoder's weights
-read once a step for them all, no lane to wait for. The stream then holds LONG_STREAM_LADDERS (default 8) batches
-besides the windows and LONG_STREAM_ROWS rows (default 320, the most rows whose products cuda/clip_groups.h proves
-row-independent).
+are one sampled batch of a stream (WhisperStream.submit_sampled), exactly what the call alone returns. In the windows'
+stream (long25 s1: rows identical, but every ladder op then waits its turn in the windows' steps, a ladder ~20 s, and
+8 ladders' caches ran the GPU out of memory) it holds LONG_STREAM_LADDERS (default 8) batches besides the windows and
+LONG_STREAM_ROWS rows (default 320, the most rows whose products cuda/clip_groups.h proves row-independent).
+LONG_LADDER_STREAM=1: in a stream of their own instead, on a worker of its own (longform.workers_needed), beside the
+windows' as the lanes were: up to LONG_LADDER_BATCHES ladders (default 2, the lanes' memory) decode together, the
+decoder's weights read once a step for them all.
 """
 import os, threading, time
 import ctranslate2
@@ -31,6 +34,8 @@ class LongBroker(Broker):
         self._ladder, self._lanes = ladder_model, threading.Semaphore(max(ladder_workers, 1))
         self._skip_ladders, self._last = os.environ.get("LONG_LADDERS") == "skip", threading.local()
         self._in_stream = os.environ.get("LONG_LADDERS") == "stream"
+        self._own_stream = self._in_stream and os.environ.get("LONG_LADDER_STREAM") == "1"
+        self._ladder_stream = None
         if self._in_stream and not (self._speculate and self._seeded):
             raise ValueError("LONG_LADDERS=stream takes speculated, seeded ladders (RUN_FALLBACK_SPECULATE=1, "
                              "RUN_FALLBACK_SEEDS=1)")
@@ -80,15 +85,16 @@ class LongBroker(Broker):
         as a sampled batch of the stream; the results one a temperature, as generate() returns them."""
         if self._stream is None:
             raise RuntimeError("a ladder before the stream's first window")
+        stream = self._ladders() if self._own_stream else self._stream
         with self._lock:
             tag, self._tag = self._tag, self._tag + 1
             event = self._calls[tag] = threading.Event()
         self._idle(-1)
         t = time.monotonic()
         try:
-            self._stream.submit_sampled(tag, ctranslate2.StorageView.from_array(call.data), [list(call.prompt)],
-                                        group_size=1, sampling_temperatures=list(call.key[3]),
-                                        sampling_seeds=call.seeds, **kw)
+            stream.submit_sampled(tag, ctranslate2.StorageView.from_array(call.data), [list(call.prompt)],
+                                  group_size=1, sampling_temperatures=list(call.key[3]), sampling_seeds=call.seeds,
+                                  **kw)
             event.wait()
         finally:
             self._idle(+1)
@@ -128,19 +134,30 @@ class LongBroker(Broker):
         with self._lock:
             if self._stream is None:
                 batches, rows = self._windows, self._windows * kw["beam_size"]
-                if self._in_stream:                          # room for the ladders' sampled batches
+                if self._in_stream and not self._own_stream:   # room for the ladders' sampled batches
                     batches += int(os.environ.get("LONG_STREAM_LADDERS", "8"))
                     rows = int(os.environ.get("LONG_STREAM_ROWS", "320"))
                 self._stream, self._options = self._m.open_stream(
                     max_batches=batches, max_rows=rows, max_pending=self._pending_max, **options), options
-                threading.Thread(target=self._collect, daemon=True).start()
+                threading.Thread(target=self._collect, args=(self._stream,), daemon=True).start()
             elif options != self._options:
                 raise ValueError("a window's beam search options differ from the stream's")
         return self._stream
 
-    def _collect(self):
+    def _ladders(self):
+        """The ladders' own stream (LONG_LADDER_STREAM=1), opened with the windows' options (its batches bring
+        their own)."""
+        with self._lock:
+            if self._ladder_stream is None:
+                batches = int(os.environ.get("LONG_LADDER_BATCHES", "2"))
+                self._ladder_stream = self._m.open_stream(max_batches=batches, max_rows=batches * 25,
+                                                          max_pending=self._pending_max, **self._options)
+                threading.Thread(target=self._collect, args=(self._ladder_stream,), daemon=True).start()
+        return self._ladder_stream
+
+    def _collect(self, stream):
         try:
-            while (item := self._stream.next()) is not None:
+            while (item := stream.next()) is not None:
                 tag, results = item
                 with self._lock:
                     call = self._calls.pop(tag)
