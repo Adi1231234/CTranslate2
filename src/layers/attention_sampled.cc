@@ -53,14 +53,20 @@ namespace ctranslate2 {
       StorageView part_proj = rows_view(proj, part.row_begin, part.rows);
       StorageView queries(proj.dtype(), proj.device());
       split_heads_with_bias(part_proj, bias, {&queries}, heads, /*beam_size=*/1);
-      StorageView part_context = rows_view(context, part.row_begin, part.rows);
+      // Its own output, then copied into its rows: with one row left of its input (no shared rows then), the
+      // stock path's first MatMul writes the scores into the output (long24: a view of the rows would move).
+      StorageView part_out(proj.dtype(), proj.device());
       const bool heads_combined = dot_product_attention(queries, *part.memory_keys[joint.layer],
                                                         *part.memory_values[joint.layer], nullptr, nullptr, nullptr,
-                                                        nullptr, nullptr, 0, 0, 0, part_context, nullptr,
+                                                        nullptr, nullptr, 0, 0, 0, part_out, nullptr,
                                                         /*return_normalized_attention=*/true, scale,
                                                         /*is_decoder=*/true, /*with_cache=*/true, /*beam_size=*/1,
                                                         nullptr, nullptr);
       (void)heads_combined;                                  // one query a row: either layout is [rows, heads x depth]
+      StorageView part_context = rows_view(context, part.row_begin, part.rows);
+      if (part_out.size() != part_context.size())
+        throw std::logic_error("A joint step's greedy part's cross-attention has another shape");
+      part_context.copy_from(part_out);
       if (part_context.buffer() != rows_view(context, part.row_begin, part.rows).buffer())
         throw std::logic_error("A joint step's greedy part's cross-attention left its rows");
 #else
