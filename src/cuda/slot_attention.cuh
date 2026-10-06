@@ -64,20 +64,22 @@ namespace ctranslate2 {
       }
     }
 
-    // The output column x of a beam's row over its part's t positions, p(i) v(i), with a recipe's partials spread over
-    // the block's lanes (partial_sums.cuh: split_partials_rows, one row); the block's recipe is one code.
-    template <int CODE, typename A, typename B, typename S>
-    static __device__ __forceinline__ void output_split(int code, float* sm, int x, int y, int t, int rows, int shared,
-                                                        const A& a, const B& b, const S& store) {
-      if constexpr (CODE < sa_output_count) {
+    // The output column x of a beam's row over the part's t positions, p(i) v(i), with a recipe's partials spread
+    // over the block's lanes (partial_sums.cuh); the block's recipe is one code.
+    template <int CODE, typename A, typename B>
+    static __device__ __forceinline__ float output_split(int code, float (*sm)[32], int x, int y, int t, const A& a,
+                                                         const B& b) {
+      if constexpr (CODE >= sa_output_count) {
+        return 0.f;
+      } else {
         if (code == CODE) {
           constexpr SelfAttnRecipe r = selfattn_output_recipes[CODE];
           if constexpr (r.kind == 0)
-            split_partials_rows<r.partials, r.vector, r.contiguous != 0, r.tree, 1>(sm, x, y, t, rows, shared, a, b,
-                                                                                    store);
-          return;
+            return split_partials<r.partials, r.vector, r.contiguous != 0, r.tree>(sm, x, y, t, a, b);
+          else
+            return 0.f;
         }
-        output_split<CODE + 1>(code, sm, x, y, t, rows, shared, a, b, store);
+        return output_split<CODE + 1>(code, sm, x, y, t, a, b);
       }
     }
 
@@ -171,25 +173,23 @@ namespace ctranslate2 {
     }
 
     // Output of the parts with a partials recipe: a block per (32 dims, head, part and beam), its threads 32 dims x
-    // split_lanes lanes sharing each output's partials. A part's beams in one block (71642e85: the prompt's values
-    // read once for them all) made five times fewer, longer blocks, which wait behind the other stream's kernels:
-    // long32 w1 106.7x against 136x, a ladder 55 s against 26.
+    // split_lanes lanes sharing each output's partials.
     static __global__ void slot_output_partials(const SlotAttention* parts, __half* out, int heads) {
       const SlotAttention part = parts[blockIdx.z / sa_rows];
       const int b = blockIdx.z % sa_rows;
       if (part.output_mma || b >= part.rows)
         return;                                              // the whole block
-      __shared__ float sm[32 * 32];                         // T x 32, T at most 32 (the output recipes)
+      __shared__ float sm[32][32];
       const int x = threadIdx.x, y = threadIdx.y, d = blockIdx.x * 32 + x, h = blockIdx.y;
       const __half* p = static_cast<const __half*>(part.scores) + (static_cast<size_t>(b) * heads + h) * part.time;
       const __half* v0 = row_base(part.shared_values, 0, h, heads, part.capacity) + d;
       const __half* vb = row_base(part.values, b, h, heads, part.capacity) + d;
-      const auto pa = [&](int, int i) { return hf(p[i]); };
-      const auto vv = [&](int, int i) { return hf((i < part.shared ? v0 : vb)[static_cast<size_t>(i) * sa_depth]); };
-      const auto store = [&](int, float sum) {
+      const int shared = part.shared;
+      const auto pa = [&](int i) { return hf(p[i]); };
+      const auto vv = [&](int i) { return hf((i < shared ? v0 : vb)[static_cast<size_t>(i) * sa_depth]); };
+      const float sum = output_split<0>(part.output_recipe, sm, x, y, part.time, pa, vv);
+      if (y == 0)
         out[(static_cast<size_t>(part.row_begin + b) * heads + h) * sa_depth + d] = __float2half_rn(sum);
-      };
-      output_split<0>(part.output_recipe, sm, x, y, part.time, /*rows=*/1, part.shared, pa, vv, store);
     }
 
     // Output of the parts with the mma recipe: a warp per (8 dims, head, part), each beam an mma chain over the
