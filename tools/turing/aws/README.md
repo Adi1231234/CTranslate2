@@ -231,9 +231,22 @@ in a recording ("fewest" >= 45 in the PROGRESS lines): f0 121.5x, m0 122.2x, n0 
   the busy rate, 123x (3,186 h in ~26 h, ~$48 on one g6e.xlarge in us-east-1), not measured on recordings at their
   real length (10-minute cuts begin with short prompts more often, which is cheaper), and only if the longest
   recordings start first (a 24 h plenum at ~3.5x takes ~7 h; `longform.py` keeps the list's order today).
+- At the recordings' real length (`full1`, job 1fd990e5, list120s uncut: 76.4 h, the list's order, stopped after 30
+  minutes): ~115x while every thread holds a recording (seconds 160-880; the start takes 160 s, the long files'
+  decoding), so the 10-minute cuts overstated the busy rate by ~6% (more of a cut recording's windows have a short
+  prompt). The 58 recordings of 10 minutes or less: rows strictly identical to final1's. The host keeps >8 GB free
+  once a recording's samples go after its features (runner 2cbab301); starting the longest first would hold ~49 GB
+  of samples and features in this 28 GB job, so the corpus needs a cap on the hours in flight before it can.
 - Where it stops: the GPU ~97% busy at ~312 W; ladders wait for a lane ~1,300-1,900 s per 400 s of run, and more
-  lanes give nothing; 56 threads run out of memory. A ladder step reads the decoder's weights on its own (~1.47 GB),
-  so the next lever is ladders inside the joint stream, a large change.
+  lanes give nothing; 56 threads run out of memory. Without ladders (`prof1` k0, `LONG_LADDERS=skip`): 177x. Per CUDA
+  stream (`prof1` p1, `box/nsys_streams.py`), in 15 s the ladder lanes ran 19.1 s of kernels against the joint
+  stream's 11.3 s: cuBLAS's small-tile products 27% (a ladder step reads the decoder's weights on its own, ~1.47 GB),
+  single-row gemv 17%, `lc_output` 13%, the second feed-forward 12%. `lc_output` reading a head's values once for a
+  block of rows (8b22a0f0, `ladder_cross_check` 0 of 7,810 against cuBLAS) left the rate where it was (`long23`:
+  124-125x against 126x on one host) at 285 W instead of 324: the run is not bound by the GPU's work but by the
+  threads waiting for their ladders. So the ladders go into the joint stream (`LONG_LADDERS=stream`, a7c86fa1):
+  `GreedySearchRun` (`GreedySearch::search` runs it), `WhisperStream.submit_sampled`, the joint step's groups counted
+  in rows with the greedy parts last, their attention run as their own search runs it (`layers/attention_sampled.cc`).
 
 **Beside other AWS work in the account** (the asr-training Batch queues): each touches only its own resources:
 nothing named `asr-train*` here (their submit uses the newest `asr-train` job definition), nothing named
