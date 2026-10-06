@@ -108,7 +108,7 @@ namespace at {
       float e0[C10_WARP_SIZE], e1[C10_WARP_SIZE];
       #pragma unroll
       for (unsigned i = 0; i < C10_WARP_SIZE; ++i)
-        e1[i] = -std::numeric_limits<float>::infinity();
+        e1[i] = -INFINITY;     // a constant device code may use (numeric_limits' is a host constexpr function)
       rows1024_load(in0, C10_WARP_SIZE, e0, stride0);
       rows1024_load(in1, n1, e1, stride1);
 
