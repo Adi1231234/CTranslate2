@@ -1,0 +1,3 @@
+# long15's x0 (95.5x with all 48 threads busy) with every window's log softmax, beam scores and top candidates in one launch
+# each (pyct2-l42j, b91f71f2). Every list50 row must be long4's dec48's bytes.
+scriptL|scripts/longform.sh|runner-d83d636b|j0:pyct2-l42j:list120s.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,CT2_CAPACITY_CACHES=1,CT2_LADDER_CROSS=1,LONG_RUN_S=420
