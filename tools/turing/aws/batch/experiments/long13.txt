@@ -1,0 +1,7 @@
+# pyct2-l42h (001fb473): long12's l42f with the ladders' caches in place (CT2_CAPACITY_CACHES=1: no growing copy every step,
+# whose ever larger buffers left the pool 6 GiB it could not reuse, long12's p0) and the stream's state caches released once
+# in slots (8 GB held for nothing, long12's pk). First the capacity caches' bits (capacity_stride_check, the ladders'
+# batches and strides), then q0 (list120s: list50's rows must be long4's dec48's bytes; the rate with all 48 threads busy),
+# then pq: Nsight Systems for 20 s from second 150 of the same run.
+scriptc|scripts/probes.sh|probes/probes-79548a0d.tgz|capacity_stride_check
+scriptL|scripts/longform.sh|runner-21459abd|q0:pyct2-l42h:list120s.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,CT2_CAPACITY_CACHES=1,LONG_RUN_S=420|pq:pyct2-l42h:list120s.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,LONG_STATS_S=20,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,CT2_JOINT_SLOTS=1,CT2_CUDA_POOL_REPORT_S=20,CT2_CAPACITY_CACHES=1,LONG_RUN_S=240,NSYS=150:20
