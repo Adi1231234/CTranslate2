@@ -1,0 +1,3 @@
+# The slot self-attention output with a part's beams in one block (71642e85) against cuBLAS at every t (slot_attention_check), and the ladder cross-attention again (split_partials_rows now takes a shared prefix).
+scriptc|scripts/probes.sh|probes/probes-71642e85.tgz|slot_attention_check
+scriptd|scripts/probes.sh|probes/probes-71642e85.tgz|ladder_cross_check
