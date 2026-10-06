@@ -554,22 +554,36 @@ namespace ctranslate2 {
     // arithmetic does not depend on the rows, else a kernel that gives each group its own (grouped_split_gemm.h).
     const bool plain = !transpose_a && transpose_b && lda == k && ldb == k && ldc == n && alpha == 1 && beta == 0
       && !cuda::use_true_fp16_gemm();
+    // After a joint call: each group of one row again on its own (cuBLAS runs a gemv for one row, other bits). A
+    // sampled ladder's temperatures each keep their hypotheses still sampling, often a single one at the end.
+    const auto single_rows_alone = [&] {
+      cuda::for_each_clip_group(m, [&](dim_t row, dim_t rows) {
+        if (rows == 1)
+          gemm<float16_t, float16_t>(false, false, false, transpose_b, 1, n, k, alpha, a + row * lda, lda,
+                                     b, ldb, beta, c + row * ldc, ldc, nullptr);
+      });
+    };
     if (plain && cuda::clip_groups() && m % cuda::clip_groups()->total == 0) {
       std::vector<dim_t> rows;
       for (const dim_t clips : cuda::clip_groups()->clips)
         if (clips > 0)
           rows.push_back(clips * (m / cuda::clip_groups()->total));
-      if (n == 1280 && k == 5120 && (cuda::decoder_gemm(a, b, c, m, n, k, rows, cuda::get_cuda_stream())
-                                     || cuda::grouped_split_gemm(a, b, c, n, k, rows, cuda::get_cuda_stream())))
+      if (n == 1280 && k == 5120 && cuda::decoder_gemm(a, b, c, m, n, k, rows, cuda::get_cuda_stream()))
         return;
+      if (n == 1280 && k == 5120 && cuda::grouped_split_gemm(a, b, c, n, k, rows, cuda::get_cuda_stream())) {
+        single_rows_alone();                                 // their placeholders (grouped_split_gemm.cuh)
+        return;
+      }
     }
     // The decoder's other products in the tiled kernel where CT2_DECODER_TILES names a tile (cuda/decoder_gemm.h):
     // a row-independent product in one chain, or one batch's second feed-forward with its split.
     if (plain && (cuda::rows_independent_product(m, n, k) || (!cuda::clip_groups() && n == 1280 && k == 5120))
         && cuda::decoder_gemm(a, b, c, m, n, k, {m}, cuda::get_cuda_stream()))
       return;
-    if (!transpose_a && !(transpose_b && lda == k && ldb == k && ldc == n
-                          && cuda::rows_independent_product(m, n, k))
+    // A row-independent product runs as one call (every group of 2 rows or more gets its bits), then its groups of
+    // one row alone.
+    const bool joint = transpose_b && lda == k && ldb == k && ldc == n && cuda::rows_independent_shape(m, n, k);
+    if (!transpose_a && !joint
         && cuda::for_each_clip_group(m, [&](dim_t row, dim_t rows) {
           gemm<float16_t, float16_t>(false, false, false, transpose_b, rows, n, k, alpha, a + row * lda, lda,
                                      b, ldb, beta, c + row * ldc, ldc, nullptr);
@@ -609,6 +623,10 @@ namespace ctranslate2 {
                               c, CUDA_R_16F, ldc,
                               compute_type,
                               CUBLAS_GEMM_DEFAULT));
+#ifndef CT2_USE_HIP
+    if (joint && !transpose_a)
+      single_rows_alone();
+#endif
   }
 
   template<>

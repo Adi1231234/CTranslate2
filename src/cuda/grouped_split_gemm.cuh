@@ -16,7 +16,8 @@ namespace ctranslate2 {
   namespace cuda {
 
     // The second feed-forward for groups of rows (no device check): false, nothing launched, when a group's rows
-    // have no known split or k is no multiple of 64.
+    // have no known split or k is no multiple of 64. A group of one row (cuBLAS runs a gemv for it) gets one chain
+    // over k as a placeholder: the caller recomputes it alone.
     inline bool gsg_run(const __half* a, const __half* w, __half* c, int n, int k,
                         const std::vector<int64_t>& group_rows, cudaStream_t stream) {
       constexpr int kstep = 64;                              // every split's slice is a multiple of it
@@ -26,8 +27,8 @@ namespace ctranslate2 {
       std::vector<int> first_rows(1, 0);
       int row = 0;
       for (const int64_t rows : group_rows) {
-        int slice = 0, slices = 0;
-        if (!gsg_split_of(rows, slice, slices))              // 2..48 rows
+        int slice = k, slices = 1;                           // one row: a placeholder
+        if (rows != 1 && !gsg_split_of(rows, slice, slices))   // 2..48 rows
           return false;
         SplitGroups* groups = &launches.back();
         const int held = groups->count ? groups->row_end[groups->count - 1] : 0;

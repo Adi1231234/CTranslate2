@@ -26,6 +26,9 @@ namespace ctranslate2 {
     // calls bit for bit on this device and cuBLAS build (tools/turing/kernels/rowinv2.cu), with every active
     // group 2 rows or more (one row alone runs a gemv). The groups then share one read of the weights.
     bool rows_independent_product(dim_t m, dim_t n, dim_t k);
+    // The shape part of it alone: one call is then right for every group of 2 rows or more, and a group of one row
+    // needs a call of its own (primitives<CUDA>::gemm recomputes those after the joint call).
+    bool rows_independent_shape(dim_t m, dim_t n, dim_t k);
 
     // Groups of `group_size` clips by original batch index (`batch_offset[i]` is the original index of the
     // batch's i-th clip, as the decoding loops keep it); no groups when group_size is 0.

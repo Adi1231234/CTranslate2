@@ -19,10 +19,14 @@ namespace ctranslate2 {
     // and vocabulary (51866 x 1280, and 51872 as the decoder pads it to a multiple of 8) products: every row count
     // 2..320 has the bits of 40-row calls, 3 fills. Not the second feed-forward (1280 x 5120): its split over k
     // changes with the rows (17-27, 28-34, 35-44 rows ...).
-    bool rows_independent_product(dim_t m, dim_t n, dim_t k) {
+    bool rows_independent_shape(dim_t m, dim_t n, dim_t k) {
       static const bool sm89 = cublas_verified_on(8, 9);
-      if (!sm89 || m < 2 || m > 320 || k != 1280
-          || !(n == 3840 || n == 1280 || n == 5120 || n == 51866 || n == 51872))
+      return sm89 && m >= 2 && m <= 320 && k == 1280
+        && (n == 3840 || n == 1280 || n == 5120 || n == 51866 || n == 51872);
+    }
+
+    bool rows_independent_product(dim_t m, dim_t n, dim_t k) {
+      if (!rows_independent_shape(m, n, k))
         return false;
       // A group of one row alone runs cuBLAS's gemv, other bits (a sampled input whose other hypotheses finished).
       const ClipGroups* groups = clip_groups();
