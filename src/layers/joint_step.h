@@ -21,6 +21,7 @@ namespace ctranslate2 {
         std::vector<StorageView*> self_values;
         std::unique_ptr<StorageView> cache_reorder;        // the beam order its last update_state left, or null
         struct SlotCache* slots = nullptr;                 // its caches in slots this step (slot_cache.h), or null
+        dim_t scores_offset = -1;                          // its scores in slot_scores (slot_attention.h), or -1
       };
       std::vector<Part> parts;
       dim_t clips = 0;
@@ -31,6 +32,11 @@ namespace ctranslate2 {
       StorageView slot_queries{DataType::INT32};
       StorageView slot_outputs{DataType::INT32};
       int slot_parts = 0, slot_max_rows = 0, slot_max_time = 0;
+      // The slot parts' self-attention in one launch per product (layers/slot_attention.h): a cuda::SlotAttention
+      // per layer and part, and every part's scores, reused by each layer.
+      StorageView slot_attention{DataType::INT32};
+      StorageView slot_scores;
+      bool slot_fused = false;
       // On the device, per layer: each clip's memory keys and values, [heads][1500][64] from these two pointers.
       StorageView memory_table{DataType::INT32};
 

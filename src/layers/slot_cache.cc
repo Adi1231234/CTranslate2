@@ -7,6 +7,7 @@
 #include "ctranslate2/primitives.h"
 #include "env.h"
 #include "joint_step.h"
+#include "slot_attention.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/slot_cache.h"
 #  include "cuda/utils.h"
@@ -41,6 +42,7 @@ namespace ctranslate2 {
         throw std::logic_error("A slot part needs at most 64 rows and room for its next position");
       s.rows = part.rows;
       s.time = time;
+      s.shared = time;                                       // every row's caches the prompt's, replicated
       for (size_t l = 0; l < part.self_keys.size(); ++l)
         for (int c = 0; c < 2; ++c) {
           const StorageView& cache = c ? *part.self_values[l] : *part.self_keys[l];
@@ -115,6 +117,7 @@ namespace ctranslate2 {
       joint.slot_appends = device_table(appends);
       joint.slot_queries = device_table(queries);
       joint.slot_outputs = device_table(outputs);
+      prepare_slot_attention(joint, parts);
 #endif
     }
 

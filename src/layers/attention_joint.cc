@@ -8,6 +8,7 @@
 #include "dot_product_attention.h"
 #include "joint_step.h"
 #include "joint_parts.h"
+#include "slot_attention.h"
 #include "slot_cache.h"
 #include "split_heads_fused.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
@@ -69,10 +70,14 @@ namespace ctranslate2 {
       context = StorageView(all_queries.shape(), dtype, device);   // [rows, heads, 1, depth]
       std::vector<StorageView> scores;                       // allocated on the thread's own stream
       scores.reserve(joint.parts.size());
+      const auto fused = [&](size_t p) { return joint.slot_fused && joint.parts[p].slots; };   // slot_attention.h
       for (size_t p = 0; p < joint.parts.size(); ++p) {
         const auto& part = joint.parts[p];
         const dim_t time = part.slots ? slot_time(joint, p) : part.self_keys[joint.layer]->dim(2);
-        scores.emplace_back(Shape{part.rows, _num_heads, 1, time}, dtype, device);
+        if (fused(p))
+          scores.push_back(slot_scores_view(joint, p, _num_heads, time));
+        else
+          scores.emplace_back(Shape{part.rows, _num_heads, 1, time}, dtype, device);
       }
       const ops::MatMul keys_matmul(/*trans_a=*/false, /*trans_b=*/true, _queries_scale);
       const ops::MatMul values_matmul;
@@ -92,10 +97,16 @@ namespace ctranslate2 {
           values_matmul(scores[p], *part.self_values[joint.layer], part_context);
       };
       for (size_t p = 0; p < joint.parts.size(); ++p)
-        keys_product(p);
+        if (!fused(p))
+          keys_product(p);
+      if (joint.slot_fused)
+        fused_slot_scores(joint, slot_q, _queries_scale);
       softmax_parts(scores);
       for (size_t p = 0; p < joint.parts.size(); ++p)
-        values_product(p);
+        if (!fused(p))
+          values_product(p);
+      if (joint.slot_fused)
+        fused_slot_output(joint, slot_out);
       if (joint.slot_parts > 0)
         slot_context(joint, slot_out, context);
       combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/false);   // one step: a reshape

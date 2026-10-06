@@ -21,6 +21,7 @@ namespace ctranslate2 {
     struct SlotCache {
       static constexpr dim_t capacity = 448;           // the Whisper decoder's positions
       dim_t time = -1;                                 // positions cached before the step; -1 before its first
+      dim_t shared = 0;                                // positions [0, shared) alike in every slot (the prompt)
       dim_t rows = 0;
       std::vector<StorageView> keys, values;           // per layer, [rows, heads, capacity, depth]
       StorageView maps{DataType::INT32};               // slot_of_row, row_of_slot, fork_src, fork_dst, fork_count

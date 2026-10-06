@@ -143,6 +143,7 @@ set(SOURCES
   src/layers/joint_parts.cc
   src/layers/joint_step.cc
   src/layers/kv_cache.cc
+  src/layers/slot_attention.cc
   src/layers/slot_cache.cc
   src/layers/capacity_cache.cc
   src/layers/transformer.cc
@@ -251,6 +252,7 @@ set(CUDA_SOURCES
   src/cuda/graph_host_copy.cu
   src/cuda/graph_memory.cc
   src/cuda/graph_memset.cu
+  src/cuda/slot_attention.cu
   src/cuda/slot_cache.cu
   src/cuda/softmax_parts.cu
   src/cuda/decoder_gemm.cu
