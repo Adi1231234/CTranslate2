@@ -118,7 +118,18 @@ namespace ctranslate2 {
 #ifndef CT2_USE_HIP
         ptr = arena_allocate(size);                     // a captured decoding step (graph_memory.h)
         if (!ptr) {
-          CUDA_CHECK(cudaMallocAsync(&ptr, size, get_cuda_stream()));
+          cudaError_t status = cudaMallocAsync(&ptr, size, get_cuda_stream());
+          if (status == cudaErrorMemoryAllocation) {
+            // The pool keeps freed memory (the release threshold) and memory other streams freed is reusable here
+            // only once their work is done: wait for the device, give the pool's unused memory back, try again,
+            // as PyTorch's caching allocator frees its cache and retries (metrics1: the pool held 38 GiB with
+            // 27-32 in use). Not an error to keep: a failed allocation is not sticky.
+            cudaGetLastError();
+            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_CHECK(cudaMemPoolTrimTo(_pools[device].handle, 0));
+            status = cudaMallocAsync(&ptr, size, get_cuda_stream());
+          }
+          CUDA_CHECK(status);
           note_allocation(ptr);
         }
 #else
