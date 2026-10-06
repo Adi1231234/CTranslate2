@@ -1,0 +1,3 @@
+# single_rows_gemv (one output a group at k = 5120) and lc_output at every rows-a-block cap against cuBLAS, with their times (293ef7d8).
+scriptc|scripts/probes.sh|probes/probes-293ef7d8.tgz|single_rows_check
+scriptd|scripts/probes.sh|probes/probes-293ef7d8.tgz|ladder_cross_check
