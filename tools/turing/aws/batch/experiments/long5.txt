@@ -1,0 +1,6 @@
+# long4's dec48 (the audio decoded in worker processes) ran 50.8x with ~30 windows decoding at once and the GPU busy
+# 95-98% at ~300 W: the decoding itself is now the limit, ~2.8x the GPU work a window-step of the crowd clips. Where
+# that work goes: dec48 again under Nsight Systems for 25 s from second 120 (kernels and NVTX ranges, box/longform.sh
+# NSYS). Expected: the self-attention caches (the previous text makes ~200-token prompts, so t ~200-400 against the
+# crowd clips' ~20; every step reads them and copies them whole for the beams' reorder).
+scriptL|scripts/longform.sh|runner-d9512454|prof48:pyct2-l41p:list50.txt:MODE=long,LONG_THREADS=48,LONG_LADDER_WORKERS=2,LONG_DECODERS=3,LONG_STATS=1,RUN_FALLBACK_SEEDS=1,RUN_FALLBACK_SAMPLING=batched,RUN_FALLBACK_SPECULATE=1,RUN_FALLBACK_SPEC_CLIPS=2,CT2_CUDA_SCHEDULE=blocking,LONG_SECONDS=600,NSYS=120:25
