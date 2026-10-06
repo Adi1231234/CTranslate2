@@ -10,6 +10,7 @@
 #include "cuda/utils.h"
 #ifndef CT2_USE_HIP
 #include "cuda/graph_memory.h"
+#include "cuda/pool_report.h"
 #endif
 #include "env.h"
 
@@ -191,6 +192,9 @@ namespace ctranslate2 {
           CUDA_CHECK(cudaDeviceGetDefaultMemPool(&pool.handle, device));
           uint64_t threshold = _release_threshold;
           CUDA_CHECK(cudaMemPoolSetAttribute(pool.handle, cudaMemPoolAttrReleaseThreshold, &threshold));
+#ifndef CT2_USE_HIP
+          start_pool_report(device, pool.handle);
+#endif
           pool.configured.store(true, std::memory_order_release);
         });
       }

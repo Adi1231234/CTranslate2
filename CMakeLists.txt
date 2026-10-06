@@ -259,6 +259,7 @@ set(CUDA_SOURCES
   src/cuda/encoder_lt.cc
   src/cuda/persistent.cu
   src/cuda/pinned_buffer.cc
+  src/cuda/pool_report.cc
   src/cuda/primitives.cu
   src/cuda/random.cu
   src/cuda/split_heads.cu

@@ -1,10 +1,10 @@
 """LongBroker (longform.py): fallback_batch.Broker for whole recordings. Each window's beam search (T=0) is a batch of
 one in a Whisper stream (open_stream, the ladder-probe fork), decoded with the other recordings' windows, each exactly
 as generate() alone decodes it; encoder calls are joined as the Broker joins them (every window's arithmetic its own).
-LONG_LADDER_WORKERS=<n>: the ladder's sampled attempts run on a second instance of the model with n workers, each call
-on its own as the Broker would run it (same model, same bits), on the recording's thread, so a ladder call of seconds
-never holds up the windows waiting for the encoder (0: through the Broker's one dispatcher, which runs the encoder
-calls and the ladder calls in turn). LONG_STATS=1: where the time goes (long_stats.py). LONG_LADDERS=skip
+LONG_LADDER_WORKERS=<n>: the ladder's sampled attempts run on n of the model's own workers (longform.py gives it one
+a lane), at most n at once, each call on its own as the Broker would run it (same model, same bits), on the
+recording's thread, so a ladder call of seconds never holds up the windows waiting for the encoder (0: through the
+Broker's one dispatcher, which runs the encoder calls and the ladder calls in turn). LONG_STATS=1: where the time goes (long_stats.py). LONG_LADDERS=skip
 (measurement only, the rows change): a ladder's sampled attempts return the window's beam result, no decoding.
 """
 import os, threading, time

@@ -2,11 +2,13 @@
 MODE=long through LongEngine (longform.py, the fork: many recordings at once, the audio decoded in worker processes,
 long_decode.py), MODE=seq one after the other through faster-whisper's own transcribe (the stock wheel's reference
 with RUN_STOCK_FULL_CONTEXT=1 and RUN_SEED, or the fork). Rows to <out>/rows.jsonl in the list's order, each with its
-source and id. LONG_SECONDS=<n> (measurement only): each recording's first n seconds. LONG_SHARD=<i>/<n>: every n-th
+source and id (MODE=long: each as its recording ends, then all in the list's order at the end, so a run stopped on
+time keeps the rows it finished). LONG_SECONDS=<n> (measurement only): each recording's first n seconds. LONG_SHARD=<i>/<n>: every n-th
 recording from the i-th (several processes on one GPU). Prints each recording's audio and time, then the rate from
 the model load to the end.
 usage: python longform_run.py <list> <audio dir> <out dir>"""
 import json, os, sys, time
+from concurrent.futures import as_completed
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import cudaenv  # noqa: F401
@@ -14,7 +16,6 @@ import cudaenv  # noqa: F401
 
 def main():
     from faster_whisper import WhisperModel, decode_audio
-    from faster_whisper.utils import download_model
     import engine
     listing, audio_dir, out = sys.argv[1:4]
     os.makedirs(out, exist_ok=True)
@@ -28,8 +29,10 @@ def main():
     if os.environ.get("RUN_SEED"):              # before the model: its workers seed their sampler states from it
         import ctranslate2
         ctranslate2.set_random_seed(int(os.environ["RUN_SEED"]))
+    if mode == "long":
+        from longform import workers_needed
     model = WhisperModel("ivrit-ai/whisper-large-v3-ct2", device="cuda", compute_type="default",
-                         num_workers=2 if mode == "long" else 1,   # long: the stream's loop holds one (longform.py)
+                         num_workers=workers_needed() if mode == "long" else 1,   # long: longform.py's
                          cpu_threads=1)
     if os.environ.get("RUN_STOCK_FULL_CONTEXT") == "1":
         from stock_context import full_context
@@ -45,12 +48,17 @@ def main():
 
     if mode == "long":
         from longform import LongEngine
-        long = LongEngine(model, download_model("ivrit-ai/whisper-large-v3-ct2", local_files_only=True))
+        long = LongEngine(model)
         started = time.time()
-        futures = [long.submit(f"{s}|{i}", decoder.loader(os.path.join(audio_dir, name), cut))
-                   for s, i, name in items]
-        for k, future in enumerate(futures):
-            done(k, future.result(), started)
+        futures = {long.submit(f"{s}|{i}", decoder.loader(os.path.join(audio_dir, name), cut)): k
+                   for k, (s, i, name) in enumerate(items)}
+        # Each row as its recording ends (a run stopped on time keeps the rows done), all in order at the end.
+        with open(os.path.join(out, "rows.jsonl"), "w", encoding="utf-8") as f:
+            for future in as_completed(futures):
+                k = futures[future]
+                done(k, future.result(), started)
+                f.write(json.dumps(rows[k], ensure_ascii=False) + "\n")
+                f.flush()
         print(long.stats.report(), flush=True)
     else:
         for k, (s, i, name) in enumerate(items):
