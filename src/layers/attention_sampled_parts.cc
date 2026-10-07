@@ -2,6 +2,7 @@
 
 #include "ctranslate2/ops/ops.h"
 #include "capacity_cache.h"
+#include "env.h"
 #include "split_heads_fused.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
 #  include "cuda/ladder_cross.h"
@@ -26,14 +27,20 @@ namespace ctranslate2 {
       return groups;
     }
 
+    // CT2_SAMPLED_PARTS_SELF / _CROSS=0: those parts one by one, as their searches alone (A/B, never a result).
+    static bool parts_at_once(const char* name) {
+      return read_bool_from_env(name, true);
+    }
+
     void sampled_self_attention_all(const JointStep& joint, StorageView& queries, StorageView& keys,
                                     StorageView& values, float scale, StorageView& context) {
+      static const bool at_once = parts_at_once("CT2_SAMPLED_PARTS_SELF");
       std::vector<CapacityPart> parts;
       for (const auto& part : joint.parts) {
         if (!part.sampled)
           continue;
-        auto groups = part.sampled->capacity && part.sampled->rows == part.rows ? part_groups(part)
-                                                                                 : decltype(part_groups(part))();
+        auto groups = at_once && part.sampled->capacity && part.sampled->rows == part.rows
+          ? part_groups(part) : decltype(part_groups(part))();
         if (groups.empty()) {                                // as its search alone
           sampled_self_attention(joint, part, queries, keys, values, scale, context);
           continue;
@@ -65,7 +72,8 @@ namespace ctranslate2 {
         cuda::LadderMemory ladder{nullptr, nullptr, 0, {}};
         for (const auto& group : groups)
           ladder.groups.push_back(group.second);
-        const bool applies = part.sampled->inputs == 1 && part.rows > 1 && !groups.empty()
+        static const bool at_once = parts_at_once("CT2_SAMPLED_PARTS_CROSS");
+        const bool applies = at_once && part.sampled->inputs == 1 && part.rows > 1 && !groups.empty()
           && k.device() == Device::CUDA && k.dtype() == DataType::FLOAT16 && k.rank() == 4 && k.dim(0) == 1
           && k.dim(1) == heads && k.dim(2) == 1500 && k.dim(3) == 64 && v.shape() == k.shape()
           && v.dtype() == k.dtype() && cuda::ladders_supported({ladder});
