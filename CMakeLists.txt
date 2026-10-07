@@ -246,6 +246,7 @@ set(SOURCES
 )
 set(CUDA_SOURCES
   src/cuda/allocator.cc
+  src/cuda/cache_pool.cc
   src/cuda/cache_reorder.cu
   src/cuda/clip_groups.cc
   src/cuda/disable_tokens.cu

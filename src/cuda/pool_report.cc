@@ -16,11 +16,11 @@ namespace ctranslate2 {
       return double(bytes) / double(1ull << 30);
     }
 
-    void start_pool_report(int device, cudaMemPool_t pool) {
+    void start_pool_report(int device, cudaMemPool_t pool, const char* name) {
       const int every = read_int_from_env("CT2_CUDA_POOL_REPORT_S", 0);
       if (every <= 0)
         return;
-      std::thread([device, pool, every] {
+      std::thread([device, pool, every, name] {
         if (cudaSetDevice(device) != cudaSuccess)
           return;
         while (true) {
@@ -36,8 +36,8 @@ namespace ctranslate2 {
           // The highs are since the last report.
           cudaMemPoolSetAttribute(pool, cudaMemPoolAttrUsedMemHigh, &zero);
           cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReservedMemHigh, &zero);
-          std::fprintf(stderr, "POOL device %d: in use %.2f GiB (high %.2f), held %.2f GiB (high %.2f); "
-                       "device free %.2f of %.2f GiB\n", device, gib(used), gib(used_high), gib(reserved),
+          std::fprintf(stderr, "%s device %d: in use %.2f GiB (high %.2f), held %.2f GiB (high %.2f); "
+                       "device free %.2f of %.2f GiB\n", name, device, gib(used), gib(used_high), gib(reserved),
                        gib(reserved_high), gib(free_bytes), gib(total_bytes));
           std::fflush(stderr);
         }

@@ -9,6 +9,7 @@
 #include "joint_step.h"
 #include "slot_attention.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/cache_pool.h"
 #  include "cuda/slot_cache.h"
 #  include "cuda/utils.h"
 #endif
@@ -47,7 +48,10 @@ namespace ctranslate2 {
         for (int c = 0; c < 2; ++c) {
           const StorageView& cache = c ? *part.self_values[l] : *part.self_keys[l];
           auto& slots = c ? s.values : s.keys;
-          slots.emplace_back(Shape{s.rows, heads, SlotCache::capacity, depth}, cache.dtype(), cache.device());
+          {
+            const cuda::CachePoolScope long_lived;           // the window's slots (cuda/cache_pool.h)
+            slots.emplace_back(Shape{s.rows, heads, SlotCache::capacity, depth}, cache.dtype(), cache.device());
+          }
           if (time > 0) {
             const size_t pitch = SlotCache::capacity * depth * cache.item_size();
             const size_t row = time * depth * cache.item_size();

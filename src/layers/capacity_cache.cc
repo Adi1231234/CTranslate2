@@ -9,6 +9,7 @@
 #  include <cstring>
 #  include <utility>
 #  include <vector>
+#  include "cuda/cache_pool.h"
 #  include "cuda/clip_groups.h"
 #  include "cuda/slot_attention.h"
 #  include "cuda/utils.h"
@@ -52,6 +53,7 @@ namespace ctranslate2 {
 
     // The cache in a buffer of `capacity` positions (its first step).
     static void to_capacity(StorageView& cache, dim_t capacity) {
+      const cuda::CachePoolScope long_lived;                 // the search's caches (cuda/cache_pool.h)
       StorageView moved({cache.dim(0), cache.dim(1), capacity, cache.dim(3)}, cache.dtype(), cache.device());
       copy_positions(cache, moved, 0);
       cache = std::move(moved);

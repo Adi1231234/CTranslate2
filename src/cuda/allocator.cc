@@ -9,6 +9,7 @@
 #include "ctranslate2/utils.h"
 #include "cuda/utils.h"
 #ifndef CT2_USE_HIP
+#include "cuda/cache_pool.h"
 #include "cuda/graph_memory.h"
 #include "cuda/pool_report.h"
 #endif
@@ -118,16 +119,24 @@ namespace ctranslate2 {
 #ifndef CT2_USE_HIP
         ptr = arena_allocate(size);                     // a captured decoding step (graph_memory.h)
         if (!ptr) {
-          cudaError_t status = cudaMallocAsync(&ptr, size, get_cuda_stream());
+          const DevicePool& pool = _pools[device];
+          const bool cache = pool.cache && cache_pool_active();   // a long-lived buffer (cache_pool.h)
+          const auto malloc = [&]() {
+            return cache ? cudaMallocFromPoolAsync(&ptr, size, pool.cache, get_cuda_stream())
+                         : cudaMallocAsync(&ptr, size, get_cuda_stream());
+          };
+          cudaError_t status = malloc();
           if (status == cudaErrorMemoryAllocation) {
             // The pool keeps freed memory (the release threshold) and memory other streams freed is reusable here
-            // only once their work is done: wait for the device, give the pool's unused memory back, try again,
+            // only once their work is done: wait for the device, give the pools' unused memory back, try again,
             // as PyTorch's caching allocator frees its cache and retries (metrics1: the pool held 38 GiB with
             // 27-32 in use). Not an error to keep: a failed allocation is not sticky.
             cudaGetLastError();
             CUDA_CHECK(cudaDeviceSynchronize());
-            CUDA_CHECK(cudaMemPoolTrimTo(_pools[device].handle, 0));
-            status = cudaMallocAsync(&ptr, size, get_cuda_stream());
+            CUDA_CHECK(cudaMemPoolTrimTo(pool.handle, 0));
+            if (pool.cache)
+              CUDA_CHECK(cudaMemPoolTrimTo(pool.cache, 0));
+            status = malloc();
           }
           CUDA_CHECK(status);
           note_allocation(ptr);
@@ -176,8 +185,11 @@ namespace ctranslate2 {
 #if CT2_USE_ASYNC_ALLOC
         for (int device = 0; device < _num_devices; ++device) {
           const DevicePool& pool = _pools[device];
-          if (pool.configured.load(std::memory_order_acquire))
+          if (pool.configured.load(std::memory_order_acquire)) {
             CUDA_CHECK(cudaMemPoolTrimTo(pool.handle, 0));
+            if (pool.cache)
+              CUDA_CHECK(cudaMemPoolTrimTo(pool.cache, 0));
+          }
         }
 #endif
       }
@@ -188,6 +200,7 @@ namespace ctranslate2 {
         std::atomic<bool> configured{false};
 #if CT2_USE_ASYNC_ALLOC
         cudaMemPool_t handle = nullptr;
+        cudaMemPool_t cache = nullptr;                       // the long-lived buffers' (cache_pool.h), or none
 #endif
       };
 
@@ -204,7 +217,16 @@ namespace ctranslate2 {
           uint64_t threshold = _release_threshold;
           CUDA_CHECK(cudaMemPoolSetAttribute(pool.handle, cudaMemPoolAttrReleaseThreshold, &threshold));
 #ifndef CT2_USE_HIP
-          start_pool_report(device, pool.handle);
+          start_pool_report(device, pool.handle, "POOL");
+          if (cache_pool_enabled()) {
+            cudaMemPoolProps props = {};
+            props.allocType = cudaMemAllocationTypePinned;
+            props.location.type = cudaMemLocationTypeDevice;
+            props.location.id = device;
+            CUDA_CHECK(cudaMemPoolCreate(&pool.cache, &props));
+            CUDA_CHECK(cudaMemPoolSetAttribute(pool.cache, cudaMemPoolAttrReleaseThreshold, &threshold));
+            start_pool_report(device, pool.cache, "CACHEPOOL");
+          }
 #endif
           pool.configured.store(true, std::memory_order_release);
         });

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 
 #include "dispatch.h"
@@ -18,6 +19,7 @@
 #include "joint_step.h"
 #include "split_heads_fused.h"
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/cache_pool.h"
 #  include "cuda/memory_slots.h"
 #  include "cuda/shared_memory_rows.h"
 #endif
@@ -475,6 +477,11 @@ namespace ctranslate2 {
           _linear[1](values, kv_proj);
 
         if (fused_kv) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+          std::optional<cuda::CachePoolScope> cache;           // the memory's keys and values outlive the step
+          if (cached_keys != nullptr)
+            cache.emplace();
+#endif
           split_heads_with_bias(kv_proj, _linear[1].bias(), {&keys_proj, &values_proj}, _num_heads);
         } else if (_num_heads_kv == 1) { // MQA (Multi-Query Attention)
           if (values_padder)
