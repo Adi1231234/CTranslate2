@@ -293,6 +293,10 @@ the rate over seconds 40-280, every comparison on one host, list50's rows strict
 - Not kept: the ladder's temperatures one at a time, the least work (`RUN_FALLBACK_SPEC_FIRST=1`: q72 145.6x against
   146.9x; `=5`: p72 131.5x at 293 W): the ladders' queue backs up, the stream empties and the GPU idles; 4-5 ladder
   batches, 80 threads with 44 windows and 64 threads uncapped run out of memory.
+- At the recordings' real length (`full3`, Seoul bb20c2c2: list120s uncut, 76.4 h, 30 minutes; l43g, 64 threads, 40
+  windows, the windows first, single rows): 139.7x over seconds 300-600 (50-62 recordings in progress) against full2's
+  126.3x over the same seconds; all 108 recordings both finished strictly identical. 120 recordings keep 64 threads
+  busy only ~300 s: a corpus list of thousands stays there.
 - Where the time goes now (`prof4`, l43g at 72 threads; `nsys` 2026.3.2 exports the report on a laptop): the windows'
   stream 81% busy, its cross-attention 41% of it at ~72% of the memory's bandwidth (it must read each window's 246 MB
   every step); the ladders' stream 51% (prof3: 69%), `lc_output` 0.69 s of 8 (1.31). Every row of every run that night
