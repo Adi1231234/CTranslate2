@@ -267,6 +267,28 @@ in a recording ("fewest" >= 45 in the PROGRESS lines): f0 121.5x, m0 122.2x, n0 
   `GreedySearchRun` (`GreedySearch::search` runs it), `WhisperStream.submit_sampled`, the joint step's groups counted
   in rows with the greedy parts last, their attention run as their own search runs it (`layers/attention_sampled.cc`).
 
+**Toward 170x (7.10.2026 night, Adi: 170x with every row identical, g6e.xlarge only; 10-minute cuts of list120s,
+the rate over seconds 40-280, every comparison on one host, list50's rows strictly dec48's):**
+- What bounds it: the GPU's capacity, not a latency. The windows' stream takes a window ~S(a + bN) for N windows in it
+  (long34/35: a ~10 ms a step, b ~1.2 ms a window a step), so its throughput is nearly flat from 28 to 40 windows, and
+  every change of who runs first only moves GPU time between the windows and the ladders: the windows' stream first
+  (`LONG_WINDOW_PRIORITY=high`, w48 136.9x against z48's 136.8x), its cross-attention one launch a layer (l43b, c48
+  136.2x), the windows in 2 streams (`LONG_WINDOW_STREAMS=2`, d48 135.6x). The GPU line now has the SM clock and the
+  power cap's share: 92-99% of the samples power-capped, the clock 2,340-2,430 of 2,520 MHz. Without ladders
+  (`LONG_LADDERS=skip`, rows change) 169.5x at 48 threads: the ladders take ~19% of the GPU, so 170x with them needs
+  both the windows ~20% cheaper and the ladders much cheaper.
+- Less work, every one exact (probes TOTAL 0, rows identical): the timestamp rules' device work of all of a step's
+  searches at once (`src/joint_logits.h`, l43c: one disabled-tokens launch, one log-softmax, one reduction instead of
+  ~150 launches a step), a beam's fork copies only the positions after the prompt (every slot gets the prompt at the
+  expansion), `lc_output` a block per group of rows each on its own lanes and two dims a lane (l43e, l43g), single
+  rows in one launch (`CT2_SINGLE_ROWS=1`, now a gain: +1.3-2.9%), the slot attention reading the prompt once for a
+  part's beams (both mma chains take the beams as rows or columns of one mma, l43f: no gain). More threads: 56 and 60
+  with the windows first (long38/39). Best measured: l43e with single rows, the windows first, 56 threads 147.9x
+  (long40 r56, Seoul e9868788) against 141.3x for l42z the same way on another host; e60 147.3x against w56's 140.4x.
+- Not kept: T=0.2 alone before the rest (`RUN_FALLBACK_SPEC_FIRST=1`, g56 143.0x against 147.8x: two rounds keep a
+  thread waiting longer); 5 ladder batches and 64 threads run out of memory (in use ~34 GiB at 60 threads, the pool
+  holds 41).
+
 **Beside other AWS work in the account** (the asr-training Batch queues): each touches only its own resources:
 nothing named `asr-train*` here (their submit uses the newest `asr-train` job definition), nothing named
 `whisper-bench*` there (their CancelJob is limited by IAM to jobs tagged Project=asr-training); everything tagged.
