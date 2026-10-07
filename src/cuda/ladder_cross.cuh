@@ -130,23 +130,6 @@ namespace ctranslate2 {
       }
     }
 
-    // One partial of a row's output column: the products p(i) v(i) of its keys in increasing order from zero (a
-    // chunk of ceil(1500 / T) keys, or keys r, r + T, ...), each with a fused multiply-add.
-    template <int T, bool CONTIGUOUS>
-    static __device__ __forceinline__ float lc_partial(const __half* pr, const __half* vd, int r) {
-      float s = 0.f;
-      if (CONTIGUOUS) {
-        constexpr int chunk = (lc_keys + T - 1) / T;
-        const int end = min(lc_keys, (r + 1) * chunk);
-        for (int i = r * chunk; i < end; ++i)
-          s = fmaf(hf(pr[i]), hf(vd[static_cast<size_t>(i) * lc_depth]), s);
-      } else {
-        for (int i = r; i < lc_keys; i += T)
-          s = fmaf(hf(pr[i]), hf(vd[static_cast<size_t>(i) * lc_depth]), s);
-      }
-      return s;
-    }
-
     // Output: grid (lc_depth / 32, heads, groups.count), block (32, lanes x rows) of a kind (lc_output_launch); the
     // T partials of each output combined by the tree from the halves (partial_sums.cuh: combine), as before.
     template <int KIND>
@@ -160,8 +143,10 @@ namespace ctranslate2 {
       if (k < rows) {
         const __half* pr = p + (static_cast<size_t>(row) * heads + h) * lc_keys;
         const __half* vd = v + static_cast<size_t>(h) * lc_keys * lc_depth + d;
+        const auto pa = [&](int i) { return hf(pr[i]); };
+        const auto vb = [&](int i) { return hf(vd[static_cast<size_t>(i) * lc_depth]); };
         for (int r = lane; r < T; r += L)
-          sm[(k * T + r) * 32 + x] = lc_partial<T, lc_kind_contiguous[KIND]>(pr, vd, r);
+          sm[(k * T + r) * 32 + x] = partial_sum<T, 1, lc_kind_contiguous[KIND]>(r, lc_keys, pa, vb);
       }
       __syncthreads();
       if (lane == 0 && k < rows) {
