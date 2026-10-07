@@ -285,9 +285,18 @@ the rate over seconds 40-280, every comparison on one host, list50's rows strict
   part's beams (both mma chains take the beams as rows or columns of one mma, l43f: no gain). More threads: 56 and 60
   with the windows first (long38/39). Best measured: l43e with single rows, the windows first, 56 threads 147.9x
   (long40 r56, Seoul e9868788) against 141.3x for l42z the same way on another host; e60 147.3x against w56's 140.4x.
-- Not kept: T=0.2 alone before the rest (`RUN_FALLBACK_SPEC_FIRST=1`, g56 143.0x against 147.8x: two rounds keep a
-  thread waiting longer); 5 ladder batches and 64 threads run out of memory (in use ~34 GiB at 60 threads, the pool
-  holds 41).
+- More threads than windows (`LONG_STREAM_WINDOWS`, runner-378194a7): a thread waiting for its ladder holds only its
+  encoder output (3.8 MB), so 72 threads with at most 40 windows decoding keep the stream full: s72 (l43g) 150.2x
+  against r60's 148.6x (long41). The stream's throughput stays flat past ~35 windows (5.4 windows a second at 35 and
+  at 40): the GPU's work is the bound. l43h (21174c9b: a lane's partials interleaved, each in its own order, probes
+  TOTAL 0): h72 149.6x against s72's 147.8x on one host (long43, us-east-1 ca0ee5ea); 64 threads 147.2x.
+- Not kept: the ladder's temperatures one at a time, the least work (`RUN_FALLBACK_SPEC_FIRST=1`: q72 145.6x against
+  146.9x; `=5`: p72 131.5x at 293 W): the ladders' queue backs up, the stream empties and the GPU idles; 4-5 ladder
+  batches, 80 threads with 44 windows and 64 threads uncapped run out of memory.
+- Where the time goes now (`prof4`, l43g at 72 threads; `nsys` 2026.3.2 exports the report on a laptop): the windows'
+  stream 81% busy, its cross-attention 41% of it at ~72% of the memory's bandwidth (it must read each window's 246 MB
+  every step); the ladders' stream 51% (prof3: 69%), `lc_output` 0.69 s of 8 (1.31). Every row of every run that night
+  strictly dec48's (17 runs).
 
 **Beside other AWS work in the account** (the asr-training Batch queues): each touches only its own resources:
 nothing named `asr-train*` here (their submit uses the newest `asr-train` job definition), nothing named
