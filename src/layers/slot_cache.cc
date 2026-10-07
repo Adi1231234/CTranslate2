@@ -48,11 +48,18 @@ namespace ctranslate2 {
           const StorageView& cache = c ? *part.self_values[l] : *part.self_keys[l];
           auto& slots = c ? s.values : s.keys;
           slots.emplace_back(Shape{s.rows, heads, SlotCache::capacity, depth}, cache.dtype(), cache.device());
-          if (time > 0)
-            CUDA_CHECK(cudaMemcpy2DAsync(slots.back().buffer(), SlotCache::capacity * depth * cache.item_size(),
-                                         cache.buffer(), time * depth * cache.item_size(),
-                                         time * depth * cache.item_size(), old_rows * heads,
+          if (time > 0) {
+            const size_t pitch = SlotCache::capacity * depth * cache.item_size();
+            const size_t row = time * depth * cache.item_size();
+            CUDA_CHECK(cudaMemcpy2DAsync(slots.back().buffer(), pitch, cache.buffer(), row, row, old_rows * heads,
                                          cudaMemcpyDeviceToDevice, cuda::get_cuda_stream()));
+            // The other slots get the prompt too (old row 0's, the same in every row), so that a fork copies only the
+            // positions after it (slot_append).
+            for (dim_t r = old_rows; r < s.rows; ++r)
+              CUDA_CHECK(cudaMemcpy2DAsync(static_cast<char*>(slots.back().buffer()) + r * heads * pitch, pitch,
+                                           cache.buffer(), row, row, heads, cudaMemcpyDeviceToDevice,
+                                           cuda::get_cuda_stream()));
+          }
         }
       // The slots hold the caches now: the state's copies go (in stream order, after the copies above), else every
       // window kept its prompt's caches of all its rows for its whole decoding (~186 MB at 227 positions: 8 GB of
@@ -112,7 +119,7 @@ namespace ctranslate2 {
           SlotCache& s = *part->slots;
           appends.push_back({s.keys[l].buffer(), s.values[l].buffer(), map(s, 0), map(s, 2), map(s, 3), map(s, 4),
                              static_cast<int32_t>(s.rows), static_cast<int32_t>(s.time),
-                             static_cast<int32_t>(part->row_begin), 0});
+                             static_cast<int32_t>(part->row_begin), static_cast<int32_t>(s.shared)});
         }
       joint.slot_appends = device_table(appends);
       joint.slot_queries = device_table(queries);

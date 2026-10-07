@@ -50,7 +50,8 @@ namespace ctranslate2 {
                                        unsigned heads, unsigned head_vecs, unsigned capacity) {
       const SlotAppend a = parts[blockIdx.y];
       const size_t forks = static_cast<size_t>(*a.fork_count);
-      const size_t per_fork = size_t(heads) * a.time * head_vecs;      // one cache of one fork
+      const size_t span = size_t(a.time - a.shared) * head_vecs;     // a head's positions [shared, time)
+      const size_t per_fork = size_t(heads) * span;                    // one cache of one fork
       const size_t copies = 2 * forks * per_fork;
       const size_t per_cache = size_t(a.rows) * heads * head_vecs;     // the step's vectors of one cache
       const size_t total = copies + 2 * per_cache;
@@ -58,7 +59,7 @@ namespace ctranslate2 {
         if (v < copies) {
           const size_t c = v / (forks * per_fork), w = v - c * forks * per_fork;
           const size_t f = w / per_fork, x = w - f * per_fork;
-          const size_t h = x / (size_t(a.time) * head_vecs), y = x - h * a.time * head_vecs;
+          const size_t h = x / span, y = size_t(a.shared) * head_vecs + (x - h * span);
           uint4* cache = static_cast<uint4*>(c ? a.values : a.keys);
           const size_t src = (size_t(a.fork_src[f]) * heads + h) * capacity * head_vecs + y;
           const size_t dst = (size_t(a.fork_dst[f]) * heads + h) * capacity * head_vecs + y;

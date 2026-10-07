@@ -36,10 +36,11 @@ namespace ctranslate2 {
       int32_t rows;
       int32_t time;                // positions cached before this step's
       int32_t row_begin;           // the part's first row in the step's keys and values
-      int32_t pad;
+      int32_t shared;              // positions [0, shared) alike in every slot (the prompt, layers/slot_cache.h)
     };
-    // Every part: the forks' first `time` positions copied, then the step's keys and values ([rows, heads, 1,
-    // depth] fp16 from row_begin) written at position `time` of their rows' slots.
+    // Every part: the forks' positions [shared, time) copied (the prompt's are in every slot already), then the
+    // step's keys and values ([rows, heads, 1, depth] fp16 from row_begin) written at position `time` of their rows'
+    // slots.
     void slot_append(const SlotAppend* parts, int count, const void* fresh_keys, const void* fresh_values,
                      int heads, int depth, int capacity, int max_rows, int max_time);
 
