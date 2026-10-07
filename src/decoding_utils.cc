@@ -20,6 +20,20 @@ namespace ctranslate2 {
   {
   }
 
+  void DisableTokens::move_to(dim_t row_offset, std::vector<int32_t>& ranges, std::vector<int32_t>& singles) {
+    const auto offset = static_cast<int32_t>(row_offset * _vocabulary_size);
+    for (const int32_t i : _flat_ranges)
+      ranges.push_back(offset + i);
+    for (const int32_t i : _flat_indices)
+      singles.push_back(offset + i);
+    for (const int32_t token_id : _all_rows_ids)
+      for (dim_t batch_id = 0; batch_id < _batch_size; ++batch_id)
+        singles.push_back(offset + static_cast<int32_t>(batch_id * _vocabulary_size + token_id));
+    _flat_ranges.clear();
+    _flat_indices.clear();
+    _all_rows_ids.clear();
+  }
+
   void DisableTokens::apply() {
     // Every disabled position gets the same value, so filling ranges, all-row ids and single indices
     // in any order, overlapping or repeated, leaves the same logits.

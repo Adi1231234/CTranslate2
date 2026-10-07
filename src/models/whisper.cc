@@ -7,6 +7,7 @@
 
 #include "dispatch.h"
 #include "dtw.h"
+#include "joint_logits.h"
 
 #ifdef CT2_WITH_CUDA
 #  include "cuda/clip_groups.h"
@@ -897,6 +898,15 @@ namespace ctranslate2 {
         }
 
         if (!check_timestamps_prob_for_batch.empty()) {
+          // Several searches' logits of one step (a stream's joint step): their device work in one launch each.
+          JointLogits* joint = JointLogits::current();
+          if (joint && joint->accepts(logits)) {
+            auto answers = joint->add(logits, disable_tokens, check_timestamps_prob_for_batch, _timestamp_begin_id,
+                                      _timestamp_end_id);
+            return [this, answers = std::move(answers), batch_ids = std::move(check_timestamps_prob_for_batch)]
+              (DisableTokens& disable_tokens) { disable_text(disable_tokens, batch_ids, answers()); };
+          }
+
           // Apply all changes to the logits before computing the log softmax.
           disable_tokens.apply();
 

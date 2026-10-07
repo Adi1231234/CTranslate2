@@ -6,6 +6,7 @@
 #include <optional>
 #include <stdexcept>
 
+#include "joint_logits.h"
 #include "layers/joint_step.h"
 #include "layers/slot_cache.h"
 #ifdef CT2_WITH_CUDA
@@ -218,6 +219,7 @@ namespace ctranslate2 {
           // device waited for once between phases (twice a batch with advance(); each search's work is the same).
           dim_t row = 0, beam_rows = 0;
           bool pending = false;
+          JointLogits joint_logits(logits);                  // every search's processors' device work at once
           for (Active* a : order) {
             const dim_t batch_rows = a->ids.size();
             StorageView view = layers::rows_view(logits, row, batch_rows);
@@ -232,6 +234,7 @@ namespace ctranslate2 {
               pending = greedy.queue_processors() || pending;
             }
           }
+          joint_logits.flush();
           if (pending)
             synchronize();
           std::vector<BeamSearchRun*> runs;

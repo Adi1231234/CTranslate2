@@ -79,6 +79,14 @@ namespace ctranslate2 {
 
     void apply();
 
+    float disable_value() const {
+      return _disable_value;
+    }
+
+    // Hands its listed positions to `ranges` and `singles` as flat indices of a tensor whose row `row_offset` is
+    // its first row (one launch for several searches: joint_logits.h), and forgets them.
+    void move_to(dim_t row_offset, std::vector<int32_t>& ranges, std::vector<int32_t>& singles);
+
   private:
     StorageView& _logits;
     float* _logits_data;

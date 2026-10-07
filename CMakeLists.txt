@@ -124,6 +124,7 @@ set(SOURCES
   src/cpu/primitives.cc
   src/decoding.cc
   src/decoding_utils.cc
+  src/joint_logits.cc
   src/devices.cc
   src/dtw.cc
   src/encoder.cc
