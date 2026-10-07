@@ -44,12 +44,16 @@ namespace ctranslate2 {
                                   StorageView& keys, StorageView& values, float scale, StorageView& context) {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
       const dim_t heads = queries.dim(1), depth = queries.dim(3);
-      // Each part's step into its caches, then its scores' room in one buffer for all the parts.
+      // Each part's step into its caches, then its scores' room in one buffer for all the parts, each on 256 bytes as
+      // its own allocation was: cuBLAS picks its kernel for an own group's products by its pointers' alignment (an
+      // unaligned part changed sampled rows, bisect1).
       std::vector<dim_t> offsets;
       dim_t total = 0;
+      constexpr dim_t aligned = 256 / sizeof (float16_t);
       for (const CapacityPart& part : parts) {
         capacity_append(*part.caches, *part.cached_keys, *part.cached_values,
                         rows_view(keys, part.row_begin, part.rows), rows_view(values, part.row_begin, part.rows));
+        total = (total + aligned - 1) / aligned * aligned;
         offsets.push_back(total);
         total += part.rows * heads * (part.caches->time + 1);
       }
