@@ -1,0 +1,3 @@
+# c3a65db0 against cuBLAS bit for bit: slot attention with the prompt read once for a part's beams (both mma chains and the
+# partials' lanes) and lc_output a block per group (67203239), both through partial_sum. Each must end with TOTAL 0.
+scriptc|scripts/probes.sh|probes/probes-c3a65db0.tgz|slot_attention_check|ladder_cross_check
