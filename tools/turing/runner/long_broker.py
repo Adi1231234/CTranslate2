@@ -14,7 +14,8 @@ LONG_STREAM_ROWS rows (default 320, the most rows whose products cuda/clip_group
 LONG_LADDER_STREAM=1: in a stream of their own instead, on a worker of its own (longform.workers_needed), beside the
 windows' as the lanes were: up to LONG_LADDER_BATCHES ladders (default 2, the lanes' memory) decode together, the
 decoder's weights read once a step for them all. LONG_LADDER_PRIORITY=high: that stream's GPU work ahead of the
-windows' (a recording waits for its ladder; the windows' stream has many recordings in flight).
+windows' (a recording waits for its ladder; the windows' stream has many recordings in flight). LONG_WINDOW_PRIORITY=high:
+the windows' stream's ahead of the ladders' instead (the ladders then run in the windows' gaps).
 """
 import os, threading, time
 import ctranslate2
@@ -138,8 +139,9 @@ class LongBroker(Broker):
                 if self._in_stream and not self._own_stream:   # room for the ladders' sampled batches
                     batches += int(os.environ.get("LONG_STREAM_LADDERS", "8"))
                     rows = int(os.environ.get("LONG_STREAM_ROWS", "320"))
+                high = {"high_priority": True} if os.environ.get("LONG_WINDOW_PRIORITY") == "high" else {}
                 self._stream, self._options = self._m.open_stream(
-                    max_batches=batches, max_rows=rows, max_pending=self._pending_max, **options), options
+                    max_batches=batches, max_rows=rows, max_pending=self._pending_max, **high, **options), options
                 threading.Thread(target=self._collect, args=(self._stream,), daemon=True).start()
             elif options != self._options:
                 raise ValueError("a window's beam search options differ from the stream's")
