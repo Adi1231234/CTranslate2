@@ -57,11 +57,12 @@ namespace at {
       __half* p = reinterpret_cast<__half*>(ca_smem);        // [rows_per_pass][ca_pitch] scores, probabilities
       __half* qs = p + rows_per_pass * ca_pitch;             // [rows_per_pass][ca_qpitch] projected queries
       const int entry = blockIdx.x, clip = entry / heads, head = entry % heads;
-      for (int g = 0; g < residues.count; ++g)              // this clip's batch's residue (cuda/cross_attention.h)
-        if (clip < residues.clip_end[g]) {
+      // This clip's batch's residue (cuda/cross_attention.h): the first group ending past it, picked over constant
+      // indices (a parameter array indexed by a computed group is copied to local memory by every thread).
+      #pragma unroll
+      for (int g = ctranslate2::cuda::CrossResidues::max_groups - 1; g >= 0; --g)
+        if (g < residues.count && clip < residues.clip_end[g])
           residue = residues.residue[g];
-          break;
-        }
       const int warp = threadIdx.x / 32, lane = threadIdx.x % 32, g = lane / 4, t = lane % 4;
       const size_t kv_entry = slot ? (size_t)slot[clip] * heads + head : (size_t)entry;
       const size_t per_head = (size_t)ca_keys * ca_depth;

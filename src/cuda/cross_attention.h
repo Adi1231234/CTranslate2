@@ -13,9 +13,11 @@ namespace ctranslate2 {
     int cross_attention_residue(dim_t m, dim_t batch, dim_t keys, dim_t depth);
 
     // Several batches' clips in one launch (cuda/clip_groups.h), each group with its own batch's residue: clips
-    // [clip_end[g - 1], clip_end[g]) use residue[g]. count 0: every clip uses the launch's residue.
+    // [clip_end[g - 1], clip_end[g]) use residue[g]. count 0: every clip uses the launch's residue. 64: a joint
+    // step's windows in one launch a layer (16 split ~35 windows into 3 launches of ~260 blocks, each as long as one
+    // block's chain over its 384 KB: prof3, 176 us a launch, the memory at ~66% of its bandwidth).
     struct CrossResidues {
-      static constexpr int max_groups = 16;
+      static constexpr int max_groups = 64;
       int count = 0;
       int clip_end[max_groups] = {};
       int residue[max_groups] = {};
