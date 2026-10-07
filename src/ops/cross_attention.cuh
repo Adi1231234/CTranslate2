@@ -49,7 +49,8 @@ namespace at {
     // layers/joint_step.h), they start at kv[2c] and kv[2c + 1], [heads][1500][64] each.
     // 5 blocks per SM (registers for it): 8 clips x 20 heads = 160 blocks then fit the RTX 5060 Ti's 36 SMs at
     // once; at 4 (128 registers) a tail of 16 blocks ran after the rest.
-    static __global__ void __launch_bounds__(ca_warps * 32, 5)
+    template <int MIN_BLOCKS>
+    static __global__ void __launch_bounds__(ca_warps * 32, MIN_BLOCKS)
     cross_attention_kernel(CaQueries queries, const __half* k, const __half* v, __half* o, int heads, int m,
                            int rows_per_pass, int residue, float alpha, int ahead, const int* slot,
                            ctranslate2::cuda::CrossResidues residues, const __half* const* kv) {

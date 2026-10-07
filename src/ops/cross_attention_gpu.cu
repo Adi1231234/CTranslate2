@@ -67,10 +67,18 @@ namespace ctranslate2 {
       static const int ahead = read_int_from_env(
         "CT2_CROSS_AHEAD", ctranslate2::cuda::get_device_properties().major == 8
                              && ctranslate2::cuda::get_device_properties().minor == 9 ? 1 : 4);
-      at::native::cross_attention_kernel<<<static_cast<unsigned>(clips * heads), at::native::ca_warps * 32, smem,
-                                           get_cuda_stream()>>>(
+      // CT2_CROSS_BLOCKS=6: the kernel compiled for 6 blocks an SM (fewer registers, more loads in flight; the same
+      // arithmetic), 5 by default (5 x 15.4 KB of scores fit the SM's shared memory, so would 6).
+      static const int min_blocks = read_int_from_env("CT2_CROSS_BLOCKS", 5);
+      const auto launch = [&](auto kernel) {
+        kernel<<<static_cast<unsigned>(clips * heads), at::native::ca_warps * 32, smem, get_cuda_stream()>>>(
         queries, h(k), h(v), reinterpret_cast<__half*>(o), static_cast<int>(heads), static_cast<int>(m), rows,
         residue, alpha, ahead, slot, residues, reinterpret_cast<const __half* const*>(kv));
+      };
+      if (min_blocks == 6)
+        launch(at::native::cross_attention_kernel<6>);
+      else
+        launch(at::native::cross_attention_kernel<5>);
     }
 
   }
