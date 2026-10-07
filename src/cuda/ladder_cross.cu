@@ -59,10 +59,7 @@ namespace ctranslate2 {
       LadderRows all{};
       if (!enabled() || rows.clips != 1 || keys != lc_keys || depth != lc_depth || !row_groups(rows.rows, all))
         return false;
-      size_t smem = 0;
-      const LcOutputBlocks blocks = lc_output_blocks(all, smem);
-      lc_output<<<dim3(lc_depth / 32, static_cast<unsigned>(heads), blocks.count), dim3(32, split_lanes), smem,
-                  get_cuda_stream()>>>(p, v, out, blocks, static_cast<int>(heads));
+      lc_output_launch(p, v, out, all, static_cast<int>(heads), get_cuda_stream());
       return true;
     }
 

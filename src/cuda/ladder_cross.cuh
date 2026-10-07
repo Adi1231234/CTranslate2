@@ -96,78 +96,96 @@ namespace ctranslate2 {
     // 47 keys, a group of 5 key i in partial i % 4, groups of 2..4 key i in partial i % 16 (ladder_cross_probe).
     enum LcOutputKind { lc_one = 0, lc_five = 1, lc_other = 2 };
     constexpr int lc_kind_partials[3] = {32, 4, 16};
-    // A block's rows at most (rows x T x 32 floats of shared memory). One: blocks of up to 32 rows (8b22a0f0) read a
-    // head's values once for them all, but a ladder's 25 rows then ran in 40 blocks on 142 SMs and a ladder call took
-    // 12 s instead of 5.6 (long23 b0/b1 against a0: the threads queued for their ladders, 3,168 s against 671).
-    constexpr int lc_kind_rows[3] = {1, 1, 1};
+    constexpr bool lc_kind_contiguous[3] = {true, false, false};
+    // A block per (32 dims, head, group): its rows (one cuBLAS call's, at most lc_kind_rows) each on lc_kind_lanes y
+    // lanes, every lane summing partials y, y + lanes, ... of its row, so a group's rows read each value at the same
+    // time (once from L2, the rest from L1) and no lane idles. A block per row with 8 lanes (6d5d2607) read a head's
+    // values once a row (25 times a ladder) and left half its lanes idle at 4 partials (prof3: lc_output 24% of the
+    // ladders' stream); a block of up to 32 rows one lane set (8b22a0f0) made a block 25 times longer.
+    constexpr int lc_kind_rows[3] = {1, 5, 4};
+    constexpr int lc_kind_lanes[3] = {8, 4, 8};
 
-    // Blocks of rows whose groups have the same arithmetic: each block reads its head's values once for its rows.
-    struct LcOutputBlocks {
+    // The groups of one kind: group g's rows are row[first[g] .. first[g] + rows[g]).
+    struct LcGroups {
       int count;
-      int8_t kind[lc_max_rows];
-      int8_t first[lc_max_rows];                             // its rows: row[first .. first + rows)
+      int8_t first[lc_max_rows];
       int8_t rows[lc_max_rows];
       int8_t row[lc_max_rows];
     };
 
-    // The rows by arithmetic, in row order within each kind, in blocks of at most lc_kind_rows of them; smem_bytes:
-    // the launch's dynamic shared memory.
-    inline LcOutputBlocks lc_output_blocks(const LadderRows& all, size_t& smem_bytes) {
-      LcOutputBlocks blocks{};
-      int placed = 0, most = 0;
-      for (int kind = 0; kind < 3; ++kind) {
-        for (int y = 0; y < all.count; ++y) {
-          const int group = all.group[y];
-          if ((group == 1 ? lc_one : group == 5 ? lc_five : lc_other) != kind)
-            continue;
-          if (blocks.count == 0 || blocks.kind[blocks.count - 1] != kind
-              || blocks.rows[blocks.count - 1] == lc_kind_rows[kind]) {
-            blocks.kind[blocks.count] = static_cast<int8_t>(kind);
-            blocks.first[blocks.count] = static_cast<int8_t>(placed);
-            blocks.rows[blocks.count] = 0;
-            ++blocks.count;
-          }
-          blocks.row[placed++] = all.row[y];
-          ++blocks.rows[blocks.count - 1];
-        }
+    // The rows' groups by kind (consecutive rows with one group size each, as row_groups lists them).
+    inline void lc_output_groups(const LadderRows& all, LcGroups (&kinds)[3]) {
+      for (auto& k : kinds)
+        k = LcGroups{};
+      for (int y = 0; y < all.count;) {
+        const int size = all.group[y];
+        LcGroups& k = kinds[size == 1 ? lc_one : size == 5 ? lc_five : lc_other];
+        const int n = static_cast<int>(k.count == 0 ? 0 : k.first[k.count - 1] + k.rows[k.count - 1]);
+        k.first[k.count] = static_cast<int8_t>(n);
+        k.rows[k.count] = static_cast<int8_t>(size);
+        for (int r = 0; r < size; ++r)
+          k.row[n + r] = all.row[y + r];
+        ++k.count;
+        y += size;
       }
-      for (int b = 0; b < blocks.count; ++b)
-        most = std::max(most, blocks.rows[b] * lc_kind_partials[blocks.kind[b]]);
-      smem_bytes = static_cast<size_t>(most) * 32 * sizeof (float);
-      return blocks;
     }
 
-    template <int T, bool CONTIGUOUS, int R>
-    static __device__ __forceinline__ void lc_output_rows(const __half* p, const __half* vd, __half* out,
-                                                          const int8_t* row, int rows, int heads, int h, int d) {
-      extern __shared__ float sm[];
-      const auto pa = [&](int k, int i) { return hf(p[(static_cast<size_t>(row[k]) * heads + h) * lc_keys + i]); };
-      const auto vb = [&](int i) { return hf(vd[static_cast<size_t>(i) * lc_depth]); };
-      const auto store = [&](int k, float sum) {
-        out[(static_cast<size_t>(row[k]) * heads + h) * lc_depth + d] = __float2half_rn(sum);
+    // One partial of a row's output column: the products p(i) v(i) of its keys in increasing order from zero (a
+    // chunk of ceil(1500 / T) keys, or keys r, r + T, ...), each with a fused multiply-add.
+    template <int T, bool CONTIGUOUS>
+    static __device__ __forceinline__ float lc_partial(const __half* pr, const __half* vd, int r) {
+      float s = 0.f;
+      if (CONTIGUOUS) {
+        constexpr int chunk = (lc_keys + T - 1) / T;
+        const int end = min(lc_keys, (r + 1) * chunk);
+        for (int i = r * chunk; i < end; ++i)
+          s = fmaf(hf(pr[i]), hf(vd[static_cast<size_t>(i) * lc_depth]), s);
+      } else {
+        for (int i = r; i < lc_keys; i += T)
+          s = fmaf(hf(pr[i]), hf(vd[static_cast<size_t>(i) * lc_depth]), s);
+      }
+      return s;
+    }
+
+    // Output: grid (lc_depth / 32, heads, groups.count), block (32, lanes x rows) of a kind (lc_output_launch); the
+    // T partials of each output combined by the tree from the halves (partial_sums.cuh: combine), as before.
+    template <int KIND>
+    __global__ void lc_output(const __half* p, const __half* v, __half* out, LcGroups groups, int heads) {
+      constexpr int T = lc_kind_partials[KIND], L = lc_kind_lanes[KIND];
+      __shared__ float sm[lc_kind_rows[KIND] * T * 32];
+      const int x = threadIdx.x, lane = threadIdx.y % L, k = threadIdx.y / L;
+      const int d = blockIdx.x * 32 + x, h = blockIdx.y, b = blockIdx.z;
+      const int rows = groups.rows[b];
+      const int row = k < rows ? groups.row[groups.first[b] + k] : 0;
+      if (k < rows) {
+        const __half* pr = p + (static_cast<size_t>(row) * heads + h) * lc_keys;
+        const __half* vd = v + static_cast<size_t>(h) * lc_keys * lc_depth + d;
+        for (int r = lane; r < T; r += L)
+          sm[(k * T + r) * 32 + x] = lc_partial<T, lc_kind_contiguous[KIND]>(pr, vd, r);
+      }
+      __syncthreads();
+      if (lane == 0 && k < rows) {
+        float s[T];
+        #pragma unroll
+        for (int r = 0; r < T; ++r)
+          s[r] = sm[(k * T + r) * 32 + x];
+        out[(static_cast<size_t>(row) * heads + h) * lc_depth + d] = __float2half_rn(combine<T>(s, 1));
+      }
+    }
+
+    // A launch for each kind the rows have.
+    inline void lc_output_launch(const __half* p, const __half* v, __half* out, const LadderRows& all, int heads,
+                                 cudaStream_t stream) {
+      LcGroups kinds[3];
+      lc_output_groups(all, kinds);
+      const auto launch = [&](auto kernel, int kind) {
+        if (kinds[kind].count > 0)
+          kernel<<<dim3(lc_depth / 32, heads, kinds[kind].count), dim3(32, lc_kind_lanes[kind] * lc_kind_rows[kind]),
+                   0, stream>>>(p, v, out, kinds[kind], heads);
       };
-      split_partials_rows<T, 1, CONTIGUOUS, 1, R>(sm, threadIdx.x, threadIdx.y, lc_keys, rows, pa, vb, store);
-    }
-
-    // Output: a block per (32 dims, head, block of rows), its threads 32 dims x split_lanes lanes sharing each
-    // output's partials (partial_sums.cuh); every row's sums are those of a block of its own (split_partials).
-    // Launch: grid (lc_depth / 32, heads, blocks.count), block (32, split_lanes), lc_output_blocks' shared memory.
-    __global__ void lc_output(const __half* p, const __half* v, __half* out, LcOutputBlocks blocks, int heads) {
-      const int d = blockIdx.x * 32 + threadIdx.x, h = blockIdx.y, b = blockIdx.z;
-      const __half* vd = v + static_cast<size_t>(h) * lc_keys * lc_depth + d;
-      const int8_t* row = blocks.row + blocks.first[b];
-      const int rows = blocks.rows[b];
-      switch (blocks.kind[b]) {
-      case lc_one:
-        lc_output_rows<lc_kind_partials[lc_one], true, lc_kind_rows[lc_one]>(p, vd, out, row, rows, heads, h, d);
-        break;
-      case lc_five:
-        lc_output_rows<lc_kind_partials[lc_five], false, lc_kind_rows[lc_five]>(p, vd, out, row, rows, heads, h, d);
-        break;
-      default:
-        lc_output_rows<lc_kind_partials[lc_other], false, lc_kind_rows[lc_other]>(p, vd, out, row, rows, heads, h,
-                                                                                  d);
-      }
+      launch(lc_output<lc_five>, lc_five);
+      launch(lc_output<lc_other>, lc_other);
+      launch(lc_output<lc_one>, lc_one);
     }
 
   }

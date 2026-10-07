@@ -2,8 +2,7 @@
 // what they replace, cuBLAS's pointer-array batched products a group at a time (src/cuda/shared_memory_rows.cu: one
 // call of group x 20 entries per group of rows), bit for bit: every split of up to 25 rows into up to 5 groups of
 // 1..5 rows, in every order (3,905 splits), 2 fills; the scores, then the output from the same probabilities. The
-// output kernel reads a head's values once for a block of rows (lc_output_blocks), so the splits cover every block
-// a ladder makes.
+// output kernel takes a group's rows in one block (lc_output_groups), so the splits cover every block a ladder makes.
 // usage: ladder_cross_check -> must end with TOTAL 0
 #include <cstdio>
 #include <functional>
@@ -101,9 +100,7 @@ int main() {
                 lc_depth, lc_depth, first, g);
         first += g;
       }
-      size_t smem = 0;
-      const LcOutputBlocks blocks = lc_output_blocks(all, smem);
-      lc_output<<<dim3(lc_depth / 32, kHeads, blocks.count), dim3(32, split_lanes), smem>>>(P, V, O2, blocks, kHeads);
+      lc_output_launch(P, V, O2, all, kHeads, 0);
       CK(cudaGetLastError());
       d += differ(O, O2, (size_t)rows * kHeads * lc_depth);
       if (d && bad < 30) {
