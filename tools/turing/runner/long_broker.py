@@ -17,7 +17,8 @@ decoder's weights read once a step for them all. LONG_LADDER_PRIORITY=high: that
 windows' (a recording waits for its ladder; the windows' stream has many recordings in flight). LONG_WINDOW_PRIORITY=high:
 the windows' stream's ahead of the ladders' instead (the ladders then run in the windows' gaps).
 LONG_WINDOW_STREAMS=<n> (default 1): the windows in n streams, each on a worker of its own, a window to the one with
-the fewest in flight (a stream's step is a chain of ~1,250 kernels; another stream's kernels run in its gaps).
+the fewest in flight (a stream's step is a chain of ~1,250 kernels; another stream's kernels run in its gaps). In-stream ladders (no own
+stream) go to the windows' stream with the fewest windows and ladders in flight.
 """
 import os, threading, time
 import ctranslate2
@@ -90,10 +91,14 @@ class LongBroker(Broker):
         as a sampled batch of the stream; the results one a temperature, as generate() returns them."""
         if self._stream is None:
             raise RuntimeError("a ladder before the stream's first window")
-        stream = self._ladders() if self._own_stream else self._stream
+        which = None
         with self._lock:
             tag, self._tag = self._tag, self._tag + 1
             event = self._calls[tag] = threading.Event()
+            if not self._own_stream:                         # the windows' stream with the fewest in flight
+                which = min(range(len(self._streams)), key=self._flying.__getitem__)
+                self._flying[which] += 1
+        stream = self._ladders() if self._own_stream else self._streams[which]
         self._idle(-1)
         t = time.monotonic()
         try:
@@ -102,6 +107,9 @@ class LongBroker(Broker):
                                   **kw)
             event.wait()
         finally:
+            if which is not None:
+                with self._lock:
+                    self._flying[which] -= 1
             self._idle(+1)
         self.stats.add("ladder_s", time.monotonic() - t)
         if event.error:
