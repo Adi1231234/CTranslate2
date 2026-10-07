@@ -57,6 +57,31 @@ namespace ctranslate2 {
       return s;
     }
 
+    // partial_sum of two columns at once, a(i) b(i).x and a(i) b(i).y (b(i) a float2, e.g. a pair of halves read
+    // together): each column's sum is partial_sum's, element by element.
+    template <int T, int W, bool CONTIGUOUS, typename A, typename B>
+    static __device__ __forceinline__ float2 partial_sum2(int r, int n, const A& a, const B& b) {
+      float2 s = make_float2(0.f, 0.f);
+      const auto add = [&](int i) {
+        const float x = a(i);
+        const float2 y = b(i);
+        s.x = fmaf(x, y.x, s.x);
+        s.y = fmaf(x, y.y, s.y);
+      };
+      if (CONTIGUOUS) {
+        const int chunk = (n + T - 1) / T, end = min(n, (r + 1) * chunk);
+        for (int i = r * chunk; i < end; ++i)
+          add(i);
+      } else {
+        for (int base = r * W; base < n; base += T * W)
+          #pragma unroll
+          for (int u = 0; u < W; ++u)
+            if (base + u < n)
+              add(base + u);
+      }
+      return s;
+    }
+
     // One output column x (of a block's 32) over n elements, a(i) b(i): the T partials spread over `lanes` lanes
     // (lane y sums partials y, y + lanes, ...) into sm ([T][32] floats); then lane 0 combines them. Every thread of
     // the block calls it (it synchronizes); the sum is lane 0's.
