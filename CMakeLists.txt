@@ -135,6 +135,7 @@ set(SOURCES
   src/layers/attention.cc
   src/layers/attention_joint.cc
   src/layers/attention_sampled.cc
+  src/layers/attention_sampled_parts.cc
   src/layers/flash_attention.cc
   src/layers/common.cc
   src/layers/attention_fused.cc
@@ -148,6 +149,7 @@ set(SOURCES
   src/layers/slot_attention.cc
   src/layers/slot_cache.cc
   src/layers/capacity_cache.cc
+  src/layers/capacity_parts.cc
   src/layers/transformer.cc
   src/layers/transformer_joint.cc
   src/layers/wav2vec2.cc

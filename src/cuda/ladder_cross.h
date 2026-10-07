@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <cuda_fp16.h>
 
 #include "ctranslate2/types.h"
@@ -29,6 +31,21 @@ namespace ctranslate2 {
                              dim_t heads, dim_t keys, dim_t depth, float alpha);
     bool ladder_cross_output(const SharedMemoryRows& rows, const __half* p, const __half* v, __half* out, dim_t heads,
                              dim_t keys, dim_t depth);
+
+    // Several ladders at once (a joint step's greedy parts, layers/attention_sampled.cc): each ladder's rows from
+    // row_begin in the queries, scores and outputs ([rows, heads, 1, 64] and [rows, heads, 1, 1500]), its groups'
+    // rows in order, its clip's memory keys and values ([heads][1500][64]); every row's arithmetic the one its group
+    // has alone. False (nothing launched) where a ladder has no recovered arithmetic (more than 32 rows, a group past 5).
+    struct LadderMemory {
+      const __half* keys;
+      const __half* values;
+      dim_t row_begin;
+      std::vector<dim_t> groups;
+    };
+    bool ladders_supported(const std::vector<LadderMemory>& ladders);
+    void ladders_cross_scores(const std::vector<LadderMemory>& ladders, const __half* q, __half* scores, dim_t heads,
+                              float alpha);
+    void ladders_cross_output(const std::vector<LadderMemory>& ladders, const __half* p, __half* out, dim_t heads);
 
   }
 }

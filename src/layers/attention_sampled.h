@@ -20,5 +20,13 @@ namespace ctranslate2 {
     void sampled_cross_attention(const JointStep& joint, const JointStep::Part& part, StorageView& proj,
                                  const StorageView* bias, dim_t heads, float scale, StorageView& context);
 
+    // The same for every greedy part of the step at once where it applies (attention_sampled_parts.cc: one launch per
+    // product and one softmax for them all, each row's values its part's own above); each part it does not take
+    // through the functions above.
+    void sampled_self_attention_all(const JointStep& joint, StorageView& queries, StorageView& keys,
+                                    StorageView& values, float scale, StorageView& context);
+    void sampled_cross_attention_all(const JointStep& joint, StorageView& proj, const StorageView* bias, dim_t heads,
+                                     float scale, StorageView& context);
+
   }
 }

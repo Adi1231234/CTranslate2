@@ -1,6 +1,12 @@
 #pragma once
 
+#include <utility>
+#include <vector>
+
 #include "ctranslate2/storage_view.h"
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+#  include "cuda/slot_attention.h"
+#endif
 
 namespace ctranslate2 {
   namespace layers {
@@ -36,11 +42,40 @@ namespace ctranslate2 {
       CapacityCaches* const _previous;
     };
 
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+    // The slot attention's entries on the device, as int32 words (empty for none).
+    StorageView slot_table(const std::vector<cuda::SlotAttention>& entries);
+    // The step's keys and values ([rows, heads, 1, depth]) at position `time` of the caches, after each layer's move
+    // to the capacity at the search's first step.
+    void capacity_append(CapacityCaches& caches, StorageView& cached_keys, StorageView& cached_values,
+                         const StorageView& keys, const StorageView& values);
+    // The slot attention's entry (cuda/slot_attention.h) for a group of `count` rows from `first` of a search's caches,
+    // its scores at `scores`, its queries and outputs from row `row_begin` of the launch's.
+    cuda::SlotAttention capacity_group(const CapacityCaches& caches, StorageView& cached_keys,
+                                       StorageView& cached_values, void* scores, dim_t first, dim_t count,
+                                       dim_t row_begin);
+#endif
+
     // A decoding step's self-attention on the caches (dot_product_attention's MatMul, SoftMax and MatMul): queries,
     // keys and values [rows, heads, 1, depth]; context [rows, heads, 1, depth], the heads not combined.
     void capacity_attention(const StorageView& queries, const StorageView& keys, const StorageView& values,
                             float scale, StorageView& cached_keys, StorageView& cached_values,
                             StorageView& context);
+
+    // A greedy search's rows of a joint step (capacity_parts.cc): its caches this layer, its rows in the step's
+    // queries, keys, values and context, and its groups (first row, rows; each one cuBLAS call of its own).
+    struct CapacityPart {
+      CapacityCaches* caches;
+      StorageView* cached_keys;
+      StorageView* cached_values;
+      dim_t row_begin;
+      dim_t rows;
+      std::vector<std::pair<dim_t, dim_t>> groups;
+    };
+    // capacity_attention of every part at once: one launch per product for all their groups of the slot attention,
+    // one softmax for all their scores; each row's values those of capacity_attention for its search alone.
+    void capacity_attention_parts(const std::vector<CapacityPart>& parts, const StorageView& queries,
+                                  StorageView& keys, StorageView& values, float scale, StorageView& context);
 
   }
 }

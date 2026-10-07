@@ -32,8 +32,8 @@ namespace ctranslate2 {
       if (!_self_attention) {
         // The beam parts' clips against their memory keys and values with each one's own batch's arithmetic, in
         // one launch that reads the queries from the projection with their bias (process_cross_attention's head
-        // split's values); then each greedy part as its search alone (sampled_cross_attention). Every part's
-        // context in its own rows, heads combined.
+        // split's values); then the greedy parts, each row as its search alone, together where they apply
+        // (sampled_cross_attention_all). Every part's context in its own rows, heads combined.
         dim_t beam_rows = 0, beam_clips = 0;
         std::vector<dim_t> part_clips;
         part_clips.reserve(joint.parts.size());
@@ -55,9 +55,7 @@ namespace ctranslate2 {
           cross_attention_joint(beam_proj, _linear[0].bias(), _num_heads, joint.memory(joint.layer), part_clips,
                                 _queries_scale, beam_context);
         }
-        for (const auto& part : joint.parts)
-          if (part.sampled)
-            sampled_cross_attention(joint, part, fused_proj, _linear[0].bias(), _num_heads, _queries_scale, context);
+        sampled_cross_attention_all(joint, fused_proj, _linear[0].bias(), _num_heads, _queries_scale, context);
         context.reshape({rows, 1, _num_heads * depth});      // combine_heads: one step, every row's heads in order
         return;
       }
@@ -127,9 +125,7 @@ namespace ctranslate2 {
         fused_slot_output(joint, slot_out);
       if (joint.slot_parts > 0)
         slot_context(joint, slot_out, context);
-      for (const auto& part : joint.parts)
-        if (part.sampled)
-          sampled_self_attention(joint, part, all_queries, all_keys, all_values, _queries_scale, context);
+      sampled_self_attention_all(joint, all_queries, all_keys, all_values, _queries_scale, context);
       combine_heads(context, _num_heads, nullptr, 1, /*heads_combined=*/false);   // one step: a reshape
     }
 

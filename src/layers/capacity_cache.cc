@@ -58,23 +58,30 @@ namespace ctranslate2 {
     }
 #endif
 
-    void capacity_attention(const StorageView& queries, const StorageView& keys, const StorageView& values,
-                            float scale, StorageView& cached_keys, StorageView& cached_values,
-                            StorageView& context) {
 #if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
-      CapacityCaches& caches = *active;
+    void capacity_append(CapacityCaches& caches, StorageView& cached_keys, StorageView& cached_values,
+                         const StorageView& keys, const StorageView& values) {
       if (caches.time < 0 || cached_keys.dim(2) == caches.time) {   // the search's first step: each layer moves
         caches.time = cached_keys.dim(2);
         caches.shared = caches.time;                         // every row's caches the prompt's, repeated
         to_capacity(cached_keys, caches.time + caches.steps);
         to_capacity(cached_values, caches.time + caches.steps);
       }
-      const dim_t capacity = cached_keys.dim(2), time = caches.time;
-      if (time >= capacity || cached_values.dim(2) != capacity)
+      if (caches.time >= cached_keys.dim(2) || cached_values.dim(2) != cached_keys.dim(2))
         throw std::logic_error("A capacity cache has no room for the step");
-      copy_positions(keys, cached_keys, time);
-      copy_positions(values, cached_values, time);
+      copy_positions(keys, cached_keys, caches.time);
+      copy_positions(values, cached_values, caches.time);
+    }
 
+#endif
+
+    void capacity_attention(const StorageView& queries, const StorageView& keys, const StorageView& values,
+                            float scale, StorageView& cached_keys, StorageView& cached_values,
+                            StorageView& context) {
+#if defined(CT2_WITH_CUDA) && !defined(CT2_USE_HIP)
+      CapacityCaches& caches = *active;
+      capacity_append(caches, cached_keys, cached_values, keys, values);
+      const dim_t capacity = cached_keys.dim(2), time = caches.time;
       const dim_t rows = queries.dim(0), heads = queries.dim(1), depth = queries.dim(3), t = time + 1;
       StorageView scores({rows, heads, 1, t}, queries.dtype(), queries.device());
       context.resize({rows, heads, 1, depth});
@@ -95,20 +102,12 @@ namespace ctranslate2 {
       for (const auto& [first, count] : groups) {
         const int ti = static_cast<int>(t);
         if (cuda::slot_attention_enabled() && cuda::slot_attention_applies(count, heads, depth, ti))
-          fused.push_back({k + first * row_cache, v + first * row_cache, k, v, p + first * heads * t,
-                           static_cast<int32_t>(count), ti, static_cast<int32_t>(caches.shared),
-                           static_cast<int32_t>(first), static_cast<int32_t>(capacity), cuda::slot_scores_recipe(ti),
-                           cuda::slot_output_recipe(ti), cuda::slot_scores_mma(ti) ? 1 : 0,
-                           cuda::slot_output_mma(ti) ? 1 : 0});
+          fused.push_back(capacity_group(caches, cached_keys, cached_values, p + first * heads * t, first, count,
+                                         first));
         else
           own.emplace_back(first, count);
       }
-      StorageView table(DataType::INT32);
-      if (!fused.empty()) {
-        std::vector<int32_t> words(fused.size() * sizeof (cuda::SlotAttention) / sizeof (int32_t));
-        std::memcpy(words.data(), fused.data(), fused.size() * sizeof (cuda::SlotAttention));
-        table = StorageView({static_cast<dim_t>(words.size())}, words).to(Device::CUDA);
-      }
+      const StorageView table = slot_table(fused);
       const auto* parts = reinterpret_cast<const cuda::SlotAttention*>(table.data<int32_t>());
       const cuda::ClipGroupsPause alone;                     // each own group one call
       if (!fused.empty())
