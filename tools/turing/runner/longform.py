@@ -16,11 +16,12 @@ from long_broker import LongBroker
 
 
 def workers_needed():
-    """The model's CTranslate2 workers: the stream's decoding loop, the encoder's calls, one a ladder lane (or the
-    ladders' own stream's loop: LONG_LADDER_STREAM=1)."""
+    """The model's CTranslate2 workers: each windows' stream's decoding loop (LONG_WINDOW_STREAMS, default 1), the
+    encoder's calls, one a ladder lane (or the ladders' own stream's loop: LONG_LADDER_STREAM=1)."""
+    streams = int(os.environ.get("LONG_WINDOW_STREAMS", "1"))
     if os.environ.get("LONG_LADDERS") == "stream" and os.environ.get("LONG_LADDER_STREAM") == "1":
-        return 3
-    return 2 + int(os.environ.get("LONG_LADDER_WORKERS", "0"))
+        return streams + 2
+    return streams + 1 + int(os.environ.get("LONG_LADDER_WORKERS", "0"))
 
 
 class LongEngine:

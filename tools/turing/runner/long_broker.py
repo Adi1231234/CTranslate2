@@ -16,6 +16,8 @@ windows' as the lanes were: up to LONG_LADDER_BATCHES ladders (default 2, the la
 decoder's weights read once a step for them all. LONG_LADDER_PRIORITY=high: that stream's GPU work ahead of the
 windows' (a recording waits for its ladder; the windows' stream has many recordings in flight). LONG_WINDOW_PRIORITY=high:
 the windows' stream's ahead of the ladders' instead (the ladders then run in the windows' gaps).
+LONG_WINDOW_STREAMS=<n> (default 1): the windows in n streams, each on a worker of its own, a window to the one with
+the fewest in flight (a stream's step is a chain of ~1,250 kernels; another stream's kernels run in its gaps).
 """
 import os, threading, time
 import ctranslate2
@@ -32,6 +34,7 @@ class LongBroker(Broker):
         super().__init__(model, **kw)
         self._windows, self._pending_max = windows, pending
         self._stream = self._options = None
+        self._streams, self._flying = [], []                 # the windows' streams, each one's windows in flight
         self._calls, self._tag, self._lock = {}, 0, threading.Lock()
         self._ladder, self._lanes = ladder_model, threading.Semaphore(max(ladder_workers, 1))
         self._skip_ladders, self._last = os.environ.get("LONG_LADDERS") == "skip", threading.local()
@@ -112,10 +115,13 @@ class LongBroker(Broker):
             return super().generate(encoder_output, prompts, **kw)
         if len(prompts) != 1 or set(kw) - set(STREAM_OPTIONS):
             raise ValueError(f"the stream takes one window's beam search, with {STREAM_OPTIONS}")
-        stream = self._open(kw)
+        self._open(kw)
         with self._lock:
             tag, self._tag = self._tag, self._tag + 1
             call = self._calls[tag] = threading.Event()
+            which = min(range(len(self._streams)), key=self._flying.__getitem__)
+            self._flying[which] += 1
+        stream = self._streams[which]
         self._idle(-1)                                       # not an encoder caller while its window decodes
         t = time.monotonic()
         try:
@@ -124,6 +130,8 @@ class LongBroker(Broker):
             call.wait()
             self.stats.stream(-1)
         finally:
+            with self._lock:
+                self._flying[which] -= 1
             self._idle(+1)
         self.stats.add("stream_s", time.monotonic() - t)
         if call.error:
@@ -140,9 +148,13 @@ class LongBroker(Broker):
                     batches += int(os.environ.get("LONG_STREAM_LADDERS", "8"))
                     rows = int(os.environ.get("LONG_STREAM_ROWS", "320"))
                 high = {"high_priority": True} if os.environ.get("LONG_WINDOW_PRIORITY") == "high" else {}
-                self._stream, self._options = self._m.open_stream(
-                    max_batches=batches, max_rows=rows, max_pending=self._pending_max, **high, **options), options
-                threading.Thread(target=self._collect, args=(self._stream,), daemon=True).start()
+                for _ in range(int(os.environ.get("LONG_WINDOW_STREAMS", "1"))):
+                    stream = self._m.open_stream(max_batches=batches, max_rows=rows, max_pending=self._pending_max,
+                                                 **high, **options)
+                    self._streams.append(stream)
+                    self._flying.append(0)
+                    threading.Thread(target=self._collect, args=(stream,), daemon=True).start()
+                self._stream, self._options = self._streams[0], options   # in-stream ladders go to the first
             elif options != self._options:
                 raise ValueError("a window's beam search options differ from the stream's")
         return self._stream
