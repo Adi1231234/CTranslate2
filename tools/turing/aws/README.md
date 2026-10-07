@@ -297,6 +297,14 @@ the rate over seconds 40-280, every comparison on one host, list50's rows strict
   windows, the windows first, single rows): 139.7x over seconds 300-600 (50-62 recordings in progress) against full2's
   126.3x over the same seconds; all 108 recordings both finished strictly identical. 120 recordings keep 64 threads
   busy only ~300 s: a corpus list of thousands stays there.
+- The ladders' attention for every ladder of a step at once (l44c, 8369bbff: `layers/attention_sampled_parts.cc`,
+  `capacity_parts.cc`, several ladders a launch in `cuda/ladder_cross_launch.cuh`; `ladder_cross_check` 0 of 15,610
+  with two ladders a launch): joint4 o38 151.2x against l43h's 150.0x on one host (38 windows), a ladder 30 s instead
+  of 42, rows identical. ⛔ cuBLAS picks its kernel by its pointers' alignment: the first version (l44a) put every
+  part's self-attention scores in one buffer unaligned, and the groups cuBLAS still computes changed 7 of 46
+  recordings' sampled rows (bisect1: the cross-attention half exact, the self-attention half not); each part on 256
+  bytes, as its own allocation was, fixed it. The ladders inside the windows' joint step stay slower than in their
+  own stream (joint2: ~138x over 40-160 s against ~159x).
 - Where the time goes now (`prof4`, l43g at 72 threads; `nsys` 2026.3.2 exports the report on a laptop): the windows'
   stream 81% busy, its cross-attention 41% of it at ~72% of the memory's bandwidth (it must read each window's 246 MB
   every step); the ladders' stream 51% (prof3: 69%), `lc_output` 0.69 s of 8 (1.31). Every row of every run that night
