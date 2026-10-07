@@ -316,6 +316,13 @@ the rate over seconds 40-280, every comparison on one host, list50's rows strict
   7.5 s of kernels in 8 s against 12.4) but one stream leaves the GPU idle between its small kernels; two joint streams
   (`LONG_WINDOW_STREAMS=2` without the ladders' own stream, runner-13b50917) run as fast as the ladders' own stream
   (j18 151.3x).
+- The final configuration at the real length (`full4`, Seoul c4161d4a, list120s uncut, one host, 25 minutes each):
+  l44d with `CT2_CACHE_POOL=1`, `CT2_CROSS_AHEAD=2`, single rows, the windows first, 72 threads, at most 40 windows,
+  3 ladder batches: 144.3x over seconds 300-600 (140.8x over 200-700) against full3's configuration's 132.3x (132.4x)
+  on the same host; every recording both runs finished strictly full2's (106 and 103). At 72 threads the host held
+  22 GB for the recordings' features at second 300 (6 GB free of 28): a corpus with 24 h plenums needs
+  `LONG_MAX_HOURS`. Cross-attention at 6 blocks an SM (`CT2_CROSS_BLOCKS=6`, l44e) is slower (blocks1 150.8x against
+  153.3x).
 - Where the time goes now (`prof4`, l43g at 72 threads; `nsys` 2026.3.2 exports the report on a laptop): the windows'
   stream 81% busy, its cross-attention 41% of it at ~72% of the memory's bandwidth (it must read each window's 246 MB
   every step); the ladders' stream 51% (prof3: 69%), `lc_output` 0.69 s of 8 (1.31). Every row of every run that night
