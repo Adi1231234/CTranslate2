@@ -143,7 +143,11 @@ class LongBroker(Broker):
         options = {k: (list(v) if k == "suppress_tokens" else v) for k, v in kw.items()}
         with self._lock:
             if self._stream is None:
-                batches, rows = self._windows, self._windows * kw["beam_size"]
+                # LONG_STREAM_WINDOWS: at most that many windows decoding (default one a thread); a thread past them
+                # waits to submit, holding its encoder output only (3.8 MB), so threads beyond the windows' memory
+                # keep the stream full while others wait for their ladders.
+                batches = int(os.environ.get("LONG_STREAM_WINDOWS", self._windows))
+                rows = batches * kw["beam_size"]
                 if self._in_stream and not self._own_stream:   # room for the ladders' sampled batches
                     batches += int(os.environ.get("LONG_STREAM_LADDERS", "8"))
                     rows = int(os.environ.get("LONG_STREAM_ROWS", "320"))
