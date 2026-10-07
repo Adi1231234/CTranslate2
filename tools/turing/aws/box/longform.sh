@@ -21,8 +21,8 @@ for run in "$@"; do
     case $kv in LONG_PROCS=*) procs=${kv#LONG_PROCS=};; NSYS=*) nsys=${kv#NSYS=};; METRICS=*) metrics=${kv#METRICS=};; esac
   done
   echo "=== $(date +%T) $label $pkg $list ${setting//,/ }"
-  nvidia-smi --query-gpu=utilization.gpu,memory.used,power.draw,utilization.memory --format=csv,noheader,nounits \
-    -lms 1000 > "gpu_$label.csv" & SMI=$!
+  nvidia-smi --query-gpu=utilization.gpu,memory.used,power.draw,utilization.memory,clocks.sm,clocks_throttle_reasons.sw_power_cap \
+    --format=csv,noheader,nounits -lms 1000 > "gpu_$label.csv" & SMI=$!
   [ -n "$metrics" ] && (sleep "${metrics%%:*}"; nsys profile --trace=none --sample=none --cpuctxsw=none \
     --gpu-metrics-devices=all --gpu-metrics-frequency=2000 --duration="${metrics#*:}" --force-overwrite=true \
     -o "metrics_$label" sleep "$((${metrics#*:} + 5))" > "metrics_$label.out" 2>&1) &
@@ -45,9 +45,9 @@ for run in "$@"; do
   cat log_${label}_*.txt | awk -v t0="$t0" -v t1="$t1" -v p="$procs" \
     '/^RESULT/ {for (i = 1; i <= NF; i++) if ($i ~ /^audio_h=/) {split($i, a, "="); h += a[2]}}
      END {w = t1 - t0; printf "TOTAL processes=%d audio_h=%.3f wall_s=%.1f x_realtime=%.2f\n", p, h, w, h * 3600 / w}'
-  awk -F', ' '{u += $1; m = $2 > m ? $2 : m; w += $3; mem += $4; n++}
-    END {if (n) printf "GPU: %.0f%% busy, memory %.0f%% busy, peak %.0f MiB, %.0f W average, %d samples\n",
-                       u / n, mem / n, m, w / n, n}' "gpu_$label.csv"
+  awk -F', ' '{u += $1; m = $2 > m ? $2 : m; w += $3; mem += $4; clk += $5; cap += ($6 ~ /^Active/); n++}
+    END {if (n) printf "GPU: %.0f%% busy, memory %.0f%% busy, peak %.0f MiB, %.0f W average, SM %.0f MHz, power-capped %.0f%%, %d samples\n",
+                       u / n, mem / n, m, w / n, clk / n, 100 * cap / n, n}' "gpu_$label.csv"
   if [ -f "metrics_$label.nsys-rep" ]; then
     nsys export --type=sqlite --force-overwrite=true -o "metrics_$label.sqlite" "metrics_$label.nsys-rep" > /dev/null 2>&1
     aws s3 cp --only-show-errors "$S3/scripts/gpu_metrics_summary.py" . \
