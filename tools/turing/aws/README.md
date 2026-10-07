@@ -305,6 +305,17 @@ the rate over seconds 40-280, every comparison on one host, list50's rows strict
   recordings' sampled rows (bisect1: the cross-attention half exact, the self-attention half not); each part on 256
   bytes, as its own allocation was, fixed it. The ladders inside the windows' joint step stay slower than in their
   own stream (joint2: ~138x over 40-160 s against ~159x).
+- Out of memory with ~30 of 44 GiB in use: the default pool's reserve grew to the whole device (joint5/joint6) because
+  long-lived buffers sat in blocks among a step's short ones, which then could be neither reused nor trimmed.
+  `CT2_CACHE_POOL=1` (l44d, 9fac7682: `cuda/cache_pool.h`) puts a window's memory keys and values, its slots and a
+  ladder's capacity caches in a pool of their own: the default pool's reserve 8.4 GiB instead of 42.5 (pool1, Seoul
+  b55d8a40), no run out of memory at 38 or 40 windows nor with two joint streams; the rate unchanged (152.2x without,
+  151.9x with, 153.0x at 40 windows). The prefetch distance of the cross-attention at 2 (`CT2_CROSS_AHEAD=2`): 153.3x
+  against 151.0x at 1 (ahead1). Without ladders the same setup runs 172.8x (prof5 k38), so the ladders cost ~12%
+  (19% at the start of the night). The ladders in the windows' joint step do a third less GPU work per x (joint5:
+  7.5 s of kernels in 8 s against 12.4) but one stream leaves the GPU idle between its small kernels; two joint streams
+  (`LONG_WINDOW_STREAMS=2` without the ladders' own stream, runner-13b50917) run as fast as the ladders' own stream
+  (j18 151.3x).
 - Where the time goes now (`prof4`, l43g at 72 threads; `nsys` 2026.3.2 exports the report on a laptop): the windows'
   stream 81% busy, its cross-attention 41% of it at ~72% of the memory's bandwidth (it must read each window's 246 MB
   every step); the ladders' stream 51% (prof3: 69%), `lc_output` 0.69 s of 8 (1.31). Every row of every run that night
