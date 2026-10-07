@@ -18,9 +18,15 @@ namespace ctranslate2 {
       if constexpr (CODE < sa_output_count) {
         if (code == CODE) {
           constexpr SelfAttnRecipe r = selfattn_output_recipes[CODE];
-          if constexpr (r.kind == 0)
-            for (int q = lane; q < r.partials; q += sa_out_lanes)
-              sm[q * 32 + x] = partial_sum<r.partials, r.vector, r.contiguous != 0>(q, t, a, b);
+          if constexpr (r.kind == 0) {
+            constexpr int Q = r.partials > sa_out_lanes ? r.partials / sa_out_lanes : 1;
+            float s[Q];
+            partial_sums<r.partials, r.vector, r.contiguous != 0, Q>(lane, sa_out_lanes, t, a, b, s);
+            #pragma unroll
+            for (int k = 0; k < Q; ++k)
+              if (lane + k * sa_out_lanes < r.partials)
+                sm[(lane + k * sa_out_lanes) * 32 + x] = s[k];
+          }
           return;
         }
         output_partials<CODE + 1>(code, sm, x, lane, t, a, b);

@@ -63,8 +63,13 @@ namespace ctranslate2 {
         const __half2* vd = reinterpret_cast<const __half2*>(v + static_cast<size_t>(h) * lc_keys * lc_depth) + x;
         const auto pa = [&](int i) { return hf(pr[i]); };
         const auto vb = [&](int i) { return __half22float2(vd[static_cast<size_t>(i) * (lc_depth / 2)]); };
-        for (int r = lane; r < T; r += L)
-          sm[(k * T + r) * 32 + x] = partial_sum2<T, 1, lc_kind_contiguous[KIND]>(r, lc_keys, pa, vb);
+        constexpr int Q = T > L ? T / L : 1;
+        float2 s[Q];
+        partial_sums2<T, 1, lc_kind_contiguous[KIND], Q>(lane, L, lc_keys, pa, vb, s);
+        #pragma unroll
+        for (int q = 0; q < Q; ++q)
+          if (lane + q * L < T)
+            sm[(k * T + lane + q * L) * 32 + x] = s[q];
       }
       __syncthreads();
       if (lane == 0 && k < rows) {

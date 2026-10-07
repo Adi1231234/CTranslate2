@@ -36,70 +36,58 @@ namespace ctranslate2 {
       return sum;
     }
 
-    constexpr int split_lanes = 8;   // the block's y lanes sharing an output's partials
-
-    // Partial r of n elements, a(i) b(i): its own elements in increasing order from zero, as one thread of a gemv sums
-    // them (strided: (r + T j) W + u; or contiguous: one chunk of ceil(n / T)), each with a fused multiply-add.
-    template <int T, int W, bool CONTIGUOUS, typename A, typename B>
-    static __device__ __forceinline__ float partial_sum(int r, int n, const A& a, const B& b) {
-      float s = 0.f;
+    // Partials first, first + step, ... (Q of them, those below T) of n elements, each over its own elements in
+    // increasing order (strided: (r + T j) W + u; or contiguous: one chunk of ceil(n / T)) as one thread of a gemv
+    // sums them: f(k, i) for partial k's element i, the Q partials' turns interleaved (independent chains for the
+    // scheduler), each partial's in its own order.
+    template <int T, int W, bool CONTIGUOUS, int Q, typename F>
+    static __device__ __forceinline__ void for_partials(int first, int step, int n, const F& f) {
       if (CONTIGUOUS) {
-        const int chunk = (n + T - 1) / T, end = min(n, (r + 1) * chunk);
-        for (int i = r * chunk; i < end; ++i)
-          s = fmaf(a(i), b(i), s);
-      } else {
-        for (int base = r * W; base < n; base += T * W)
+        const int chunk = (n + T - 1) / T;
+        for (int o = 0; o < chunk; ++o)
           #pragma unroll
-          for (int u = 0; u < W; ++u)
-            if (base + u < n)
-              s = fmaf(a(base + u), b(base + u), s);
+          for (int k = 0; k < Q; ++k) {
+            const int r = first + k * step, i = r * chunk + o;
+            if (r < T && i < n)
+              f(k, i);
+          }
+      } else {
+        for (int base = 0; base < n; base += T * W)
+          #pragma unroll
+          for (int k = 0; k < Q; ++k) {
+            const int r = first + k * step;
+            #pragma unroll
+            for (int u = 0; u < W; ++u)
+              if (r < T && base + r * W + u < n)
+                f(k, base + r * W + u);
+          }
       }
-      return s;
     }
 
-    // partial_sum of two columns at once, a(i) b(i).x and a(i) b(i).y (b(i) a float2, e.g. a pair of halves read
-    // together): each column's sum is partial_sum's, element by element.
-    template <int T, int W, bool CONTIGUOUS, typename A, typename B>
-    static __device__ __forceinline__ float2 partial_sum2(int r, int n, const A& a, const B& b) {
-      float2 s = make_float2(0.f, 0.f);
-      const auto add = [&](int i) {
+    // Partials first, first + step, ... (Q of them) at once into s (those at or past T untouched).
+    template <int T, int W, bool CONTIGUOUS, int Q, typename A, typename B>
+    static __device__ __forceinline__ void partial_sums(int first, int step, int n, const A& a, const B& b,
+                                                        float (&s)[Q]) {
+      #pragma unroll
+      for (int k = 0; k < Q; ++k)
+        s[k] = 0.f;
+      for_partials<T, W, CONTIGUOUS, Q>(first, step, n, [&](int k, int i) { s[k] = fmaf(a(i), b(i), s[k]); });
+    }
+
+    // partial_sums of two columns at once, a(i) b(i).x and a(i) b(i).y (b(i) a float2, e.g. a pair of halves read
+    // together): each column's sums are partial_sums', element by element.
+    template <int T, int W, bool CONTIGUOUS, int Q, typename A, typename B>
+    static __device__ __forceinline__ void partial_sums2(int first, int step, int n, const A& a, const B& b,
+                                                         float2 (&s)[Q]) {
+      #pragma unroll
+      for (int k = 0; k < Q; ++k)
+        s[k] = make_float2(0.f, 0.f);
+      for_partials<T, W, CONTIGUOUS, Q>(first, step, n, [&](int k, int i) {
         const float x = a(i);
         const float2 y = b(i);
-        s.x = fmaf(x, y.x, s.x);
-        s.y = fmaf(x, y.y, s.y);
-      };
-      if (CONTIGUOUS) {
-        const int chunk = (n + T - 1) / T, end = min(n, (r + 1) * chunk);
-        for (int i = r * chunk; i < end; ++i)
-          add(i);
-      } else {
-        for (int base = r * W; base < n; base += T * W)
-          #pragma unroll
-          for (int u = 0; u < W; ++u)
-            if (base + u < n)
-              add(base + u);
-      }
-      return s;
-    }
-
-    // One output column x (of a block's 32) over n elements, a(i) b(i): the T partials spread over `lanes` lanes
-    // (lane y sums partials y, y + lanes, ...) into sm ([T][32] floats); then lane 0 combines them. Every thread of
-    // the block calls it (it synchronizes); the sum is lane 0's.
-    template <int T, int W, bool CONTIGUOUS, int TREE, typename A, typename B>
-    static __device__ __forceinline__ float split_partials(float (*sm)[32], int x, int y, int n, const A& a,
-                                                           const B& b, int lanes = split_lanes) {
-      for (int r = y; r < T; r += lanes)
-        sm[r][x] = partial_sum<T, W, CONTIGUOUS>(r, n, a, b);
-      __syncthreads();
-      float sum = 0.f;
-      if (y == 0) {
-        float s[T];
-        #pragma unroll
-        for (int r = 0; r < T; ++r)
-          s[r] = sm[r][x];
-        sum = combine<T>(s, TREE);
-      }
-      return sum;
+        s[k].x = fmaf(x, y.x, s[k].x);
+        s[k].y = fmaf(x, y.y, s[k].y);
+      });
     }
 
   }
